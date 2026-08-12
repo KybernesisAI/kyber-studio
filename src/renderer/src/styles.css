@@ -154,10 +154,12 @@ input, textarea { font: inherit; color: inherit; }
 }
 .row__pin { color: var(--ink-tertiary); flex: none; }
 
-.sidebar__foot { padding: 8px; border-top: 0.5px solid var(--stroke); -webkit-app-region: no-drag; }
+.sidebar__foot { padding: 6px 0; border-top: 0.5px solid var(--stroke); -webkit-app-region: no-drag; }
 .foot-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 7px 8px; border-radius: var(--radius); font-size: 13.5px;
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  /* Full width of the sidebar: the highlight should read as a row in a list,
+     not as a floating pill inset from every edge. */
+  padding: 9px 14px; font-size: 13.5px; min-height: 40px;
 }
 .foot-row:hover { background: var(--hover); }
 .foot-row__label { flex: 1; text-align: left; }
@@ -475,7 +477,7 @@ input, textarea { font: inherit; color: inherit; }
 .signin__issuer { margin-top: 30px; font-size: 11.5px; color: var(--ink-tertiary); font-family: var(--font-mono); }
 
 .account-menu {
-  margin: 4px 0 2px; padding: 5px;
+  margin: 4px 8px 2px; padding: 5px;
   background: var(--surface-raised); border-radius: var(--radius);
   box-shadow: var(--shadow-menu);
 }
@@ -488,6 +490,20 @@ input, textarea { font: inherit; color: inherit; }
 .spinner {
   display: inline-block; user-select: none;
   font-family: var(--font-mono); line-height: 1; letter-spacing: 1px;
+}
+
+/*
+ * Inside a round button the loader has to fit the circle. Three braille cells
+ * plus letter-spacing overflowed it, which looked like a rendering fault rather
+ * than a spinner. No tracking, smaller cell, and centred on both axes.
+ */
+.icon-btn .spinner,
+.pl__added .spinner {
+  font-size: 10px;
+  letter-spacing: 0;
+  line-height: 1;
+  display: block;
+  transform: translateY(0.5px);
 }
 
 .activity {
