@@ -11,9 +11,11 @@ import { Icon } from "./primitives";
  * genuinely installs — files, dependencies, rebuild, restart — so the button
  * means what it says.
  *
+ * Authorization is the control-plane grant you already hold — the same one that
+ * lets you talk to this agent. There is no separate key to obtain or paste.
+ *
  * Where it cannot install, it says why rather than disabling silently: an agent
- * on a read-only serverless bundle has no working copy to modify, and an agent
- * with no management key has not been given permission to be changed from here.
+ * on a read-only serverless bundle has no working copy to modify.
  */
 export function Plugins(): ReactNode {
   const {
@@ -27,8 +29,6 @@ export function Plugins(): ReactNode {
     install,
     installing,
     manageError,
-    manageSecrets,
-    setPanel,
   } = useStore();
   const [tab, setTab] = useState<"marketplace" | "yours">("marketplace");
   const [q, setQ] = useState("");
@@ -42,7 +42,6 @@ export function Plugins(): ReactNode {
   const info = details[activeAgentId];
   const agent = agents.find((a) => a.id === activeAgentId);
   const cat = catalog[activeAgentId];
-  const hasKey = Boolean(manageSecrets[activeAgentId]);
   const query = q.trim().toLowerCase();
   const match = (t: string): boolean => !query || t.toLowerCase().includes(query);
 
@@ -110,19 +109,6 @@ export function Plugins(): ReactNode {
 
         {manageError ? (
           <div className="modal__banner modal__banner--error">{manageError}</div>
-        ) : !hasKey ? (
-          <div className="modal__banner">
-            Installing needs {agent?.name ?? "this agent"}&apos;s management key.{" "}
-            <button
-              className="linkish"
-              onClick={() => {
-                setPluginsOpen(false);
-                setPanel("settings");
-              }}
-            >
-              Add it in Settings
-            </button>
-          </div>
         ) : cat && !cat.writable ? (
           <div className="modal__banner">{cat.reason}</div>
         ) : null}
@@ -131,7 +117,7 @@ export function Plugins(): ReactNode {
           {tab === "marketplace" ? (
             !cat ? (
               <div className="empty">
-                {hasKey ? "Loading the catalog…" : "Add a management key to browse."}
+                Loading the catalog…
               </div>
             ) : marketplace.length === 0 ? (
               <div className="empty">Nothing matches “{q}”.</div>
@@ -162,7 +148,7 @@ export function Plugins(): ReactNode {
                         ) : (
                           <button
                             className="btn"
-                            disabled={!hasKey || !cat.writable || Boolean(installing)}
+                            disabled={!cat.writable || Boolean(installing)}
                             onClick={() => void install(activeAgentId, item.name)}
                           >
                             Add

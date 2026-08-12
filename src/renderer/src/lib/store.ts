@@ -48,8 +48,6 @@ interface State {
    * must not conflate those.
    */
   details: Record<string, AgentSummary | undefined>;
-  /** Per-agent management secret. Local to this machine; never sent anywhere else. */
-  manageSecrets: Record<string, string | undefined>;
   /** The agent's install catalog: what can be added, and what already is. */
   catalog: Record<
     string,
@@ -83,7 +81,6 @@ interface State {
   persist(): void;
   refreshAgents(): Promise<void>;
   loadAgentInfo(agentId: string): Promise<void>;
-  setManageSecret(agentId: string, secret: string): void;
   loadCatalog(agentId: string): Promise<void>;
   install(agentId: string, item: string): Promise<void>;
   createSchedule(agentId: string, input: { name: string; cron: string; instruction: string }): Promise<boolean>;
@@ -115,7 +112,6 @@ export const useStore = create<State>((set, get) => ({
   activity: {},
   models: {},
   details: {},
-  manageSecrets: {},
   catalog: {},
   installing: null,
   manageError: null,
@@ -254,22 +250,16 @@ export const useStore = create<State>((set, get) => ({
   patchAgent: (id, patch) =>
     set((s) => ({ agents: s.agents.map((a) => (a.id === id ? { ...a, ...patch } : a)) })),
 
-  setManageSecret: (agentId, secret) => {
-    set((s) => ({ manageSecrets: { ...s.manageSecrets, [agentId]: secret || undefined } }));
-    void window.studio?.saveState({ name: "manage.json", value: get().manageSecrets });
-  },
-
   loadCatalog: async (agentId) => {
     const agent = get().agents.find((a) => a.id === agentId);
-    const secret = get().manageSecrets[agentId];
-    if (!window.studio || !agent?.url || !secret) return;
+    if (!window.studio || !agent?.url) return;
     set({ manageError: null });
-    const res = await window.studio.manage({ url: agent.url, secret, path: "/catalog" });
+    const res = await window.studio.manage({ url: agent.url, path: "/catalog" });
     if (!res.ok) {
       set({
         manageError:
           res.status === 401
-            ? "This agent rejected the management key."
+            ? "This agent did not accept your sign-in. You may not have a grant for it."
             : `The agent's management routes answered ${res.status}.`,
       });
       return;
@@ -295,13 +285,11 @@ export const useStore = create<State>((set, get) => ({
 
   install: async (agentId, item) => {
     const agent = get().agents.find((a) => a.id === agentId);
-    const secret = get().manageSecrets[agentId];
-    if (!window.studio || !agent?.url || !secret) return;
+    if (!window.studio || !agent?.url) return;
     set({ installing: item, manageError: null });
     try {
       const res = await window.studio.manage({
         url: agent.url,
-        secret,
         path: "/install",
         body: { item },
       });
@@ -328,15 +316,10 @@ export const useStore = create<State>((set, get) => ({
 
   createSchedule: async (agentId, input) => {
     const agent = get().agents.find((a) => a.id === agentId);
-    const secret = get().manageSecrets[agentId];
-    if (!window.studio || !agent?.url || !secret) {
-      set({ manageError: "Add this agent's management key in Settings first." });
-      return false;
-    }
+    if (!window.studio || !agent?.url) return false;
     set({ manageError: null });
     const res = await window.studio.manage({
       url: agent.url,
-      secret,
       path: "/schedule",
       body: input,
     });
@@ -383,8 +366,6 @@ export const useStore = create<State>((set, get) => ({
     }
     const ws = await window.studio.loadState<Record<string, string>>("workspaces.json");
     if (ws) set({ workspaces: ws });
-    const secrets = await window.studio.loadState<Record<string, string>>("manage.json");
-    if (secrets) set({ manageSecrets: secrets });
   },
 
   /** Write the transcript now. Cheap, and called at every point worth surviving. */

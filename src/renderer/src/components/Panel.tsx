@@ -116,14 +116,12 @@ function Empty({ loaded, none }: { loaded: boolean; none: string }): ReactNode {
 
 /** Create a routine that is actually written into the agent's repository. */
 function NewRoutine(): ReactNode {
-  const { activeAgentId, createSchedule, manageSecrets, manageError } = useStore();
+  const { activeAgentId, createSchedule, manageError } = useStore();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [cron, setCron] = useState("0 9 * * 1-5");
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
-
-  if (!manageSecrets[activeAgentId]) return null;
 
   if (!open) {
     return (
@@ -335,7 +333,7 @@ function RoutineView(): ReactNode {
 }
 
 function Settings(): ReactNode {
-  const { agents, activeAgentId, patchAgent, setPanel, details, models, manageSecrets, setManageSecret } = useStore();
+  const { agents, activeAgentId, patchAgent, setPanel, details, models } = useStore();
   const agent = agents.find((a) => a.id === activeAgentId);
   const info = details[activeAgentId];
   if (!agent) return null;
@@ -355,21 +353,6 @@ function Settings(): ReactNode {
             value={agent.name}
             onChange={(e) => patchAgent(agent.id, { name: e.target.value })}
           />
-        </div>
-
-        <div className="field">
-          <div className="field__label">Management key</div>
-          <input
-            className="input"
-            type="password"
-            placeholder="KYB_MANAGE_SECRET from this agent"
-            value={manageSecrets[agent.id] ?? ""}
-            onChange={(e) => setManageSecret(agent.id, e.target.value)}
-          />
-          <div className="muted" style={{ marginTop: 6 }}>
-            Lets Studio install capabilities and write routines on this agent. Stored on this
-            machine only. Without it the agent can still be talked to, just not changed.
-          </div>
         </div>
 
         <div className="card stack-row">

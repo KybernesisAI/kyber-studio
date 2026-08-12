@@ -507,23 +507,26 @@ export function currentSession(): Session | null {
 /**
  * Management calls against an agent's own /eve/v1/kyb routes.
  *
- * These use a per-agent management secret rather than the user's identity token
- * because the routes are not part of eve's authenticated surface — they are a
- * separate channel with its own guard. That is a rough edge worth removing:
- * installing software on an agent should ride the same governed identity as
- * talking to it, not a second static credential.
+ * These carry the SAME identity and policy bundle as every other call to the
+ * agent. Installing software on an agent is governed by the same grant as
+ * talking to it — there is no separate key, because a credential a user has to
+ * copy out of a server's env file is not authentication.
  */
 export async function manageCall(input: {
   url: string;
-  secret: string;
   path: string;
   body?: unknown;
 }): Promise<{ ok: boolean; status: number; data: unknown }> {
+  const s = loadSession();
+  if (!s?.bundle) {
+    return { ok: false, status: 401, data: { error: "Not signed in." } };
+  }
   const base = input.url.replace(/\/$/, "");
   const res = await fetch(`${base}/eve/v1/kyb${input.path}`, {
     method: input.body === undefined ? "GET" : "POST",
     headers: {
-      authorization: `Bearer ${input.secret}`,
+      authorization: `Bearer ${s.token}`,
+      "x-kybernesis-bundle": s.bundle,
       ...(input.body === undefined ? {} : { "content-type": "application/json" }),
     },
     body: input.body === undefined ? undefined : JSON.stringify(input.body),
