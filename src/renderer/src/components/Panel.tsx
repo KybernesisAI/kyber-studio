@@ -173,18 +173,15 @@ function NewRoutine(): ReactNode {
 }
 
 function Overview(): ReactNode {
-  const { agents, activeAgentId, details, models, setPanel, openRoutine } = useStore();
+  const { agents, activeAgentId, details, models, setPanel, openRoutine, setPluginsOpen } = useStore();
   const agent = agents.find((a) => a.id === activeAgentId);
   const info = details[activeAgentId];
   const loaded = Boolean(info);
   if (!agent) return null;
 
   const schedules = info?.schedules ?? [];
-  const connections = info?.connections ?? [];
   const channels = info?.channels ?? [];
-  const skills = info?.skills ?? [];
   const subagents = info?.subagents ?? [];
-  const authored = info?.tools ?? [];
 
   return (
     <>
@@ -220,21 +217,6 @@ function Overview(): ReactNode {
           )}
         </Section>
 
-        <Section title="Connections" count={loaded ? connections.length : undefined}>
-          {connections.length === 0 ? (
-            <Empty loaded={loaded} none="No external systems connected." />
-          ) : (
-            connections.map((c) => (
-              <Row
-                key={c.name}
-                icon={<Icon name="plug" size={14} />}
-                title={c.name}
-                detail={c.description}
-              />
-            ))
-          )}
-        </Section>
-
         <Section title="Channels" count={loaded ? channels.length : undefined}>
           {channels.length === 0 ? (
             <Empty loaded={loaded} none="Reachable only through this app." />
@@ -263,29 +245,12 @@ function Overview(): ReactNode {
           </Section>
         ) : null}
 
-        <Section title="Skills" count={loaded ? skills.length : undefined}>
-          {skills.length === 0 ? (
-            <Empty loaded={loaded} none="No skills installed." />
-          ) : (
-            skills.map((s) => (
-              <Row key={s.name} icon={<Icon name="package" size={14} />} title={s.name} detail={s.description} />
-            ))
-          )}
-        </Section>
-
-        <Section title="Tools" count={loaded ? authored.length : undefined}>
-          {authored.length === 0 ? (
-            <Empty loaded={loaded} none="No authored tools." />
-          ) : (
-            authored.map((t) => (
-              <Row key={t.name} icon={<Icon name="gear" size={14} />} title={t.name} detail={t.description} />
-            ))
-          )}
-        </Section>
-
-        <div style={{ marginTop: 20 }}>
-          <button className="btn" style={{ width: "100%" }} onClick={() => setPanel("settings")}>
-            Agent settings
+        <div style={{ marginTop: 20, display: "flex", gap: 8 }}>
+          <button className="btn" style={{ flex: 1 }} onClick={() => setPluginsOpen(true)}>
+            Plugins
+          </button>
+          <button className="btn" style={{ flex: 1 }} onClick={() => setPanel("settings")}>
+            Settings
           </button>
         </div>
       </div>

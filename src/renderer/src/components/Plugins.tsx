@@ -3,6 +3,22 @@ import { useStore } from "@/lib/store";
 import { Spinner } from "./Spinner";
 import { Icon } from "./primitives";
 
+/** Stable colour per item, so the same plugin always looks the same. */
+function tint(name: string): string {
+  const palette = ["#2ec4a6", "#4f9cf0", "#7c6cf0", "#f0883e", "#e0609a", "#3fb950"];
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return palette[h % palette.length]!;
+}
+
+function Tile({ name }: { name: string }): ReactNode {
+  return (
+    <span className="pl__icon" style={{ background: tint(name) }}>
+      {name.replace(/^Kybernesis /, "").charAt(0).toUpperCase()}
+    </span>
+  );
+}
+
 /**
  * The plugin marketplace.
  *
@@ -96,6 +112,9 @@ export function Plugins(): ReactNode {
             Yours
           </button>
           <div style={{ flex: 1 }} />
+          <button className="topbar__btn" title="Filter">
+            <Icon name="filter" />
+          </button>
           <label className="search" style={{ width: 240 }}>
             <Icon name="search" size={14} />
             <input
@@ -123,26 +142,24 @@ export function Plugins(): ReactNode {
               <div className="empty">Nothing matches “{q}”.</div>
             ) : (
               <>
-                <div className="group-label">Kybernesis registry</div>
-                <div className="plugin-grid">
+                <div className="pl__group">Kybernesis registry</div>
+                <div className="pl__grid">
                   {marketplace.map((item) => {
                     const added = isInstalled(item);
                     const busy = installing === item.name;
                     return (
-                      <div className="plugin-row" key={item.name}>
-                        <span className="conn__icon" style={{ width: 34, height: 34 }}>
-                          <Icon name="plug" size={16} />
-                        </span>
-                        <div className="plugin-row__body">
-                          <div className="plugin-row__name">{item.title ?? item.name}</div>
-                          <div className="plugin-row__desc">{item.description}</div>
+                      <div className="pl__row" key={item.name}>
+                        <Tile name={item.title ?? item.name} />
+                        <div className="pl__body">
+                          <div className="pl__name">{(item.title ?? item.name).replace(/^Kybernesis /, "")}</div>
+                          <div className="pl__desc">{item.description}</div>
                         </div>
                         {added ? (
-                          <span className="plugin-row__added">
+                          <span className="pl__added">
                             <Icon name="check" size={13} /> Added
                           </span>
                         ) : busy ? (
-                          <span className="plugin-row__added">
+                          <span className="pl__added">
                             <Spinner /> Installing
                           </span>
                         ) : (
@@ -170,18 +187,16 @@ export function Plugins(): ReactNode {
               if (items.length === 0) return null;
               return (
                 <div key={group}>
-                  <div className="group-label">
+                  <div className="pl__group">
                     {group} · {items.length}
                   </div>
-                  <div className="plugin-grid">
+                  <div className="pl__grid">
                     {items.map((i) => (
-                      <div className="plugin-row" key={i.key}>
-                        <span className="conn__icon" style={{ width: 34, height: 34 }}>
-                          <Icon name="plug" size={16} />
-                        </span>
-                        <div className="plugin-row__body">
-                          <div className="plugin-row__name">{i.title}</div>
-                          <div className="plugin-row__desc">{i.detail ?? ""}</div>
+                      <div className="pl__row" key={i.key}>
+                        <Tile name={i.title} />
+                        <div className="pl__body">
+                          <div className="pl__name">{i.title}</div>
+                          <div className="pl__desc">{i.detail ?? ""}</div>
                         </div>
                       </div>
                     ))}
