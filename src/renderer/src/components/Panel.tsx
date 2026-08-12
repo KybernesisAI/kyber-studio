@@ -1,14 +1,18 @@
 import type { ReactNode } from "react";
 import { useStore } from "@/lib/store";
-import { Avatar, Icon, Toggle, timeLabel } from "./primitives";
+import { Avatar, Icon, Toggle } from "./primitives";
 
 /**
  * The agent panel: everything about THIS agent that is not the conversation.
  *
- * Overview is the landing view — what the agent is doing right now, what it
- * runs on a schedule, what it is connected to, and where it can be reached.
- * Each of those drills into a real editor, because a customer living in this
- * app must never be told to open a terminal to connect Gmail or add Slack.
+ * Every section here is read from the agent's own /eve/v1/info — its real
+ * schedules, connections, channels, skills, tools, and subagents. Nothing is
+ * seeded. Where the agent reports nothing, the panel says so; where we have not
+ * asked yet, it says that instead. Those are different states and showing one
+ * as the other is how a console starts lying to its operator.
+ *
+ * Editing is deliberately absent: eve exposes this information read-only, and a
+ * Save button with nowhere to POST would be worse than no button.
  */
 
 function Head({
@@ -37,97 +41,174 @@ function Head({
   );
 }
 
+function Section({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count?: number;
+  children: ReactNode;
+}): ReactNode {
+  return (
+    <>
+      <div className="panel__section-head" style={{ marginTop: 20 }}>
+        <span className="panel__section-title">{title}</span>
+        {count != null ? <span className="muted">{count}</span> : null}
+      </div>
+      {children}
+    </>
+  );
+}
+
+function Row({
+  icon,
+  title,
+  detail,
+  onClick,
+}: {
+  icon: ReactNode;
+  title: string;
+  detail?: string;
+  onClick?: () => void;
+}): ReactNode {
+  const body = (
+    <>
+      <span className="routine-row__dot">{icon}</span>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <div className="routine-row__name">{title}</div>
+        {detail ? <div className="routine-row__when">{detail}</div> : null}
+      </span>
+    </>
+  );
+  return onClick ? (
+    <button className="routine-row" onClick={onClick}>
+      {body}
+    </button>
+  ) : (
+    <div className="routine-row">{body}</div>
+  );
+}
+
+/** Distinguishes "not asked yet" from "the agent has none". */
+function Empty({ loaded, none }: { loaded: boolean; none: string }): ReactNode {
+  return <div className="muted" style={{ padding: "2px 8px 6px" }}>{loaded ? none : "Loading…"}</div>;
+}
+
 function Overview(): ReactNode {
-  const {
-    agents,
-    activeAgentId,
-    routines,
-    channels,
-    connections,
-    setPanel,
-    openRoutine,
-    addRoutine,
-    setPluginsOpen,
-  } = useStore();
+  const { agents, activeAgentId, details, models, setPanel, openRoutine } = useStore();
   const agent = agents.find((a) => a.id === activeAgentId);
+  const info = details[activeAgentId];
+  const loaded = Boolean(info);
   if (!agent) return null;
-  const mine = routines.filter((r) => r.agentId === agent.id);
-  const activeChannels = channels.filter((c) => c.configured);
+
+  const schedules = info?.schedules ?? [];
+  const connections = info?.connections ?? [];
+  const channels = info?.channels ?? [];
+  const skills = info?.skills ?? [];
+  const subagents = info?.subagents ?? [];
+  const authored = (info?.tools ?? []).filter((t) => t.origin !== "framework");
 
   return (
     <>
       <Head title={agent.name} onClose={() => setPanel("none")} />
       <div className="panel__body">
-        <div className="screen-preview">Idle</div>
-        <div className="panel__caption">{agent.name}&apos;s screen</div>
-
-        <div className="panel__section-head">
-          <span className="panel__section-title">Routines</span>
-          <button className="topbar__btn" title="New routine" onClick={() => addRoutine(agent.id)}>
-            <Icon name="plus" />
-          </button>
-        </div>
-        {mine.length === 0 ? (
-          <div className="muted" style={{ padding: "2px 8px 12px" }}>
-            Recurring tasks this agent runs on a schedule.
+        <div className="card" style={{ marginBottom: 4 }}>
+          <div className="stack-row" style={{ marginBottom: 6 }}>
+            <span style={{ flex: 1 }} className="muted">Host</span>
+            <span style={{ fontSize: 12.5 }}>{agent.url ? new URL(agent.url).host : "—"}</span>
           </div>
-        ) : (
-          mine.map((r) => (
-            <button className="routine-row" key={r.id} onClick={() => openRoutine(r.id)}>
-              <span className="routine-row__dot">
-                <Icon name="clock" size={14} />
-              </span>
-              <span style={{ flex: 1, minWidth: 0 }}>
-                <div className="routine-row__name">{r.name}</div>
-                <div className="routine-row__when">
-                  {r.schedules[0] ?? "No schedule"}
-                  {r.active ? "" : " · paused"}
-                </div>
-              </span>
-            </button>
-          ))
-        )}
-
-        <div className="panel__section-head" style={{ marginTop: 22 }}>
-          <span className="panel__section-title">Connections</span>
-          <button className="topbar__btn" title="Add a connection" onClick={() => setPluginsOpen(true)}>
-            <Icon name="plus" />
-          </button>
+          <div className="stack-row">
+            <span style={{ flex: 1 }} className="muted">Model</span>
+            <span style={{ fontSize: 12.5, fontFamily: "var(--font-mono)" }}>
+              {models[activeAgentId] ?? "—"}
+            </span>
+          </div>
         </div>
-        {connections.map((c) => (
-          <button className="routine-row" key={c.id} onClick={() => setPluginsOpen(true)}>
-            <span className="conn__icon" style={{ width: 26, height: 26, fontSize: 14 }}>
-              {c.icon}
-            </span>
-            <span style={{ flex: 1, minWidth: 0 }}>
-              <div className="routine-row__name">{c.name}</div>
-              <div className="routine-row__when">
-                {c.accounts.filter((a) => a.connected).length} of {c.accounts.length} accounts
-                {c.toolCount ? ` · ${c.toolCount} tools` : ""}
-              </div>
-            </span>
-          </button>
-        ))}
 
-        <div className="panel__section-head" style={{ marginTop: 22 }}>
-          <span className="panel__section-title">Channels</span>
-          <button className="topbar__btn" title="Add a channel" onClick={() => setPanel("channels")}>
-            <Icon name="plus" />
-          </button>
-        </div>
-        {activeChannels.map((c) => (
-          <button className="routine-row" key={c.id} onClick={() => setPanel("channels")}>
-            <span className="conn__icon" style={{ width: 26, height: 26, fontSize: 14 }}>
-              {c.icon}
-            </span>
-            <span style={{ flex: 1, minWidth: 0 }}>
-              <div className="routine-row__name">{c.label}</div>
-              <div className="routine-row__when">{c.detail ?? "Connected"}</div>
-            </span>
-          </button>
-        ))}
+        <Section title="Routines" count={loaded ? schedules.length : undefined}>
+          {schedules.length === 0 ? (
+            <Empty loaded={loaded} none="This agent runs nothing on a schedule." />
+          ) : (
+            schedules.map((s) => (
+              <Row
+                key={s.name}
+                icon={<Icon name="clock" size={14} />}
+                title={s.name}
+                detail={`${s.cron ?? "no cron"}${s.hasRun ? "" : " · never run"}`}
+                onClick={() => openRoutine(s.name)}
+              />
+            ))
+          )}
+        </Section>
 
-        <div style={{ marginTop: 22 }}>
+        <Section title="Connections" count={loaded ? connections.length : undefined}>
+          {connections.length === 0 ? (
+            <Empty loaded={loaded} none="No external systems connected." />
+          ) : (
+            connections.map((c) => (
+              <Row
+                key={c.connectionName}
+                icon={<Icon name="plug" size={14} />}
+                title={c.connectionName}
+                detail={c.description}
+              />
+            ))
+          )}
+        </Section>
+
+        <Section title="Channels" count={loaded ? channels.length : undefined}>
+          {channels.length === 0 ? (
+            <Empty loaded={loaded} none="Reachable only through this app." />
+          ) : (
+            channels.map((c) => (
+              <Row
+                key={c.name + (c.urlPath ?? "")}
+                icon={<Icon name="monitor" size={14} />}
+                title={c.name}
+                detail={c.urlPath}
+              />
+            ))
+          )}
+        </Section>
+
+        {subagents.length > 0 ? (
+          <Section title="Subagents" count={subagents.length}>
+            {subagents.map((s) => (
+              <Row
+                key={s.name}
+                icon={<Icon name="package" size={14} />}
+                title={s.name}
+                detail={
+                  s.description ??
+                  `${s.summary?.tools ?? 0} tools · ${s.summary?.skills ?? 0} skills`
+                }
+              />
+            ))}
+          </Section>
+        ) : null}
+
+        <Section title="Skills" count={loaded ? skills.length : undefined}>
+          {skills.length === 0 ? (
+            <Empty loaded={loaded} none="No skills installed." />
+          ) : (
+            skills.map((s) => (
+              <Row key={s.name} icon={<Icon name="package" size={14} />} title={s.name} detail={s.description} />
+            ))
+          )}
+        </Section>
+
+        <Section title="Tools" count={loaded ? authored.length : undefined}>
+          {authored.length === 0 ? (
+            <Empty loaded={loaded} none="No authored tools." />
+          ) : (
+            authored.map((t) => (
+              <Row key={t.name} icon={<Icon name="gear" size={14} />} title={t.name} detail={t.description} />
+            ))
+          )}
+        </Section>
+
+        <div style={{ marginTop: 20 }}>
           <button className="btn" style={{ width: "100%" }} onClick={() => setPanel("settings")}>
             Agent settings
           </button>
@@ -137,73 +218,39 @@ function Overview(): ReactNode {
   );
 }
 
-function RoutineEditor(): ReactNode {
-  const { routines, activeRoutineId, patchRoutine, deleteRoutine, setPanel } = useStore();
-  const routine = routines.find((r) => r.id === activeRoutineId);
-  if (!routine) return null;
+/** A schedule, as the agent reports it. Read-only — eve exposes no way to edit. */
+function RoutineView(): ReactNode {
+  const { details, activeAgentId, activeRoutineId, setPanel } = useStore();
+  const schedule = (details[activeAgentId]?.schedules ?? []).find((s) => s.name === activeRoutineId);
+  if (!schedule) return null;
 
   return (
     <>
       <Head title="Routine" onBack={() => setPanel("overview")} onClose={() => setPanel("none")} />
       <div className="panel__body">
-        <div className="stack-row" style={{ marginBottom: 18 }}>
-          <Toggle on={routine.active} onChange={(on) => patchRoutine(routine.id, { active: on })} />
-          <span style={{ flex: 1 }}>{routine.active ? "Active" : "Paused"}</span>
-          <button className="btn" onClick={() => deleteRoutine(routine.id)}>
-            Delete
-          </button>
-          <button className="btn btn--primary">Test run</button>
-        </div>
-
         <div className="field">
           <div className="field__label">Name</div>
-          <input
-            className="input"
-            value={routine.name}
-            onChange={(e) => patchRoutine(routine.id, { name: e.target.value })}
-          />
+          <div className="card">{schedule.name}</div>
         </div>
-
         <div className="field">
-          <div className="field__label">Instruction</div>
-          <textarea
-            className="textarea"
-            style={{ minHeight: 150 }}
-            value={routine.instruction}
-            placeholder="What should this agent do, and what should it leave alone?"
-            onChange={(e) => patchRoutine(routine.id, { instruction: e.target.value })}
-          />
-        </div>
-
-        <div className="field">
-          <div className="field__label">When to run</div>
-          <div className="card">
-            {routine.schedules.map((s) => (
-              <div className="stack-row" key={s} style={{ marginBottom: 8 }}>
-                <Icon name="clock" size={14} />
-                <span>{s}</span>
-              </div>
-            ))}
-            <button className="stack-row muted" style={{ gap: 7 }}>
-              <Icon name="plus" size={13} /> Add another
-            </button>
+          <div className="field__label">When it runs</div>
+          <div className="card" style={{ fontFamily: "var(--font-mono)", fontSize: 12.5 }}>
+            {schedule.cron ?? "—"}
           </div>
         </div>
-
+        {schedule.markdown ? (
+          <div className="field">
+            <div className="field__label">Instruction</div>
+            <div className="card" style={{ whiteSpace: "pre-wrap" }}>{schedule.markdown}</div>
+          </div>
+        ) : null}
         <div className="field">
-          <div className="field__label">Run history</div>
-          {routine.runHistory.length === 0 ? (
-            <div className="muted">Not run yet.</div>
-          ) : (
-            routine.runHistory.map((h) => (
-              <div className="stack-row" key={h.at} style={{ padding: "5px 0" }}>
-                <span style={{ flex: 1 }}>{timeLabel(h.at)}</span>
-                <span style={{ color: h.ok ? "var(--accent-deep)" : "var(--danger)" }}>
-                  <Icon name={h.ok ? "check" : "close"} size={13} />
-                </span>
-              </div>
-            ))
-          )}
+          <div className="field__label">Status</div>
+          <div className="card">{schedule.hasRun ? "Has run before" : "Has never run"}</div>
+        </div>
+        <div className="muted">
+          Read-only. Schedules are defined in the agent's own repository — eve exposes them here but
+          offers no way to change them from a client.
         </div>
       </div>
     </>
@@ -211,8 +258,9 @@ function RoutineEditor(): ReactNode {
 }
 
 function Settings(): ReactNode {
-  const { agents, activeAgentId, patchAgent, setPanel } = useStore();
+  const { agents, activeAgentId, patchAgent, setPanel, details, models } = useStore();
   const agent = agents.find((a) => a.id === activeAgentId);
+  const info = details[activeAgentId];
   if (!agent) return null;
 
   return (
@@ -224,7 +272,7 @@ function Settings(): ReactNode {
         </div>
 
         <div className="field">
-          <div className="field__label">Name</div>
+          <div className="field__label">Display name (this app only)</div>
           <input
             className="input"
             value={agent.name}
@@ -232,29 +280,10 @@ function Settings(): ReactNode {
           />
         </div>
 
-        <div className="field">
-          <div className="field__label">Title</div>
-          <input
-            className="input"
-            value={agent.title ?? ""}
-            placeholder="Describe what your agent does"
-            onChange={(e) => patchAgent(agent.id, { title: e.target.value })}
-          />
-        </div>
-
-        <div className="field">
-          <div className="field__label">Description</div>
-          <textarea
-            className="textarea"
-            value={agent.description ?? ""}
-            onChange={(e) => patchAgent(agent.id, { description: e.target.value })}
-          />
-        </div>
-
         <div className="card stack-row">
           <div style={{ flex: 1 }}>
             <div>Notifications</div>
-            <div className="muted">Get notified when this agent finishes or needs input</div>
+            <div className="muted">Not wired up yet</div>
           </div>
           <Toggle
             on={agent.notifications ?? false}
@@ -263,51 +292,29 @@ function Settings(): ReactNode {
         </div>
 
         <div className="field" style={{ marginTop: 18 }}>
-          <div className="field__label">Deployment</div>
+          <div className="field__label">Reported by the agent</div>
           <div className="card">
             <div className="stack-row" style={{ marginBottom: 6 }}>
-              <span style={{ flex: 1 }} className="muted">
-                Host
+              <span style={{ flex: 1 }} className="muted">Name</span>
+              <span style={{ fontSize: 12.5 }}>{info?.name ?? "—"}</span>
+            </div>
+            <div className="stack-row" style={{ marginBottom: 6 }}>
+              <span style={{ flex: 1 }} className="muted">Model</span>
+              <span style={{ fontSize: 12.5, fontFamily: "var(--font-mono)" }}>
+                {models[activeAgentId] ?? "—"}
               </span>
-              <span style={{ fontSize: 12.5 }}>{new URL(agent.url).host}</span>
             </div>
             <div className="stack-row">
-              <span style={{ flex: 1 }} className="muted">
-                Status
-              </span>
-              <span style={{ fontSize: 12.5 }}>{agent.status ?? "unknown"}</span>
+              <span style={{ flex: 1 }} className="muted">Host</span>
+              <span style={{ fontSize: 12.5 }}>{agent.url ? new URL(agent.url).host : "—"}</span>
             </div>
           </div>
         </div>
-      </div>
-    </>
-  );
-}
 
-function Channels(): ReactNode {
-  const { channels, toggleChannel, setPanel } = useStore();
-  return (
-    <>
-      <Head title="Channels" onBack={() => setPanel("overview")} onClose={() => setPanel("none")} />
-      <div className="panel__body">
-        <div className="muted" style={{ marginBottom: 14 }}>
-          Where this agent can be reached, besides Studio. Adding one here configures it on the
-          agent&apos;s own deployment.
+        <div className="muted" style={{ marginTop: 14 }}>
+          An agent&apos;s identity, instructions, and capabilities live in its own repository. This
+          panel reports them; it does not change them.
         </div>
-        {channels.map((c) => (
-          <div className="routine-row" key={c.id}>
-            <span className="conn__icon" style={{ width: 30, height: 30, fontSize: 15 }}>
-              {c.icon}
-            </span>
-            <span style={{ flex: 1, minWidth: 0 }}>
-              <div className="routine-row__name">{c.label}</div>
-              <div className="routine-row__when">{c.detail ?? c.description}</div>
-            </span>
-            <button className="btn" onClick={() => toggleChannel(c.id)}>
-              {c.configured ? "Manage" : "Add"}
-            </button>
-          </div>
-        ))}
       </div>
     </>
   );
@@ -319,9 +326,8 @@ export function Panel(): ReactNode {
   return (
     <aside className="panel">
       {panel === "overview" ? <Overview /> : null}
-      {panel === "routine" ? <RoutineEditor /> : null}
-      {panel === "settings" ? <Settings /> : null}
-      {panel === "channels" ? <Channels /> : null}
+      {panel === "routine" ? <RoutineView /> : null}
+      {panel === "settings" || panel === "channels" ? <Settings /> : null}
     </aside>
   );
 }

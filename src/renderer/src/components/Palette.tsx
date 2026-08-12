@@ -44,7 +44,7 @@ interface Item {
 export function Palette(): ReactNode {
   const {
     agents,
-    routines,
+    details,
     conversations,
     paletteOpen,
     setPaletteOpen,
@@ -99,19 +99,22 @@ export function Palette(): ReactNode {
       }
     }
 
-    for (const r of routines) {
-      const agent = agents.find((a) => a.id === r.agentId);
-      out.push({
-        id: `routine:${r.id}`,
-        title: r.name,
-        subtitle: `${r.schedules[0] ?? "No schedule"}${agent ? ` · ${agent.name}` : ""}`,
-        scope: "Routines",
-        icon: <Icon name="clock" />,
-        run: () => {
-          if (agent) select(agent.id);
-          openRoutine(r.id);
-        },
-      });
+    // Schedules as the agents themselves report them.
+    for (const [agentId, info] of Object.entries(details)) {
+      const agent = agents.find((a) => a.id === agentId);
+      for (const r of info?.schedules ?? []) {
+        out.push({
+          id: `routine:${agentId}:${r.name}`,
+          title: r.name,
+          subtitle: `${r.cron ?? "no cron"}${agent ? ` · ${agent.name}` : ""}`,
+          scope: "Routines",
+          icon: <Icon name="clock" />,
+          run: () => {
+            if (agent) select(agent.id);
+            openRoutine(r.name);
+          },
+        });
+      }
     }
 
     const action = (title: string, subtitle: string, run: () => void, icon = "gear"): Item => ({
@@ -128,7 +131,7 @@ export function Palette(): ReactNode {
     out.push(action("Agent panel", "Show or hide", () => setPanel("overview"), "monitor"));
 
     return out;
-  }, [agents, routines, conversations, select, openRoutine, setPanel, setPluginsOpen]);
+  }, [agents, details, conversations, select, openRoutine, setPanel, setPluginsOpen]);
 
   const query = q.trim().toLowerCase();
   const results = items

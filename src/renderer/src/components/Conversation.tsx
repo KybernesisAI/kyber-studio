@@ -95,9 +95,7 @@ export function Conversation(): ReactNode {
     send,
     panel,
     setPanel,
-    skills,
-    plugins,
-    routines,
+    details,
     setPluginsOpen,
     activity,
     models,
@@ -136,11 +134,13 @@ export function Conversation(): ReactNode {
     if (!triggerChar) return [];
     const match = (t: string): boolean => !triggerTerm || t.toLowerCase().includes(triggerTerm);
 
+    const info = details[activeAgentId];
+
     if (triggerChar === "/") {
-      // What the agent can DO.
-      const fromSkills: Suggestion[] = skills
+      // What the agent can DO — its real skills, as it reports them.
+      const fromSkills: Suggestion[] = (info?.skills ?? [])
         .filter((k) => match(k.name))
-        .map((k) => ({ id: `skill:${k.id}`, title: k.name, detail: k.description, type: "Skill" }));
+        .map((k) => ({ id: `skill:${k.name}`, title: k.name, detail: k.description, type: "Skill" }));
       const actions: Suggestion[] = [
         { id: "act:settings", title: "Chat Settings", detail: "Current chat", type: "Action" },
         { id: "act:channels", title: "Settings: Channels", detail: "Current agent", type: "Action" },
@@ -149,24 +149,22 @@ export function Conversation(): ReactNode {
       return [...fromSkills, ...actions].slice(0, 8);
     }
 
-    // What the agent can REACH.
-    const mine = routines.filter((r) => r.agentId === activeAgentId && match(r.name));
-    const fromRoutines: Suggestion[] = mine.map((r) => ({
-      id: `routine:${r.id}`,
-      title: r.name,
-      detail: r.schedules[0] ?? "No schedule",
-      type: "Routine",
-    }));
-    const fromPlugins: Suggestion[] = plugins
-      .filter((pl) => pl.added && match(pl.name))
-      .map((pl) => ({
-        id: `plugin:${pl.id}`,
-        title: pl.name,
-        detail: "connected",
+    // What the agent can REACH — its real connections, tools, and schedules.
+    const fromRoutines: Suggestion[] = (info?.schedules ?? [])
+      .filter((r) => match(r.name))
+      .map((r) => ({ id: `routine:${r.name}`, title: r.name, detail: r.cron, type: "Routine" }));
+    const fromConnections: Suggestion[] = (info?.connections ?? [])
+      .filter((c) => match(c.connectionName))
+      .map((c) => ({
+        id: `conn:${c.connectionName}`,
+        title: c.connectionName,
+        detail: c.description,
         type: "Plugin",
-        icon: pl.icon,
       }));
-    return [...fromRoutines, ...fromPlugins].slice(0, 8);
+    const fromTools: Suggestion[] = (info?.tools ?? [])
+      .filter((t) => t.origin !== "framework" && match(t.name))
+      .map((t) => ({ id: `tool:${t.name}`, title: t.name, detail: t.description, type: "Plugin" }));
+    return [...fromRoutines, ...fromConnections, ...fromTools].slice(0, 8);
   })();
 
   const applySuggestion = (s: Suggestion): void => {

@@ -70,7 +70,7 @@ export interface StudioApi {
   onActivity(
     handler: (payload: { streamId: string; label: string | null }) => void,
   ): () => void;
-  agentInfo(url: string): Promise<Record<string, unknown> | null>;
+  agentInfo(url: string): Promise<AgentInfo | null>;
 
   /** A remote agent wants to do something on this machine. */
   onLocalAsk(handler: (ask: LocalAsk) => void): () => void;
@@ -87,4 +87,33 @@ export interface StudioApi {
     action: LocalAction;
     value: LocalPermission;
   }): Promise<Record<LocalAction, LocalPermission>>;
+}
+
+/**
+ * What an agent reports about itself at `/eve/v1/info`.
+ *
+ * Shapes mirror eve's own schema. Everything is optional because this is a
+ * remote agent that may run a different eve version than we expect — a missing
+ * field must render as "not reported", never as an empty list that looks like a
+ * confident "you have none".
+ */
+export interface AgentInfo {
+  name?: string;
+  model?: string | { id?: string };
+  instructions?: { name: string; markdown: string }[];
+  skills?: { name: string; description?: string; markdown?: string }[];
+  tools?: {
+    name: string;
+    description?: string;
+    origin?: "authored" | "framework";
+    requiresApproval?: boolean;
+  }[];
+  connections?: { connectionName: string; description?: string; hasAuthorization?: boolean }[];
+  subagents?: {
+    name: string;
+    description?: string;
+    summary?: { tools?: number; skills?: number; connections?: number; schedules?: number };
+  }[];
+  channels?: { name: string; method?: string; urlPath?: string; origin?: string }[];
+  schedules?: { name: string; cron?: string; hasRun?: boolean; markdown?: string }[];
 }

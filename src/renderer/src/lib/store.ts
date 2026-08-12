@@ -1,12 +1,8 @@
 import { create } from "zustand";
+import type { AgentInfo } from "@shared/ipc";
 import type {
   Agent,
-  Skill,
   Block,
-  Channel,
-  Connection,
-  Plugin,
-  Routine,
   Section,
 } from "@shared/types";
 
@@ -162,139 +158,12 @@ const CONVERSATIONS: Record<string, Block[]> = {
   ],
 };
 
-const ROUTINES: Routine[] = [
-  {
-    id: "r1",
-    agentId: "sid",
-    name: "Morning inbox + calendar digest",
-    instruction:
-      "Weekday morning digest (Asia/Bangkok). Pull a tight skim of my inbox and calendar and send one short update in chat.\n\nInbox: look at recent unread threads from roughly the last 1–2 days. Surface only what likely needs me — real asks, decisions, and anything where someone is waiting on a reply. Skip newsletters and receipts.",
-    active: true,
-    schedules: ["On weekdays at 8:40 AM"],
-    runHistory: [
-      { at: mins(320), ok: true },
-      { at: mins(1760), ok: true },
-    ],
-  },
-  {
-    id: "r2",
-    agentId: "sid",
-    name: "Friday commitment sweep",
-    instruction:
-      "Every Friday afternoon, list every commitment I made this week that has not been closed out, and every thread where someone is still waiting on me.",
-    active: true,
-    schedules: ["On Fridays at 4:00 PM"],
-    runHistory: [{ at: mins(4000), ok: true }],
-  },
-];
-
-const PLUGINS: Plugin[] = [
-  { id: "gmail", name: "Gmail", description: "Search, read, draft, label, and manage mail.", category: "Featured", icon: "✉️", added: true },
-  { id: "gcal", name: "Google Calendar", description: "Read and manage events across your calendars.", category: "Featured", icon: "📅", added: true },
-  { id: "notion", name: "Notion", description: "Company boards, pages, and databases.", category: "Featured", icon: "📓", added: true },
-  { id: "slack", name: "Slack", description: "Search channels, send messages, follow threads.", category: "Featured", icon: "💬" },
-  { id: "drive", name: "Google Drive", description: "Find and read files across your Drive.", category: "Featured", icon: "🗂️" },
-  { id: "linear", name: "Linear", description: "Issues, projects, and cycles.", category: "Featured", icon: "▲" },
-  { id: "dispatch", name: "Agent Dispatch", description: "Let this agent talk to your other agents, governed by control-plane grants.", category: "Agent orchestration", icon: "🔗", added: true },
-  { id: "arcana", name: "Arcana Memory", description: "Durable long-term memory, scoped per workspace.", category: "Agent orchestration", icon: "🧠", added: true },
-  { id: "engineer", name: "Engineer", description: "A sandbox, a browser, and the ability to build and ship software.", category: "Agent orchestration", icon: "🛠️" },
-  { id: "posthog", name: "PostHog", description: "Product analytics and session insight.", category: "Agent orchestration", icon: "📊" },
-];
-
-const CHANNELS: Channel[] = [
-  {
-    id: "imessage",
-    kind: "imessage",
-    label: "iMessage",
-    description: "Text the agent from your phone.",
-    icon: "💬",
-    configured: true,
-    detail: "+1 628 264 9071 · via Photon",
-  },
-  {
-    id: "slack",
-    kind: "slack",
-    label: "Slack",
-    description: "Shared threads with per-speaker identity.",
-    icon: "🟣",
-    configured: false,
-    detail: "Needs a Slack app from your workspace admin",
-  },
-  {
-    id: "telegram",
-    kind: "telegram",
-    label: "Telegram",
-    description: "1:1 chat via a bot token.",
-    icon: "✈️",
-    configured: false,
-  },
-  {
-    id: "http",
-    kind: "http",
-    label: "Studio + HTTP",
-    description: "This app, and any governed HTTP client.",
-    icon: "🔐",
-    configured: true,
-    detail: "Control-plane identity · grant required",
-  },
-];
-
-const CONNECTIONS: Connection[] = [
-  {
-    id: "notion",
-    name: "Notion",
-    description: "Company boards, pages, and databases.",
-    icon: "📓",
-    toolCount: 14,
-    accounts: [
-      { id: "kyb", label: "kybernesis", connected: true },
-      { id: "personal", label: "personal", connected: false },
-    ],
-  },
-  {
-    id: "arcana",
-    name: "Arcana Memory",
-    description: "Durable memory, scoped per workspace.",
-    icon: "🧠",
-    toolCount: 8,
-    accounts: [{ id: "company", label: "sid-company", connected: true }],
-  },
-];
-
-const SKILLS: Skill[] = [
-  {
-    id: "add-connector",
-    name: "add-connector",
-    description: "Walk through connecting a new system, step by step.",
-  },
-  {
-    id: "learn-from-demonstration",
-    name: "learn-from-demonstration",
-    description: "Turn a screen recording into a repeatable routine.",
-  },
-  {
-    id: "daily-digest",
-    name: "daily-digest",
-    description: "Summarize what changed since yesterday across your systems.",
-  },
-  {
-    id: "draft-reply",
-    name: "draft-reply",
-    description: "Draft a reply in your voice and wait for approval before sending.",
-  },
-];
-
 export type PanelView = "none" | "overview" | "routine" | "settings" | "channels";
 
 interface State {
   agents: Agent[];
   sections: Section[];
   conversations: Record<string, Block[]>;
-  routines: Routine[];
-  plugins: Plugin[];
-  skills: Skill[];
-  channels: Channel[];
-  connections: Connection[];
 
   activeAgentId: string;
   query: string;
@@ -315,6 +184,12 @@ interface State {
   activity: Record<string, string | null>;
   /** Per-agent model id, read from the agent's own /eve/v1/info. */
   models: Record<string, string | undefined>;
+  /**
+   * What each agent reports about itself. Undefined means "not fetched yet";
+   * a present-but-empty section means the agent genuinely has none. The panels
+   * must not conflate those.
+   */
+  details: Record<string, AgentInfo | undefined>;
   /** Per-agent project folder on this machine, sent as context each turn. */
   workspaces: Record<string, string | undefined>;
   streaming: Record<string, string>;
@@ -328,11 +203,6 @@ interface State {
 
   send(agentId: string, text: string): void;
   patchAgent(id: string, patch: Partial<Agent>): void;
-  patchRoutine(id: string, patch: Partial<Routine>): void;
-  deleteRoutine(id: string): void;
-  addRoutine(agentId: string): void;
-  togglePlugin(id: string): void;
-  toggleChannel(id: string): void;
 
   bootstrap(): Promise<void>;
   refreshAgents(): Promise<void>;
@@ -347,11 +217,6 @@ export const useStore = create<State>((set, get) => ({
   agents: AGENTS,
   sections: SECTIONS,
   conversations: CONVERSATIONS,
-  routines: ROUTINES,
-  plugins: PLUGINS,
-  skills: SKILLS,
-  channels: CHANNELS,
-  connections: CONNECTIONS,
 
   activeAgentId: "sid",
   query: "",
@@ -369,6 +234,7 @@ export const useStore = create<State>((set, get) => ({
   streamIndexes: {},
   activity: {},
   models: {},
+  details: {},
   workspaces: {},
   streaming: {},
 
@@ -508,25 +374,6 @@ export const useStore = create<State>((set, get) => ({
 
   patchAgent: (id, patch) =>
     set((s) => ({ agents: s.agents.map((a) => (a.id === id ? { ...a, ...patch } : a)) })),
-  patchRoutine: (id, patch) =>
-    set((s) => ({ routines: s.routines.map((r) => (r.id === id ? { ...r, ...patch } : r)) })),
-  deleteRoutine: (id) =>
-    set((s) => ({
-      routines: s.routines.filter((r) => r.id !== id),
-      panel: "overview",
-      activeRoutineId: null,
-    })),
-  addRoutine: (agentId) => {
-    const id = `r${Date.now()}`;
-    set((s) => ({
-      routines: [
-        ...s.routines,
-        { id, agentId, name: "New routine", instruction: "", active: false, schedules: [], runHistory: [] },
-      ],
-      panel: "routine",
-      activeRoutineId: id,
-    }));
-  },
 
   setWorkspace: (agentId, path) => {
     set((s) => ({ workspaces: { ...s.workspaces, [agentId]: path ?? undefined } }));
@@ -634,15 +481,14 @@ export const useStore = create<State>((set, get) => ({
 
   loadAgentInfo: async (agentId) => {
     const agent = get().agents.find((a) => a.id === agentId);
-    if (!window.studio || !agent?.url || get().models[agentId]) return;
+    if (!window.studio || !agent?.url) return;
     const info = await window.studio.agentInfo(agent.url);
-    const model =
-      typeof info?.model === "string"
-        ? info.model
-        : typeof (info?.agent as Record<string, unknown> | undefined)?.model === "string"
-          ? ((info?.agent as Record<string, unknown>).model as string)
-          : undefined;
-    if (model) set((s) => ({ models: { ...s.models, [agentId]: model } }));
+    if (!info) return;
+    const model = typeof info.model === "string" ? info.model : info.model?.id;
+    set((s) => ({
+      details: { ...s.details, [agentId]: info },
+      models: model ? { ...s.models, [agentId]: model } : s.models,
+    }));
   },
 
   signIn: async (onCode) => {
@@ -669,11 +515,4 @@ export const useStore = create<State>((set, get) => ({
     await window.studio?.signOut();
     set({ authState: "signed-out", account: null, sessions: {} });
   },
-
-  togglePlugin: (id) =>
-    set((s) => ({ plugins: s.plugins.map((p) => (p.id === id ? { ...p, added: !p.added } : p)) })),
-  toggleChannel: (id) =>
-    set((s) => ({
-      channels: s.channels.map((c) => (c.id === id ? { ...c, configured: !c.configured } : c)),
-    })),
 }));

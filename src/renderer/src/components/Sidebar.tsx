@@ -48,7 +48,6 @@ function ContextMenu({
   return (
     <div className="menu" style={{ left: state.x, top }} onClick={(e) => e.stopPropagation()}>
       {item("pin", agent.pinned ? "Unpin" : "Pin", () => patchAgent(agent.id, { pinned: !agent.pinned }))}
-      {item("folderPlus", "Move to new section", () => undefined)}
       {item("bell", agent.unread ? "Mark as Read" : "Mark as Unread", () =>
         patchAgent(agent.id, { unread: !agent.unread }),
       )}
@@ -57,7 +56,6 @@ function ContextMenu({
         select(agent.id);
         setPanel("settings");
       })}
-      {item("copy", "Duplicate", () => undefined)}
       <div className="menu__sep" />
       {item("copy", "Copy conversation ID", () => {
         void navigator.clipboard.writeText(agent.id);
