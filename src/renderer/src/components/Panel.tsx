@@ -1,5 +1,14 @@
 import type { ReactNode } from "react";
 import { useState } from "react";
+import {
+  DEFAULT_SPEC,
+  FREQUENCIES,
+  type ScheduleSpec,
+  WEEKDAYS,
+  describeCron,
+  timeOptions,
+  toCron,
+} from "@/lib/schedule";
 import { useStore } from "@/lib/store";
 import { Avatar, Icon, Toggle } from "./primitives";
 
@@ -119,8 +128,8 @@ function NewRoutine(): ReactNode {
   const { activeAgentId, createSchedule, manageError } = useStore();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [cron, setCron] = useState("0 9 * * 1-5");
   const [instruction, setInstruction] = useState("");
+  const [spec, setSpec] = useState<ScheduleSpec>(DEFAULT_SPEC);
   const [busy, setBusy] = useState(false);
 
   if (!open) {
@@ -131,10 +140,18 @@ function NewRoutine(): ReactNode {
     );
   }
 
+  const cron = toCron(spec);
+  const set = (patch: Partial<ScheduleSpec>): void => setSpec({ ...spec, ...patch });
+  const needsTime = ["daily", "weekdays", "weekly", "monthly"].includes(spec.frequency);
+
   const submit = async (): Promise<void> => {
-    if (!name.trim() || !instruction.trim()) return;
+    if (!name.trim() || !instruction.trim() || !cron) return;
     setBusy(true);
-    const ok = await createSchedule(activeAgentId, { name: name.trim(), cron: cron.trim(), instruction: instruction.trim() });
+    const ok = await createSchedule(activeAgentId, {
+      name: name.trim(),
+      cron,
+      instruction: instruction.trim(),
+    });
     setBusy(false);
     if (ok) {
       setOpen(false);
@@ -147,26 +164,147 @@ function NewRoutine(): ReactNode {
     <div className="card" style={{ marginBottom: 10 }}>
       <div className="field" style={{ marginBottom: 10 }}>
         <div className="field__label">Name</div>
-        <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Morning digest" />
+        <input
+          className="input"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Morning digest"
+        />
       </div>
+
       <div className="field" style={{ marginBottom: 10 }}>
-        <div className="field__label">Cron</div>
-        <input className="input" value={cron} onChange={(e) => setCron(e.target.value)} />
+        <div className="field__label">What should it do each time it runs?</div>
+        <textarea
+          className="textarea"
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          placeholder="Skim my inbox and calendar and send me one short update."
+        />
       </div>
-      <div className="field" style={{ marginBottom: 10 }}>
-        <div className="field__label">What should it do?</div>
-        <textarea className="textarea" value={instruction} onChange={(e) => setInstruction(e.target.value)} />
+
+      <div className="field" style={{ marginBottom: 8 }}>
+        <div className="field__label">When to run</div>
+        <div className="sched">
+          <select
+            className="input sched__freq"
+            value={spec.frequency}
+            onChange={(e) => set({ frequency: e.target.value as ScheduleSpec["frequency"] })}
+          >
+            {FREQUENCIES.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+
+          {spec.frequency === "hourly" ? (
+            <select
+              className="input"
+              value={spec.minute}
+              onChange={(e) => set({ minute: Number(e.target.value) })}
+            >
+              {[0, 15, 30, 45].map((m) => (
+                <option key={m} value={m}>
+                  at :{String(m).padStart(2, "0")}
+                </option>
+              ))}
+            </select>
+          ) : null}
+
+          {spec.frequency === "weekly" ? (
+            <select
+              className="input"
+              value={spec.weekday}
+              onChange={(e) => set({ weekday: Number(e.target.value) })}
+            >
+              {WEEKDAYS.map((d, i) => (
+                <option key={d} value={i}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          ) : null}
+
+          {spec.frequency === "monthly" ? (
+            <select
+              className="input"
+              value={spec.day}
+              onChange={(e) => set({ day: Number(e.target.value) })}
+            >
+              {/* 28 days, so the routine exists in February too. */}
+              {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
+                <option key={d} value={d}>
+                  day {d}
+                </option>
+              ))}
+            </select>
+          ) : null}
+
+          {needsTime ? (
+            <select
+              className="input"
+              value={`${spec.hour}:${spec.minute}`}
+              onChange={(e) => {
+                const [h, m] = e.target.value.split(":");
+                set({ hour: Number(h), minute: Number(m) });
+              }}
+            >
+              {timeOptions().map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
+
+          {spec.frequency === "interval" ? (
+            <select
+              className="input"
+              value={spec.everyMinutes}
+              onChange={(e) => set({ everyMinutes: Number(e.target.value) })}
+            >
+              {[5, 10, 15, 30, 60, 120, 240, 360, 720].map((m) => (
+                <option key={m} value={m}>
+                  every {m < 60 ? `${m} minutes` : `${m / 60} hour${m === 60 ? "" : "s"}`}
+                </option>
+              ))}
+            </select>
+          ) : null}
+
+          {spec.frequency === "custom" ? (
+            <input
+              className="input"
+              value={spec.cron}
+              onChange={(e) => set({ cron: e.target.value })}
+              placeholder="0 9 * * 1-5"
+              style={{ fontFamily: "var(--font-mono)" }}
+            />
+          ) : null}
+        </div>
+
+        {/* Show what was built, in words and in cron. The sentence is what the
+            user is agreeing to; the expression is what lands in their repo, and
+            hiding it would make a reviewed file a surprise. */}
+        <div className="muted" style={{ marginTop: 7 }}>
+          {describeCron(cron)} <span style={{ fontFamily: "var(--font-mono)" }}>· {cron}</span>
+        </div>
       </div>
-      {manageError ? <div className="muted" style={{ color: "var(--danger)", marginBottom: 8 }}>{manageError}</div> : null}
+
+      {manageError ? (
+        <div className="muted" style={{ color: "var(--danger)", marginBottom: 8 }}>{manageError}</div>
+      ) : null}
+
       <div className="stack-row">
-        <button className="btn" onClick={() => setOpen(false)} disabled={busy}>Cancel</button>
+        <button className="btn" onClick={() => setOpen(false)} disabled={busy}>
+          Cancel
+        </button>
         <div style={{ flex: 1 }} />
         <button className="btn btn--primary" onClick={() => void submit()} disabled={busy}>
           {busy ? "Writing…" : "Create"}
         </button>
       </div>
       <div className="muted" style={{ marginTop: 8 }}>
-        Writes agent/schedules/&lt;name&gt;.ts in the agent's repo, rebuilds, and restarts it.
+        Writes agent/schedules/&lt;name&gt;.ts in the agent&apos;s repo, rebuilds, and restarts it.
       </div>
     </div>
   );
@@ -210,7 +348,7 @@ function Overview(): ReactNode {
                 key={s.name}
                 icon={<Icon name="clock" size={14} />}
                 title={s.name}
-                detail={`${s.cron ?? "no cron"}${s.hasRun ? "" : " · never run"}`}
+                detail={`${describeCron(s.cron)}${s.hasRun ? "" : " · never run"}`}
                 onClick={() => openRoutine(s.name)}
               />
             ))
@@ -274,8 +412,11 @@ function RoutineView(): ReactNode {
         </div>
         <div className="field">
           <div className="field__label">When it runs</div>
-          <div className="card" style={{ fontFamily: "var(--font-mono)", fontSize: 12.5 }}>
-            {schedule.cron ?? "—"}
+          <div className="card">
+            {describeCron(schedule.cron)}
+            <div className="muted" style={{ fontFamily: "var(--font-mono)", marginTop: 4 }}>
+              {schedule.cron ?? "—"}
+            </div>
           </div>
         </div>
         {schedule.markdown ? (
