@@ -260,11 +260,26 @@ async function describeFailure(res: Response, base: string): Promise<Error> {
   const isHtml = /^\s*<(!doctype|html)/i.test(body);
   const snippet = body.replace(/\s+/g, " ").slice(0, 220);
 
+  // An HTML body means something other than eve answered — but WHAT depends
+  // entirely on the status. Blaming Vercel SSO for a 503 is wrong on a host
+  // that has nothing to do with Vercel, and it sends the user hunting through
+  // deployment settings while their agent is simply restarting.
+  if (isHtml && (res.status === 401 || res.status === 403)) {
+    return new Error(
+      `${base} answered ${res.status} with a sign-in page rather than the eve API — deployment ` +
+        `protection (such as Vercel SSO) is in front of it, so Studio's token never reached the agent.`,
+    );
+  }
+  if (isHtml && res.status >= 500) {
+    return new Error(
+      `${base} is not answering right now (${res.status}). The agent is usually restarting — ` +
+        `applying a new routine or capability does that — so this normally clears in a few seconds.`,
+    );
+  }
   if (isHtml) {
     return new Error(
-      `${base} answered ${res.status} with a web page, not the eve API. That is almost always ` +
-        `deployment protection (Vercel SSO) or a URL pointing at a site rather than the agent. ` +
-        `Studio's token never reached eve.`,
+      `${base} answered ${res.status} with a web page, not the eve API. The registered URL may ` +
+        `point at a site rather than at the agent.`,
     );
   }
 
@@ -456,7 +471,24 @@ export async function sendTurn(input: {
     ? `${base}/eve/v1/session/${encodeURIComponent(input.sessionId)}`
     : `${base}/eve/v1/session`;
 
-  const started = await fetch(startUrl, {
+  /**
+   * Applying a routine or a plugin restarts the agent, which lands as a 502/503
+   * on whatever turn happens to be in flight — including the very turn that
+   * asked for the change. Retry briefly instead of reporting a failure for
+   * something that succeeded.
+   */
+  const postTurn = async (): Promise<Response> => {
+    let last: Response | null = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const res = await fetch(startUrl, buildInit());
+      if (res.status !== 502 && res.status !== 503 && res.status !== 504) return res;
+      last = res;
+      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+    }
+    return last as Response;
+  };
+
+  const buildInit = (): RequestInit => ({
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -469,6 +501,7 @@ export async function sendTurn(input: {
     signal: AbortSignal.timeout(30_000),
   });
 
+  const started = await postTurn();
   if (!started.ok) throw await describeFailure(started, base);
 
   const startBody = (await started.json().catch(() => ({}))) as Record<string, unknown>;
