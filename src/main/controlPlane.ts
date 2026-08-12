@@ -255,6 +255,33 @@ export async function listAgents(): Promise<RemoteAgent[]> {
  * telling someone to re-authenticate when the deployment is gated wastes their
  * afternoon.
  */
+/**
+ * The agent could not fetch the control plane's signing keys, so it never got
+ * to judge the token at all. It reports that with a 401 like any other refusal,
+ * but the meaning is the opposite: nothing is wrong with the user's session.
+ */
+const UNVERIFIABLE = "verification_unavailable";
+
+/**
+ * Whether a failed POST is worth trying again rather than reporting.
+ *
+ * The agent restarts whenever a routine or plugin is applied, including on the
+ * very turn that asked for it, and a restart lands as a 502/503 on whatever is
+ * in flight. A 401 is normally final — but not the one an agent returns when it
+ * could not reach the control plane to check the token, which is an outage on
+ * its side and clears on its own.
+ */
+async function isTransient(res: Response): Promise<boolean> {
+  if (res.status === 502 || res.status === 503 || res.status === 504) return true;
+  if (res.status !== 401) return false;
+  // clone(), so describeFailure can still read the body if the retries fail.
+  const peek = await res
+    .clone()
+    .text()
+    .catch(() => "");
+  return peek.includes(UNVERIFIABLE);
+}
+
 async function describeFailure(res: Response, base: string): Promise<Error> {
   const body = await res.text().catch(() => "");
   const isHtml = /^\s*<(!doctype|html)/i.test(body);
@@ -285,6 +312,17 @@ async function describeFailure(res: Response, base: string): Promise<Error> {
 
   switch (res.status) {
     case 401:
+      // Told apart deliberately: one of these is about the user's sign-in and
+      // the other is about the agent's network. Sending someone to check their
+      // issuer config when their credentials were never even read is the kind
+      // of message that costs an hour.
+      if (body.includes(UNVERIFIABLE)) {
+        return new Error(
+          `${base} could not reach the Kybernesis control plane to check your sign-in, so it kept ` +
+            `refusing the turn. Your session is fine — this clears once the agent can reach the ` +
+            `control plane again.`,
+        );
+      }
       return new Error(
         `The agent refused Studio's identity token (401). Check that its KYBERNESIS_ISSUER matches ` +
           `the control plane you signed in to, and that it can fetch that issuer's JWKS. ${snippet}`,
@@ -490,7 +528,7 @@ export async function sendTurn(input: {
     let last: Response | null = null;
     for (let attempt = 0; attempt < 5; attempt++) {
       const res = await fetch(startUrl, buildInit());
-      if (res.status !== 502 && res.status !== 503 && res.status !== 504) return res;
+      if (!(await isTransient(res))) return res;
       last = res;
       await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
     }
