@@ -84,6 +84,7 @@ interface State {
   loadCatalog(agentId: string): Promise<void>;
   install(agentId: string, item: string): Promise<void>;
   createSchedule(agentId: string, input: { name: string; cron: string; instruction: string }): Promise<boolean>;
+  deleteSchedule(agentId: string, name: string): Promise<boolean>;
   setWorkspace(agentId: string, path: string | null): void;
   chooseWorkspace(agentId: string): Promise<void>;
   signIn(onCode: (code: string) => void): Promise<boolean>;
@@ -328,6 +329,26 @@ export const useStore = create<State>((set, get) => ({
       set({ manageError: data.error ?? `Could not create the routine (${res.status}).` });
       return false;
     }
+    await new Promise((r) => setTimeout(r, 6000));
+    await get().loadAgentInfo(agentId);
+    return true;
+  },
+
+  deleteSchedule: async (agentId, name) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (!window.studio || !agent?.url) return false;
+    set({ manageError: null });
+    const res = await window.studio.manage({
+      url: agent.url,
+      path: "/schedule/delete",
+      body: { name },
+    });
+    const data = (res.data ?? {}) as { ok?: boolean; error?: string };
+    if (!res.ok || !data.ok) {
+      set({ manageError: data.error ?? `Could not remove the routine (${res.status}).` });
+      return false;
+    }
+    // The agent restarts after a schedule change; wait before asking again.
     await new Promise((r) => setTimeout(r, 6000));
     await get().loadAgentInfo(agentId);
     return true;

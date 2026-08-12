@@ -148,6 +148,78 @@ export async function pollDeviceAuth(start: DeviceStart): Promise<Session> {
   throw new Error("Sign-in timed out. Start again and approve the code in your browser.");
 }
 
+/**
+ * Keep the session alive without asking the user to sign in again.
+ *
+ * Identity tokens last an hour by design — that is the revocation SLA, not an
+ * inconvenience to work around by issuing longer ones. The control plane mints a
+ * refresh token alongside, and re-checks the user is still active on every
+ * refresh, so a suspended user drops out within one interval. Studio simply
+ * never used it, which is why an hour of work ended at a sign-in screen.
+ */
+let refreshing: Promise<Session | null> | null = null;
+
+async function refreshSession(): Promise<Session | null> {
+  const current = session ?? loadSession();
+  if (!current?.refreshToken) return null;
+
+  // One refresh at a time: a stream, a poll, and a turn can all notice the
+  // expiry at once, and three parallel refreshes rotate the token out from
+  // under each other.
+  if (refreshing) return refreshing;
+
+  refreshing = (async () => {
+    try {
+      const res = await fetch(`${ISSUER}/api/oauth/refresh`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ refresh_token: current.refreshToken }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) {
+        // 401 means the refresh token itself is done; 403 means the user was
+        // suspended. Both are real sign-outs, not retryable.
+        if (res.status === 401 || res.status === 403) signOut();
+        return null;
+      }
+      const body = (await res.json()) as Record<string, unknown>;
+      if (typeof body.token !== "string") return null;
+      const claims = readClaims(body.token);
+      const next: Session = {
+        token: body.token,
+        bundle: typeof body.bundle === "string" ? body.bundle : undefined,
+        refreshToken:
+          typeof body.refresh_token === "string" ? body.refresh_token : current.refreshToken,
+        expiresAt: claims.exp ? claims.exp * 1000 : Date.now() + 3_600_000,
+        email: claims.email ?? current.email,
+        orgName: claims.org_name ?? current.orgName,
+      };
+      saveSession(next);
+      return next;
+    } catch {
+      return null;
+    } finally {
+      refreshing = null;
+    }
+  })();
+
+  return refreshing;
+}
+
+/**
+ * The session to use right now, refreshed if it is close to expiring.
+ *
+ * Every outbound call goes through this rather than reading the stored session
+ * directly, so expiry is handled in one place instead of surfacing as a 401 in
+ * whichever feature happened to be in use.
+ */
+export async function activeSession(): Promise<Session | null> {
+  const current = loadSession();
+  if (current && current.expiresAt > Date.now() + 120_000) return current;
+  const refreshed = await refreshSession();
+  return refreshed ?? current;
+}
+
 export function signOut(): void {
   saveSession(null);
   session = null;
@@ -160,7 +232,7 @@ export function signOut(): void {
 }
 
 export async function listAgents(): Promise<RemoteAgent[]> {
-  const s = loadSession();
+  const s = await activeSession();
   if (!s) throw new Error("Not signed in.");
   const res = await fetch(`${ISSUER}/api/me/agents`, {
     headers: { authorization: `Bearer ${s.token}` },
@@ -305,7 +377,7 @@ function activityLabel(
 
 /** What the agent reports about itself — model, name, description. */
 export async function agentInfo(url: string): Promise<Record<string, unknown> | null> {
-  const s = loadSession();
+  const s = await activeSession();
   if (!s?.bundle) return null;
   try {
     const res = await fetch(`${url.replace(/\/$/, "")}/eve/v1/info`, {
@@ -347,7 +419,7 @@ export async function sendTurn(input: {
   continuationToken?: string;
   streamIndex: number;
 }> {
-  const s = loadSession();
+  const s = await activeSession();
   if (!s) throw new Error("Not signed in.");
   const base = input.url.replace(/\/$/, "");
   if (!s.bundle) {
@@ -397,105 +469,134 @@ export async function sendTurn(input: {
   // optimization — without it a follow-up is silently answered with old words.
   const startIndex = input.sessionId === sessionId ? (input.streamIndex ?? 0) : 0;
   let consumed = startIndex;
-  const streamUrl = new URL(`${base}/eve/v1/session/${encodeURIComponent(sessionId)}/stream`);
-  if (startIndex > 0) streamUrl.searchParams.set("startIndex", String(startIndex));
-
-  const stream = await fetch(streamUrl, {
-    headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
-    signal: AbortSignal.timeout(300_000),
-  });
-  if (!stream.ok) throw await describeFailure(stream, base);
-  if (!stream.body) throw new Error("The agent opened no event stream for this turn.");
-
-  const reader = stream.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
   let reply = "";
   let done = false;
-  // A turn ends with turn.completed AND THEN session.waiting. Breaking on the
-  // first of those leaves the second unconsumed, so the NEXT turn opens its
-  // stream on a stale boundary and ends before the agent has said anything —
-  // an empty reply with no error. Only honour a boundary once this turn has
-  // actually started, and treat leading stale boundaries as cursor advance.
   let turnStarted = false;
-  // Tool names arrive on actions.requested; action.result carries only a callId,
-  // so remember the last one to keep the line specific while the tool runs.
   const memo: { lastTool: string | null } = { lastTool: null };
   let sawSpecific = false;
 
+  /**
+   * An event stream can end without the turn being over: the agent restarts,
+   * a proxy times out an idle connection, the network blips. Undici surfaces
+   * that as a bare "terminated", which is both alarming and useless — the turn
+   * is usually still running on the agent, and the cursor tells us exactly
+   * where to pick it up. So reconnect and continue rather than reporting a
+   * failure for work that is still happening.
+   */
+  const MAX_RECONNECTS = 6;
+  let reconnects = 0;
+
   while (!done) {
-    const { value, done: finished } = await reader.read();
-    if (finished) break;
-    buffer += decoder.decode(value, { stream: true });
+    const streamUrl = new URL(`${base}/eve/v1/session/${encodeURIComponent(sessionId)}/stream`);
+    if (consumed > 0) streamUrl.searchParams.set("startIndex", String(consumed));
 
-    // NDJSON: complete lines only; a partial line stays in the buffer.
-    let newline = buffer.indexOf("\n");
-    while (newline !== -1) {
-      const line = buffer.slice(0, newline).trim();
-      buffer = buffer.slice(newline + 1);
-      newline = buffer.indexOf("\n");
-      if (!line) continue;
-
-      let event: Record<string, unknown>;
-      try {
-        event = JSON.parse(line) as Record<string, unknown>;
-      } catch {
-        continue;
+    let stream: Response;
+    try {
+      stream = await fetch(streamUrl, {
+        headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
+        signal: AbortSignal.timeout(300_000),
+      });
+    } catch (e) {
+      if (reconnects++ >= MAX_RECONNECTS) {
+        throw new Error(
+          `Lost the connection to ${base} while the agent was working, and could not pick it back up. The turn may still have completed — check the conversation after a moment.`,
+        );
       }
-      // Every parsed event advances the cursor, including ones we ignore —
-      // startIndex counts stream position, not messages.
-      consumed += 1;
+      await new Promise((r) => setTimeout(r, 800 * reconnects));
+      continue;
+    }
 
-      const type = String(event.type ?? "");
-      const data = (event.data ?? {}) as Record<string, unknown>;
+    if (!stream.ok) throw await describeFailure(stream, base);
+    if (!stream.body) throw new Error("The agent opened no event stream for this turn.");
 
-      // Set KYBER_STUDIO_DEBUG_STREAM=1 to see exactly what the agent emits.
-      // Guessing at an event vocabulary is how the activity line ends up lying.
-      if (process.env.KYBER_STUDIO_DEBUG_STREAM) {
-        console.log(`[stream] ${type} ${JSON.stringify(data).slice(0, 220)}`);
-      }
-      const next = activityLabel(type, data, memo);
-      if (next) {
-        // A generic milestone never replaces something specific we already
-        // showed this turn; a specific one always wins.
-        if (next.specific) {
-          sawSpecific = true;
-          input.onActivity(next.label);
-        } else if (!sawSpecific) {
-          input.onActivity(next.label);
+    const reader = stream.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let clean = false;
+
+    try {
+      while (!done) {
+        const { value, done: finished } = await reader.read();
+        if (finished) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let newline = buffer.indexOf("\n");
+        while (newline !== -1) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          newline = buffer.indexOf("\n");
+          if (!line) continue;
+
+          let event: Record<string, unknown>;
+          try {
+            event = JSON.parse(line) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          consumed += 1;
+
+          const type = String(event.type ?? "");
+          const data = (event.data ?? {}) as Record<string, unknown>;
+
+          if (process.env.KYBER_STUDIO_DEBUG_STREAM) {
+            console.log(`[stream] ${type} ${JSON.stringify(data).slice(0, 220)}`);
+          }
+
+          const nextLabel = activityLabel(type, data, memo);
+          if (nextLabel) {
+            if (nextLabel.specific) {
+              sawSpecific = true;
+              input.onActivity(nextLabel.label);
+            } else if (!sawSpecific) {
+              input.onActivity(nextLabel.label);
+            }
+          }
+
+          if (type === "turn.started") {
+            turnStarted = true;
+          } else if (type === "message.appended" && typeof data.messageDelta === "string") {
+            turnStarted = true;
+            sawSpecific = false;
+            memo.lastTool = null;
+            input.onActivity(null);
+            reply += data.messageDelta;
+            input.onDelta(data.messageDelta);
+          } else if (type === "message.completed" && typeof data.text === "string" && !reply) {
+            reply = data.text;
+            input.onDelta(data.text);
+          } else if (type === "turn.failed" || type === "session.failed") {
+            const message = typeof data.message === "string" ? data.message : "the turn failed";
+            throw new Error(`Agent error: ${message}`);
+          } else if (
+            type === "turn.completed" ||
+            type === "session.waiting" ||
+            type === "turn.cancelled"
+          ) {
+            if (!turnStarted && !reply) continue;
+            done = true;
+            clean = true;
+            break;
+          }
         }
       }
-
-      if (type === "turn.started") {
-        turnStarted = true;
-      } else if (type === "message.appended" && typeof data.messageDelta === "string") {
-        turnStarted = true;
-        // The answer is arriving; the status line has served its purpose.
-        sawSpecific = false;
-        memo.lastTool = null;
-        input.onActivity(null);
-        reply += data.messageDelta;
-        input.onDelta(data.messageDelta);
-      } else if (type === "message.completed" && typeof data.text === "string" && !reply) {
-        // Some turns emit only a completed message with no deltas.
-        reply = data.text;
-        input.onDelta(data.text);
-      } else if (type === "turn.failed" || type === "session.failed") {
-        const message = typeof data.message === "string" ? data.message : "the turn failed";
-        throw new Error(`Agent error: ${message}`);
-      } else if (
-        type === "turn.completed" ||
-        type === "session.waiting" ||
-        type === "turn.cancelled"
-      ) {
-        // Stale boundary from the previous turn: consume it and keep reading.
-        if (!turnStarted && !reply) continue;
-        done = true;
-        break;
+    } catch (e) {
+      // A read that dies mid-turn is a disconnect, not an agent failure — unless
+      // the agent itself told us it failed, which is thrown above and must not
+      // be retried into silence.
+      if (e instanceof Error && e.message.startsWith("Agent error:")) throw e;
+      if (reconnects++ >= MAX_RECONNECTS) {
+        throw new Error(
+          `The connection to ${base} kept dropping mid-turn (${e instanceof Error ? e.message : String(e)}).`,
+        );
       }
+    } finally {
+      await reader.cancel().catch(() => undefined);
     }
+
+    if (clean) break;
+    // The stream ended without a boundary: the turn is probably still running.
+    if (!done) await new Promise((r) => setTimeout(r, 500));
   }
-  await reader.cancel().catch(() => undefined);
 
   return { reply: reply.trim(), sessionId, continuationToken, streamIndex: consumed };
 }
@@ -517,7 +618,7 @@ export async function manageCall(input: {
   path: string;
   body?: unknown;
 }): Promise<{ ok: boolean; status: number; data: unknown }> {
-  const s = loadSession();
+  const s = await activeSession();
   if (!s?.bundle) {
     return { ok: false, status: 401, data: { error: "Not signed in." } };
   }

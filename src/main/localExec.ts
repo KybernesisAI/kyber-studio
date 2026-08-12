@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { hostname, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { app, type WebContents } from "electron";
-import { ISSUER, currentSession, deviceId } from "./controlPlane";
+import { ISSUER, activeSession, currentSession, deviceId } from "./controlPlane";
 
 /**
  * Local execution: the desktop half.
@@ -411,7 +411,7 @@ export function setLocalExecWindow(contents: WebContents): void {
 }
 
 async function post(path: string, body: unknown): Promise<Response | null> {
-  const s = currentSession();
+  const s = await activeSession();
   if (!s) return null;
   try {
     return await fetch(`${ISSUER}${path}`, {
@@ -439,7 +439,7 @@ export function startLocalExec(): void {
 
   const heartbeat = async (): Promise<void> => {
     while (running) {
-      if (currentSession()) {
+      if (await activeSession()) {
         const hello = await post("/api/local-exec/hello", {
           deviceId: id,
           label: hostname().replace(/\.local$/, ""),
@@ -453,7 +453,7 @@ export function startLocalExec(): void {
 
   const poll = async (): Promise<void> => {
     while (running) {
-      const s = currentSession();
+      const s = await activeSession();
       if (!s) {
         await new Promise((r) => setTimeout(r, 3_000));
         continue;

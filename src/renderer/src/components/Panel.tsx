@@ -396,11 +396,21 @@ function Overview(): ReactNode {
   );
 }
 
-/** A schedule, as the agent reports it. Read-only — eve exposes no way to edit. */
+/** A routine, with what it does and a way to stop it. */
 function RoutineView(): ReactNode {
-  const { details, activeAgentId, activeRoutineId, setPanel } = useStore();
+  const { details, activeAgentId, activeRoutineId, setPanel, deleteSchedule, manageError } =
+    useStore();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
   const schedule = (details[activeAgentId]?.schedules ?? []).find((s) => s.name === activeRoutineId);
   if (!schedule) return null;
+
+  const remove = async (): Promise<void> => {
+    setBusy(true);
+    const ok = await deleteSchedule(activeAgentId, schedule.name);
+    setBusy(false);
+    if (ok) setPanel("overview");
+  };
 
   return (
     <>
@@ -410,6 +420,28 @@ function RoutineView(): ReactNode {
           <div className="field__label">Name</div>
           <div className="card">{schedule.name}</div>
         </div>
+
+        <div className="field">
+          <div className="field__label">What it does</div>
+          <div className="card" style={{ whiteSpace: "pre-wrap" }}>
+            {schedule.markdown?.trim() ? (
+              schedule.markdown
+            ) : (
+              // Distinguish 'no instruction' from 'eve did not report one'.
+              // Schedules authored as source may keep their prompt in a form the
+              // info route does not surface, and saying nothing at all reads as
+              // an empty routine.
+              <span className="muted">
+                The agent does not report an instruction for this routine. It is defined in{" "}
+                <span style={{ fontFamily: "var(--font-mono)" }}>
+                  agent/schedules/{schedule.name}.ts
+                </span>
+                .
+              </span>
+            )}
+          </div>
+        </div>
+
         <div className="field">
           <div className="field__label">When it runs</div>
           <div className="card">
@@ -419,19 +451,45 @@ function RoutineView(): ReactNode {
             </div>
           </div>
         </div>
-        {schedule.markdown ? (
-          <div className="field">
-            <div className="field__label">Instruction</div>
-            <div className="card" style={{ whiteSpace: "pre-wrap" }}>{schedule.markdown}</div>
-          </div>
-        ) : null}
+
         <div className="field">
           <div className="field__label">Status</div>
           <div className="card">{schedule.hasRun ? "Has run before" : "Has never run"}</div>
         </div>
-        <div className="muted">
-          Read-only. Schedules are defined in the agent's own repository — eve exposes them here but
-          offers no way to change them from a client.
+
+        {manageError ? (
+          <div className="muted" style={{ color: "var(--danger)", marginBottom: 10 }}>{manageError}</div>
+        ) : null}
+
+        {confirming ? (
+          <div className="card">
+            <div style={{ marginBottom: 10 }}>
+              Remove this routine? The file is kept as{" "}
+              <span style={{ fontFamily: "var(--font-mono)" }}>
+                {schedule.name}.ts.disabled
+              </span>{" "}
+              so it can be restored.
+            </div>
+            <div className="stack-row">
+              <button className="btn" onClick={() => setConfirming(false)} disabled={busy}>
+                Cancel
+              </button>
+              <div style={{ flex: 1 }} />
+              <button className="btn btn--primary" onClick={() => void remove()} disabled={busy}>
+                {busy ? "Removing…" : "Remove routine"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button className="btn" style={{ width: "100%" }} onClick={() => setConfirming(true)}>
+            Remove routine
+          </button>
+        )}
+
+        <div className="muted" style={{ marginTop: 12 }}>
+          Editing happens where the routine lives — ask the agent to change it, or edit{" "}
+          <span style={{ fontFamily: "var(--font-mono)" }}>agent/schedules/{schedule.name}.ts</span>{" "}
+          in its repository.
         </div>
       </div>
     </>
