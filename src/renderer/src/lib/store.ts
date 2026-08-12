@@ -16,6 +16,98 @@ import type {
  * client is a change of source, not of shape.
  */
 
+/**
+ * Stream listeners are registered ONCE, not per turn.
+ *
+ * Subscribing inside send() and unsubscribing in its finally() looks tidy and
+ * is a race: IPC delivery to the renderer is asynchronous, so a message emitted
+ * just before the turn resolved can arrive just after the listener is removed.
+ * That is exactly how a question the agent asked — dispatched to a live window,
+ * confirmed in the logs — vanished before anything rendered it, intermittently,
+ * which is the worst way for it to fail.
+ *
+ * Instead each stream registers its owning agent here, and the listeners route
+ * by that. Nothing is torn down mid-flight because nothing is scoped to a turn.
+ */
+const streamOwners = new Map<string, string>();
+let listenersReady = false;
+
+function ensureListeners(
+  get: () => State,
+  set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
+): void {
+  if (listenersReady || !window.studio) return;
+  listenersReady = true;
+
+  window.studio.onDelta(({ streamId, text }) => {
+    const agentId = streamOwners.get(streamId);
+    if (!agentId) return;
+    const next = (get().streaming[streamId] ?? "") + text;
+    set((s) => ({ streaming: { ...s.streaming, [streamId]: next } }));
+    upsertBlock(get, set, agentId, `a${streamId.slice(1)}`, next);
+  });
+
+  window.studio.onActivity(({ streamId, label }) => {
+    const agentId = streamOwners.get(streamId);
+    if (!agentId) return;
+    set((s) => ({ activity: { ...s.activity, [agentId]: label } }));
+  });
+
+  window.studio.onQuestion(({ streamId, request }) => {
+    const agentId = streamOwners.get(streamId);
+    if (!agentId) return;
+    const id = `q${request.requestId}`;
+    set((s) => {
+      const conv = s.conversations[agentId] ?? [];
+      // A resumed turn can re-emit a request it already asked; keep one card.
+      if (conv.some((b) => b.id === id)) return {};
+      return {
+        conversations: {
+          ...s.conversations,
+          [agentId]: [
+            ...conv,
+            {
+              kind: "question",
+              id,
+              at: Date.now(),
+              requestId: request.requestId,
+              prompt: request.prompt,
+              options: request.options,
+              allowFreeform: request.allowFreeform,
+            },
+          ],
+        },
+      };
+    });
+    get().persist();
+  });
+}
+
+/** Append the agent's reply block, or update it as more text arrives. */
+function upsertBlock(
+  get: () => State,
+  set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
+  agentId: string,
+  id: string,
+  body: string,
+): void {
+  set((s) => {
+    const conv = s.conversations[agentId] ?? [];
+    const exists = conv.some((b) => b.id === id);
+    return {
+      conversations: {
+        ...s.conversations,
+        [agentId]: exists
+          ? conv.map((b) => (b.id === id && b.kind === "text" ? { ...b, text: body } : b))
+          : [...conv, { kind: "text", id, role: "agent", at: Date.now(), text: body }],
+      },
+      agents: s.agents.map((a) =>
+        a.id === agentId ? { ...a, lastMessageAt: Date.now(), lastMessagePreview: body } : a,
+      ),
+    };
+  });
+}
+
 export type PanelView = "none" | "overview" | "routine" | "settings" | "channels";
 
 interface State {
@@ -195,52 +287,16 @@ export const useStore = create<State>((set, get) => ({
     const streamId = `s${at}`;
     const bubbleId = `a${at}`;
     set((s) => ({ streaming: { ...s.streaming, [streamId]: "" } }));
-
-    const stopQuestions = window.studio.onQuestion((payload) => {
-      if (payload.streamId !== streamId) return;
-      // The agent is waiting on a person. Render it as its own block so the
-      // question survives in the transcript with the answer beside it.
-      set((s) => ({
-        conversations: {
-          ...s.conversations,
-          [agentId]: [
-            ...(s.conversations[agentId] ?? []),
-            {
-              kind: "question",
-              id: `q${payload.request.requestId}`,
-              at: Date.now(),
-              requestId: payload.request.requestId,
-              prompt: payload.request.prompt,
-              options: payload.request.options,
-              allowFreeform: payload.request.allowFreeform,
-            },
-          ],
-        },
-      }));
-      get().persist();
-    });
-
-    const stopActivity = window.studio.onActivity((payload) => {
-      if (payload.streamId !== streamId) return;
-      set((s) => ({ activity: { ...s.activity, [agentId]: payload.label } }));
-    });
-
-    const unsubscribe = window.studio.onDelta((payload) => {
-      if (payload.streamId !== streamId) return;
-      const next = (get().streaming[streamId] ?? "") + payload.text;
-      set((s) => ({ streaming: { ...s.streaming, [streamId]: next } }));
-      upsert(bubbleId, next);
-    });
+    ensureListeners(get, set);
+    streamOwners.set(streamId, agentId);
 
     void window.studio
       .send({
         url: agent.url,
         text,
-        // A working folder, not a fence. Permission to touch this machine is
-        // granted once, per effect, on the consent card — exactly as a person
-        // gives a colleague access to their laptop rather than to one directory.
-        // This only says where to start; the agent may still work elsewhere when
-        // asked, and its absence does not mean local access is off.
+        sessionId: get().sessions[agentId],
+        continuationToken: get().continuations[agentId],
+        streamIndex: get().streamIndexes[agentId],
         clientContext: get().workspaces[agentId]
           ? {
               workingFolder: get().workspaces[agentId],
@@ -256,28 +312,25 @@ export const useStore = create<State>((set, get) => ({
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
         }));
         if (res.reply) {
-          upsert(bubbleId, res.reply);
+          upsertBlock(get, set, agentId, bubbleId, res.reply);
         } else if (!res.askedQuestion) {
-          // Only when the turn produced neither words nor a question. The agent
-          // reports which it was, so this is not inferred from a pushed event
-          // that races the response.
-          upsert(bubbleId, "(the agent returned no text for this turn)");
+          upsertBlock(get, set, agentId, bubbleId, "(the agent returned no text for this turn)");
         }
       })
-      // Report what actually failed. A generic message here is how an expired
-      // grant gets mistaken for a broken agent.
-      .catch((e: unknown) => upsert(bubbleId, e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) =>
+        upsertBlock(get, set, agentId, bubbleId, e instanceof Error ? e.message : String(e)),
+      )
       .finally(() => {
-        unsubscribe();
-        stopActivity();
-        stopQuestions();
-        get().persist();
         set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
         set((s) => {
           const rest = { ...s.streaming };
           delete rest[streamId];
           return { streaming: rest };
         });
+        // Keep the owner mapping briefly: a late event that arrives after the
+        // response is exactly what this whole change is about.
+        setTimeout(() => streamOwners.delete(streamId), 30_000);
+        get().persist();
       });
   },
 
@@ -307,37 +360,13 @@ export const useStore = create<State>((set, get) => ({
     const at = Date.now();
     const streamId = `s${at}`;
     const bubbleId = `a${at}`;
-
-    const upsert = (id: string, body: string): void => {
-      set((s) => {
-        const conv = s.conversations[agentId] ?? [];
-        const exists = conv.some((b) => b.id === id);
-        return {
-          conversations: {
-            ...s.conversations,
-            [agentId]: exists
-              ? conv.map((b) => (b.id === id && b.kind === "text" ? { ...b, text: body } : b))
-              : [...conv, { kind: "text", id, role: "agent", at: Date.now(), text: body }],
-          },
-        };
-      });
-    };
-
-    const stopDelta = window.studio.onDelta((p) => {
-      if (p.streamId !== streamId) return;
-      const next = (get().streaming[streamId] ?? "") + p.text;
-      set((s) => ({ streaming: { ...s.streaming, [streamId]: next } }));
-      upsert(bubbleId, next);
-    });
-    const stopActivity = window.studio.onActivity((p) => {
-      if (p.streamId !== streamId) return;
-      set((s) => ({ activity: { ...s.activity, [agentId]: p.label } }));
-    });
+    ensureListeners(get, set);
+    streamOwners.set(streamId, agentId);
 
     void window.studio
       .send({
         url: agent.url,
-        // No new message: this turn is resuming on the answer alone.
+        // No new message: this turn resumes on the answer alone.
         text: "",
         sessionId: get().sessions[agentId],
         continuationToken: get().continuations[agentId],
@@ -353,14 +382,17 @@ export const useStore = create<State>((set, get) => ({
           continuations: { ...s.continuations, [agentId]: res.continuationToken },
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
         }));
-        if (res.reply) upsert(bubbleId, res.reply);
-        else if (!res.askedQuestion) upsert(bubbleId, "(the agent returned no text for this turn)");
+        if (res.reply) upsertBlock(get, set, agentId, bubbleId, res.reply);
+        else if (!res.askedQuestion) {
+          upsertBlock(get, set, agentId, bubbleId, "(the agent returned no text for this turn)");
+        }
       })
-      .catch((e: unknown) => upsert(bubbleId, e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) =>
+        upsertBlock(get, set, agentId, bubbleId, e instanceof Error ? e.message : String(e)),
+      )
       .finally(() => {
-        stopDelta();
-        stopActivity();
         set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
+        setTimeout(() => streamOwners.delete(streamId), 30_000);
         get().persist();
       });
   },

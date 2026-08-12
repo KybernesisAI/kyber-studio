@@ -107,6 +107,11 @@ export function registerIpc(): void {
           }
         },
         onQuestion: (request) => {
+          // Logged because a question that never reaches the window is
+          // indistinguishable from an agent that said nothing.
+          console.log(
+            `[question→ui] ${request.requestId} destroyed=${sender.isDestroyed()} stream=${input.streamId}`,
+          );
           if (!sender.isDestroyed()) {
             sender.send("studio:question", { streamId: input.streamId, request });
           }
