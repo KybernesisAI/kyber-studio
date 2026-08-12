@@ -58,7 +58,19 @@ export type Block =
       icon?: string;
       accounts: { id: string; label: string; connected: boolean }[];
     }
-  | { kind: "peer-activity"; id: string; at: number; events: PeerEvent[] };
+  | { kind: "peer-activity"; id: string; at: number; events: PeerEvent[] }
+  | {
+      kind: "question";
+      id: string;
+      at: number;
+      /** eve's requestId, which the answer must carry back. */
+      requestId: string;
+      prompt: string;
+      options?: { id: string; label: string; description?: string; style?: string }[];
+      allowFreeform?: boolean;
+      /** Set once answered, so the transcript keeps what was chosen. */
+      answered?: string;
+    };
 
 /** One agent-to-agent hop, as reported by the dispatch layer. */
 export interface PeerEvent {

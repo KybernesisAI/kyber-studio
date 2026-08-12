@@ -74,6 +74,7 @@ interface State {
   setPaletteOpen(open: boolean): void;
 
   send(agentId: string, text: string): void;
+  answerQuestion(agentId: string, blockId: string, answer: { optionId?: string; text?: string }): void;
   patchAgent(id: string, patch: Partial<Agent>): void;
 
   bootstrap(): Promise<void>;
@@ -195,6 +196,30 @@ export const useStore = create<State>((set, get) => ({
     const bubbleId = `a${at}`;
     set((s) => ({ streaming: { ...s.streaming, [streamId]: "" } }));
 
+    const stopQuestions = window.studio.onQuestion((payload) => {
+      if (payload.streamId !== streamId) return;
+      // The agent is waiting on a person. Render it as its own block so the
+      // question survives in the transcript with the answer beside it.
+      set((s) => ({
+        conversations: {
+          ...s.conversations,
+          [agentId]: [
+            ...(s.conversations[agentId] ?? []),
+            {
+              kind: "question",
+              id: `q${payload.request.requestId}`,
+              at: Date.now(),
+              requestId: payload.request.requestId,
+              prompt: payload.request.prompt,
+              options: payload.request.options,
+              allowFreeform: payload.request.allowFreeform,
+            },
+          ],
+        },
+      }));
+      get().persist();
+    });
+
     const stopActivity = window.studio.onActivity((payload) => {
       if (payload.streamId !== streamId) return;
       set((s) => ({ activity: { ...s.activity, [agentId]: payload.label } }));
@@ -230,7 +255,17 @@ export const useStore = create<State>((set, get) => ({
           continuations: { ...s.continuations, [agentId]: res.continuationToken },
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
         }));
-        upsert(bubbleId, res.reply || "(the agent returned an empty reply)");
+        if (res.reply) {
+          upsert(bubbleId, res.reply);
+        } else {
+          // A parked turn ends with no assistant text because the agent is
+          // waiting on an answer. Saying "empty reply" there described the
+          // transport and hid the question.
+          const asked = (get().conversations[agentId] ?? []).some(
+            (b) => b.kind === "question" && !b.answered && b.at >= at,
+          );
+          if (!asked) upsert(bubbleId, "(the agent returned no text for this turn)");
+        }
       })
       // Report what actually failed. A generic message here is how an expired
       // grant gets mistaken for a broken agent.
@@ -238,6 +273,7 @@ export const useStore = create<State>((set, get) => ({
       .finally(() => {
         unsubscribe();
         stopActivity();
+        stopQuestions();
         get().persist();
         set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
         set((s) => {
@@ -245,6 +281,89 @@ export const useStore = create<State>((set, get) => ({
           delete rest[streamId];
           return { streaming: rest };
         });
+      });
+  },
+
+  answerQuestion: (agentId, blockId, answer) => {
+    const block = (get().conversations[agentId] ?? []).find((b) => b.id === blockId);
+    if (!block || block.kind !== "question") return;
+
+    const label =
+      answer.text ??
+      block.options?.find((o) => o.id === answer.optionId)?.label ??
+      answer.optionId ??
+      "";
+
+    set((s) => ({
+      conversations: {
+        ...s.conversations,
+        [agentId]: (s.conversations[agentId] ?? []).map((b) =>
+          b.id === blockId && b.kind === "question" ? { ...b, answered: label } : b,
+        ),
+      },
+    }));
+    get().persist();
+
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (!window.studio || !agent?.url) return;
+
+    const at = Date.now();
+    const streamId = `s${at}`;
+    const bubbleId = `a${at}`;
+
+    const upsert = (id: string, body: string): void => {
+      set((s) => {
+        const conv = s.conversations[agentId] ?? [];
+        const exists = conv.some((b) => b.id === id);
+        return {
+          conversations: {
+            ...s.conversations,
+            [agentId]: exists
+              ? conv.map((b) => (b.id === id && b.kind === "text" ? { ...b, text: body } : b))
+              : [...conv, { kind: "text", id, role: "agent", at: Date.now(), text: body }],
+          },
+        };
+      });
+    };
+
+    const stopDelta = window.studio.onDelta((p) => {
+      if (p.streamId !== streamId) return;
+      const next = (get().streaming[streamId] ?? "") + p.text;
+      set((s) => ({ streaming: { ...s.streaming, [streamId]: next } }));
+      upsert(bubbleId, next);
+    });
+    const stopActivity = window.studio.onActivity((p) => {
+      if (p.streamId !== streamId) return;
+      set((s) => ({ activity: { ...s.activity, [agentId]: p.label } }));
+    });
+
+    void window.studio
+      .send({
+        url: agent.url,
+        // No new message: this turn is resuming on the answer alone.
+        text: "",
+        sessionId: get().sessions[agentId],
+        continuationToken: get().continuations[agentId],
+        streamIndex: get().streamIndexes[agentId],
+        inputResponses: [
+          { requestId: block.requestId, optionId: answer.optionId, text: answer.text },
+        ],
+        streamId,
+      })
+      .then((res) => {
+        set((s) => ({
+          sessions: { ...s.sessions, [agentId]: res.sessionId },
+          continuations: { ...s.continuations, [agentId]: res.continuationToken },
+          streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
+        }));
+        if (res.reply) upsert(bubbleId, res.reply);
+      })
+      .catch((e: unknown) => upsert(bubbleId, e instanceof Error ? e.message : String(e)))
+      .finally(() => {
+        stopDelta();
+        stopActivity();
+        set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
+        get().persist();
       });
   },
 

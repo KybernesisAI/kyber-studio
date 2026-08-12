@@ -410,9 +410,22 @@ export async function sendTurn(input: {
   continuationToken?: string;
   /** Events already consumed on this session; the stream resumes after them. */
   streamIndex?: number;
+  /** Answers to questions the agent asked, resuming a parked turn. */
+  inputResponses?: { requestId: string; optionId?: string; text?: string }[];
   clientContext?: Record<string, unknown>;
   onDelta(text: string): void;
   onActivity(label: string | null): void;
+  /**
+   * The agent is asking the user something and will not continue until it is
+   * answered. Dropping this event is why a turn that ended in a question looked
+   * like an empty reply.
+   */
+  onQuestion(request: {
+    requestId: string;
+    prompt: string;
+    options?: { id: string; label: string; description?: string; style?: string }[];
+    allowFreeform?: boolean;
+  }): void;
 }): Promise<{
   reply: string;
   sessionId?: string;
@@ -445,7 +458,9 @@ export async function sendTurn(input: {
     method: "POST",
     headers,
     body: JSON.stringify({
-      message: input.text,
+      // A resumed turn may carry only answers, with no new message.
+      ...(input.text ? { message: input.text } : {}),
+      ...(input.inputResponses?.length ? { inputResponses: input.inputResponses } : {}),
       ...(input.clientContext ? { clientContext: input.clientContext } : {}),
       ...(input.continuationToken ? { continuationToken: input.continuationToken } : {}),
     }),
@@ -549,6 +564,21 @@ export async function sendTurn(input: {
               input.onActivity(nextLabel.label);
             } else if (!sawSpecific) {
               input.onActivity(nextLabel.label);
+            }
+          }
+
+          if (type === "input.requested") {
+            for (const raw of Array.isArray(data.requests) ? data.requests : []) {
+              const r = raw as Record<string, unknown>;
+              if (typeof r.requestId !== "string" || typeof r.prompt !== "string") continue;
+              input.onQuestion({
+                requestId: r.requestId,
+                prompt: r.prompt,
+                options: Array.isArray(r.options)
+                  ? (r.options as { id: string; label: string; description?: string; style?: string }[])
+                  : undefined,
+                allowFreeform: r.allowFreeform === true,
+              });
             }
           }
 

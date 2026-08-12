@@ -31,6 +31,11 @@ const studio: StudioApi = {
     ipcRenderer.on("studio:local-done", listener);
     return () => ipcRenderer.off("studio:local-done", listener);
   },
+  onQuestion: (handler) => {
+    const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);
+    ipcRenderer.on("studio:question", listener);
+    return () => ipcRenderer.off("studio:question", listener);
+  },
   onActivity: (handler) => {
     const listener = (_e: unknown, payload: { streamId: string; label: string | null }): void =>
       handler(payload);

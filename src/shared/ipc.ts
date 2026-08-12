@@ -56,6 +56,7 @@ export interface StudioApi {
     sessionId?: string;
     continuationToken?: string;
     streamIndex?: number;
+    inputResponses?: { requestId: string; optionId?: string; text?: string }[];
     clientContext?: Record<string, unknown>;
     streamId: string;
   }): Promise<{
@@ -69,6 +70,17 @@ export interface StudioApi {
   /** Subscribe to "what the agent is doing" updates. null clears the line. */
   onActivity(
     handler: (payload: { streamId: string; label: string | null }) => void,
+  ): () => void;
+  onQuestion(
+    handler: (payload: {
+      streamId: string;
+      request: {
+        requestId: string;
+        prompt: string;
+        options?: { id: string; label: string; description?: string; style?: string }[];
+        allowFreeform?: boolean;
+      };
+    }) => void,
   ): () => void;
   agentInfo(url: string): Promise<AgentInfo | null>;
 

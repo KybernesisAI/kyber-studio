@@ -61,6 +61,71 @@ function PeerActivity({ events }: { events: PeerEvent[] }): ReactNode {
   );
 }
 
+/**
+ * A question the agent asked, with its answer kept beside it.
+ *
+ * eve parks a turn on input.requested and waits. Studio used to drop the event,
+ * so the agent looked like it had returned nothing when it was in fact waiting
+ * on the user — the most confusing possible failure, because the conversation
+ * had simply stopped.
+ */
+function QuestionCard({
+  block,
+  onAnswer,
+}: {
+  block: Extract<Block, { kind: "question" }>;
+  onAnswer(answer: { optionId?: string; text?: string }): void;
+}): ReactNode {
+  const [text, setText] = useState("");
+
+  if (block.answered) {
+    return (
+      <div className="ask ask--done">
+        <div className="ask__title" style={{ fontWeight: 500 }}>{block.prompt}</div>
+        <div className="ask__answered">
+          <Icon name="check" size={13} /> {block.answered}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="ask">
+      <div className="ask__title" style={{ marginBottom: 10 }}>{block.prompt}</div>
+      {block.options?.length ? (
+        <div className="ask__options">
+          {block.options.map((o) => (
+            <button
+              key={o.id}
+              className={`btn${o.style === "primary" ? " btn--primary" : ""}`}
+              title={o.description}
+              onClick={() => onAnswer({ optionId: o.id })}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {block.allowFreeform !== false ? (
+        <div className="ask__freeform">
+          <input
+            className="input"
+            value={text}
+            placeholder="Or type an answer"
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && text.trim()) onAnswer({ text: text.trim() });
+            }}
+          />
+          <button className="btn" disabled={!text.trim()} onClick={() => onAnswer({ text: text.trim() })}>
+            Send
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ConnectionCard({ block }: { block: Extract<Block, { kind: "connection" }> }): ReactNode {
   return (
     <div className="conn">
@@ -97,6 +162,7 @@ export function Conversation(): ReactNode {
     setPanel,
     details,
     setPluginsOpen,
+    answerQuestion,
     activity,
     models,
     loadAgentInfo,
@@ -253,6 +319,14 @@ export function Conversation(): ReactNode {
           {blocks.map((b) => {
             if (b.kind === "peer-activity") return <PeerActivity key={b.id} events={b.events} />;
             if (b.kind === "connection") return <ConnectionCard key={b.id} block={b} />;
+            if (b.kind === "question")
+              return (
+                <QuestionCard
+                  key={b.id}
+                  block={b}
+                  onAnswer={(answer) => answerQuestion(activeAgentId, b.id, answer)}
+                />
+              );
             return (
               <div key={b.id} className={`bubble bubble--${b.role}`}>
                 {b.role === "agent" ? <Markdown text={b.text} /> : <RichText text={b.text} />}

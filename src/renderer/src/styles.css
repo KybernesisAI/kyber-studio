@@ -635,3 +635,12 @@ input, textarea { font: inherit; color: inherit; }
 .sched { display: flex; flex-wrap: wrap; gap: 7px; }
 .sched .input { flex: 1; min-width: 132px; height: 32px; padding: 0 9px; }
 .sched__freq { flex: 0 0 100%; }
+
+.ask--done { opacity: 0.75; }
+.ask__answered {
+  display: flex; align-items: center; gap: 6px; margin-top: 7px;
+  color: var(--accent-deep); font-size: 12.5px;
+}
+.ask__options { display: flex; flex-wrap: wrap; gap: 7px; }
+.ask__freeform { display: flex; gap: 7px; margin-top: 10px; }
+.ask__freeform .input { flex: 1; height: 31px; }

@@ -89,6 +89,7 @@ export function registerIpc(): void {
         sessionId?: string;
         continuationToken?: string;
         streamIndex?: number;
+        inputResponses?: { requestId: string; optionId?: string; text?: string }[];
         clientContext?: Record<string, unknown>;
         streamId: string;
       },
@@ -103,6 +104,11 @@ export function registerIpc(): void {
         onActivity: (label) => {
           if (!sender.isDestroyed()) {
             sender.send("studio:activity", { streamId: input.streamId, label });
+          }
+        },
+        onQuestion: (request) => {
+          if (!sender.isDestroyed()) {
+            sender.send("studio:question", { streamId: input.streamId, request });
           }
         },
       });
