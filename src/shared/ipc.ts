@@ -64,6 +64,7 @@ export interface StudioApi {
     sessionId?: string;
     continuationToken?: string;
     streamIndex: number;
+    askedQuestion: boolean;
   }>;
   /** Subscribe to streaming deltas. Returns an unsubscribe function. */
   onDelta(handler: (payload: { streamId: string; text: string }) => void): () => void;

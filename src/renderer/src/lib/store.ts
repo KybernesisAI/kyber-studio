@@ -257,14 +257,11 @@ export const useStore = create<State>((set, get) => ({
         }));
         if (res.reply) {
           upsert(bubbleId, res.reply);
-        } else {
-          // A parked turn ends with no assistant text because the agent is
-          // waiting on an answer. Saying "empty reply" there described the
-          // transport and hid the question.
-          const asked = (get().conversations[agentId] ?? []).some(
-            (b) => b.kind === "question" && !b.answered && b.at >= at,
-          );
-          if (!asked) upsert(bubbleId, "(the agent returned no text for this turn)");
+        } else if (!res.askedQuestion) {
+          // Only when the turn produced neither words nor a question. The agent
+          // reports which it was, so this is not inferred from a pushed event
+          // that races the response.
+          upsert(bubbleId, "(the agent returned no text for this turn)");
         }
       })
       // Report what actually failed. A generic message here is how an expired
@@ -357,6 +354,7 @@ export const useStore = create<State>((set, get) => ({
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
         }));
         if (res.reply) upsert(bubbleId, res.reply);
+        else if (!res.askedQuestion) upsert(bubbleId, "(the agent returned no text for this turn)");
       })
       .catch((e: unknown) => upsert(bubbleId, e instanceof Error ? e.message : String(e)))
       .finally(() => {

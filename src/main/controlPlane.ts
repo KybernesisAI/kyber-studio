@@ -431,6 +431,8 @@ export async function sendTurn(input: {
   sessionId?: string;
   continuationToken?: string;
   streamIndex: number;
+  /** The turn parked on a question; there is no reply because none is due. */
+  askedQuestion: boolean;
 }> {
   const s = await activeSession();
   if (!s) throw new Error("Not signed in.");
@@ -489,6 +491,7 @@ export async function sendTurn(input: {
   let turnStarted = false;
   const memo: { lastTool: string | null } = { lastTool: null };
   let sawSpecific = false;
+  let askedQuestion = false;
 
   /**
    * An event stream can end without the turn being over: the agent restarts,
@@ -568,16 +571,40 @@ export async function sendTurn(input: {
           }
 
           if (type === "input.requested") {
+            if (process.env.KYBER_STUDIO_DEBUG_STREAM) {
+              console.log(`[question] ${JSON.stringify(data)}`);
+            }
             for (const raw of Array.isArray(data.requests) ? data.requests : []) {
               const r = raw as Record<string, unknown>;
-              if (typeof r.requestId !== "string" || typeof r.prompt !== "string") continue;
+              // The request carries its fields at the top level, and the tool
+              // call that produced it carries the same shape under action.input.
+              // Read both: a question the user never sees because one field sat
+              // a level deeper is indistinguishable from a broken agent.
+              const action = (r.action ?? {}) as Record<string, unknown>;
+              const inner = (action.input ?? {}) as Record<string, unknown>;
+              const requestId =
+                (typeof r.requestId === "string" && r.requestId) ||
+                (typeof action.callId === "string" && action.callId) ||
+                "";
+              const prompt =
+                (typeof r.prompt === "string" && r.prompt) ||
+                (typeof inner.prompt === "string" && inner.prompt) ||
+                (typeof inner.question === "string" && inner.question) ||
+                "";
+              if (!requestId || !prompt) continue;
+              const options = Array.isArray(r.options)
+                ? r.options
+                : Array.isArray(inner.options)
+                  ? inner.options
+                  : undefined;
+              askedQuestion = true;
               input.onQuestion({
-                requestId: r.requestId,
-                prompt: r.prompt,
-                options: Array.isArray(r.options)
-                  ? (r.options as { id: string; label: string; description?: string; style?: string }[])
-                  : undefined,
-                allowFreeform: r.allowFreeform === true,
+                requestId,
+                prompt,
+                options: options as
+                  | { id: string; label: string; description?: string; style?: string }[]
+                  | undefined,
+                allowFreeform: r.allowFreeform === true || inner.allowFreeform === true,
               });
             }
           }
@@ -628,7 +655,7 @@ export async function sendTurn(input: {
     if (!done) await new Promise((r) => setTimeout(r, 500));
   }
 
-  return { reply: reply.trim(), sessionId, continuationToken, streamIndex: consumed };
+  return { reply: reply.trim(), sessionId, continuationToken, streamIndex: consumed, askedQuestion };
 }
 
 export function currentSession(): Session | null {
