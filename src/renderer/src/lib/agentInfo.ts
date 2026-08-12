@@ -66,14 +66,15 @@ export function summarize(info: unknown): AgentSummary {
       };
     }),
 
-    // Grouped objects: prefer what the agent actually exposes, and fall back to
-    // the authored set when "available" is absent.
-    channels: (arr(channels.available).length ? arr(channels.available) : arr(channels.authored)).map(
-      (c) => {
-        const o = obj(c);
-        return { name: str(o.name) ?? "unnamed", urlPath: str(o.urlPath) };
-      },
-    ),
+    // A SURFACE, not a route. eve lists one entry per HTTP route, so a single
+    // chat surface arrives as nine rows of session plumbing — which reads as
+    // "this agent has seventeen channels" when it has three. Group by the
+    // channel that owns the routes and count them instead.
+    //
+    // Authored, not available: available includes framework routes the author
+    // never declared (connection callbacks and the like), and those are not
+    // places anyone can reach the agent.
+    channels: groupChannels(arr(channels.authored).length ? arr(channels.authored) : arr(channels.available)),
 
     skills: named(arr(skills.static)),
 
@@ -83,4 +84,37 @@ export function summarize(info: unknown): AgentSummary {
 
     subagents: named(arr(subagents.local)),
   };
+}
+
+/** Human names for the channels we ship, so a surface reads as a surface. */
+const CHANNEL_LABELS: Record<string, string> = {
+  eve: "KYBER Studio & HTTP API",
+  photon: "iMessage",
+  slack: "Slack",
+  telegram: "Telegram",
+  discord: "Discord",
+  teams: "Microsoft Teams",
+  twilio: "SMS",
+  linear: "Linear",
+  github: "GitHub",
+  kyb: "Management (KYBER Studio)",
+};
+
+function groupChannels(items: unknown[]): { name: string; urlPath?: string }[] {
+  const byName = new Map<string, { name: string; urlPath?: string; routes: number }>();
+  for (const item of items) {
+    const o = obj(item);
+    const raw = str(o.name);
+    if (!raw) continue;
+    // Framework route ids look like "eve/v1/connections/callback/get"; the
+    // channel that owns them is the first segment.
+    const key = raw.split("/")[0] ?? raw;
+    const existing = byName.get(key);
+    if (existing) existing.routes += 1;
+    else byName.set(key, { name: key, urlPath: str(o.urlPath), routes: 1 });
+  }
+  return [...byName.values()].map((c) => ({
+    name: CHANNEL_LABELS[c.name] ?? c.name,
+    urlPath: c.routes > 1 ? `${c.routes} routes` : c.urlPath,
+  }));
 }

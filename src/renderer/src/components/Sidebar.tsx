@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
-import type { Agent } from "@shared/types";
+import type { Agent, Block } from "@shared/types";
 import { useStore } from "@/lib/store";
 import { Avatar, Icon, timeLabel } from "./primitives";
 
@@ -67,6 +67,25 @@ function ContextMenu({
   );
 }
 
+/**
+ * The preview is DERIVED from the transcript, not stored on the agent.
+ *
+ * The agent list is rebuilt from the control plane on every launch, so anything
+ * kept on those objects is lost while the conversation that persisted sits
+ * right there — every row read "No messages yet" above a chat full of messages.
+ * One source of truth: the messages.
+ */
+function lastOf(blocks: Block[] | undefined): { text: string; at: number } | null {
+  if (!blocks?.length) return null;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b?.kind === "text" && b.text.trim()) {
+      return { text: b.text.replace(/\s+/g, " ").trim(), at: b.at };
+    }
+  }
+  return null;
+}
+
 function Row({
   agent,
   onMenu,
@@ -74,8 +93,9 @@ function Row({
   agent: Agent;
   onMenu(state: MenuState): void;
 }): ReactNode {
-  const { activeAgentId, select } = useStore();
+  const { activeAgentId, select, conversations } = useStore();
   const active = agent.id === activeAgentId;
+  const last = lastOf(conversations[agent.id]);
 
   return (
     <div
@@ -93,10 +113,10 @@ function Row({
         <div className="row__line">
           <span className="row__name">{agent.name}</span>
           {agent.pinned ? <span className="row__pin"><Icon name="pin" size={12} /></span> : null}
-          <span className="row__time">{agent.lastMessageAt ? timeLabel(agent.lastMessageAt) : ""}</span>
+          <span className="row__time">{last ? timeLabel(last.at) : ""}</span>
         </div>
         <div className="row__line">
-          <div className="row__preview">{agent.lastMessagePreview ?? "No messages yet"}</div>
+          <div className="row__preview">{last?.text ?? "No messages yet"}</div>
           {agent.unread ? <span className="row__unread" /> : null}
         </div>
       </div>
@@ -115,8 +135,11 @@ export function Sidebar(): ReactNode {
     .filter((a) => !a.hidden)
     .filter((a) => !q || a.name.toLowerCase().includes(q) || (a.lastMessagePreview ?? "").toLowerCase().includes(q));
 
-  const pinned = visible.filter((a) => a.pinned);
-  const rest = visible.filter((a) => !a.pinned);
+  // Most recently active first, from the transcripts themselves.
+  const recency = (a: Agent): number => lastOf(useStore.getState().conversations[a.id])?.at ?? 0;
+  const byRecent = [...visible].sort((x, y) => recency(y) - recency(x));
+  const pinned = byRecent.filter((a) => a.pinned);
+  const rest = byRecent.filter((a) => !a.pinned);
 
   return (
     <aside className="sidebar">
