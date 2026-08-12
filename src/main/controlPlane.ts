@@ -535,6 +535,8 @@ export async function sendTurn(input: {
    * failure for work that is still happening.
    */
   const MAX_RECONNECTS = 6;
+  /** No events for this long means the turn is not coming back. */
+  const IDLE_STREAM_MS = 75_000;
   let reconnects = 0;
 
   while (!done) {
@@ -567,9 +569,24 @@ export async function sendTurn(input: {
 
     try {
       while (!done) {
-        const { value, done: finished } = await reader.read();
+        // A stream can stay open on a session that will never speak again —
+        // the agent restarted and lost it, so the connection is fine and the
+        // conversation is over. Without this the window sits on the request
+        // timeout, which is five minutes of looking broken.
+        const value = await Promise.race([
+          reader.read(),
+          new Promise<{ value: undefined; done: true; idle: true }>((r) =>
+            setTimeout(() => r({ value: undefined, done: true, idle: true }), IDLE_STREAM_MS),
+          ),
+        ]);
+        if ((value as { idle?: boolean }).idle) {
+          throw new Error(
+            `The agent stopped sending for ${Math.round(IDLE_STREAM_MS / 1000)}s. It usually restarted mid-turn — applying a routine or a plugin does that. Ask again; anything it already saved is saved.`,
+          );
+        }
+        const { value: chunk, done: finished } = value as { value?: Uint8Array; done: boolean };
         if (finished) break;
-        buffer += decoder.decode(value, { stream: true });
+        buffer += decoder.decode(chunk, { stream: true });
 
         let newline = buffer.indexOf("\n");
         while (newline !== -1) {
