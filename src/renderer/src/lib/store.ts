@@ -47,6 +47,14 @@ function ensureListeners(
     upsertBlock(get, set, agentId, `a${streamId.slice(1)}`, next);
   });
 
+  window.studio.onTurn(({ streamId, sessionId, turnId }) => {
+    const agentId = streamOwners.get(streamId);
+    if (!agentId) return;
+    set((s) => ({
+      inflight: { ...s.inflight, [agentId]: { streamId, sessionId, turnId } },
+    }));
+  });
+
   window.studio.onActivity(({ streamId, label }) => {
     const agentId = streamOwners.get(streamId);
     if (!agentId) return;
@@ -138,6 +146,20 @@ function retireStaleQuestions(
   }));
 }
 
+/**
+ * Send the next message that was typed while the agent was busy.
+ *
+ * One at a time, and only once the previous turn has actually settled — the
+ * queue exists precisely because posting them together is what breaks ordering.
+ */
+function flushQueue(get: () => State, agentId: string): void {
+  const pending = get().queued[agentId];
+  if (!pending?.length) return;
+  const [next, ...rest] = pending;
+  useStore.setState((s) => ({ queued: { ...s.queued, [agentId]: rest } }));
+  setTimeout(() => get().send(agentId, next), 0);
+}
+
 export type PanelView = "none" | "overview" | "routine" | "settings" | "channels";
 
 interface State {
@@ -162,6 +184,18 @@ interface State {
   streamIndexes: Record<string, number | undefined>;
   /** Per-agent "what it is doing right now", or null when idle. */
   activity: Record<string, string | null>;
+  /**
+   * The turn each agent is running right now, if any.
+   *
+   * eve accepts one turn at a time per session and parks between them. A client
+   * that posts a second message before the first has settled is racing the
+   * runtime: the message is held, arrives out of order, or lands on a session
+   * that is not waiting yet. So a turn in flight is state the UI has to know
+   * about, not something to discover by failing.
+   */
+  inflight: Record<string, { streamId: string; sessionId?: string; turnId?: string } | undefined>;
+  /** Messages typed while a turn was running, sent in order once it settles. */
+  queued: Record<string, string[] | undefined>;
   /** Per-agent model id, read from the agent's own /eve/v1/info. */
   models: Record<string, string | undefined>;
   /**
@@ -196,6 +230,16 @@ interface State {
   setPaletteOpen(open: boolean): void;
 
   send(agentId: string, text: string): void;
+  /** Ask the agent to stop the turn it is running. */
+  stopTurn(agentId: string): void;
+  /**
+   * Retire the eve session and start a fresh one.
+   *
+   * The escape hatch for a conversation that cannot move: a turn interrupted by
+   * an agent restart never settles, so the session never parks and every later
+   * message queues behind it forever.
+   */
+  resetConversation(agentId: string): void;
   answerQuestion(agentId: string, blockId: string, answer: { optionId?: string; text?: string }): void;
   patchAgent(id: string, patch: Partial<Agent>): void;
 
@@ -234,6 +278,8 @@ export const useStore = create<State>((set, get) => ({
   continuations: {},
   streamIndexes: {},
   activity: {},
+  inflight: {},
+  queued: {},
   models: {},
   details: {},
   catalog: {},
@@ -314,11 +360,22 @@ export const useStore = create<State>((set, get) => ({
       return;
     }
 
+    // A turn is already running: hold this one rather than post it into a
+    // session that has not parked. It goes out, in order, the moment the
+    // current turn settles.
+    if (get().inflight[agentId]) {
+      set((s) => ({
+        queued: { ...s.queued, [agentId]: [...(s.queued[agentId] ?? []), text] },
+      }));
+      return;
+    }
+
     const streamId = `s${at}`;
     const bubbleId = `a${at}`;
     set((s) => ({ streaming: { ...s.streaming, [streamId]: "" } }));
     ensureListeners(get, set);
     streamOwners.set(streamId, agentId);
+    set((s) => ({ inflight: { ...s.inflight, [agentId]: { streamId } } }));
 
     void window.studio
       .send({
@@ -356,13 +413,46 @@ export const useStore = create<State>((set, get) => ({
         set((s) => {
           const rest = { ...s.streaming };
           delete rest[streamId];
-          return { streaming: rest };
+          const flight = { ...s.inflight };
+          delete flight[agentId];
+          return { streaming: rest, inflight: flight };
         });
         // Keep the owner mapping briefly: a late event that arrives after the
         // response is exactly what this whole change is about.
         setTimeout(() => streamOwners.delete(streamId), 30_000);
         get().persist();
+        flushQueue(get, agentId);
       });
+  },
+
+  stopTurn: (agentId) => {
+    const live = get().inflight[agentId];
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (!live?.sessionId || !agent?.url || !window.studio) return;
+    void window.studio
+      .cancelTurn({ url: agent.url, sessionId: live.sessionId, turnId: live.turnId })
+      .catch(() => undefined);
+    set((s) => ({ activity: { ...s.activity, [agentId]: "stopping" } }));
+  },
+
+  resetConversation: (agentId) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (!agent?.url || !window.studio) return;
+    const url = agent.url;
+    const sessionId = get().sessions[agentId];
+    const continuationToken = get().continuations[agentId];
+    // Drop the local handles first. Even if the agent cannot retire the session
+    // (its owner may already be gone), the next message must not be posted into
+    // the session that was stuck — that is the whole point of resetting.
+    set((s) => ({
+      sessions: { ...s.sessions, [agentId]: undefined },
+      continuations: { ...s.continuations, [agentId]: undefined },
+      streamIndexes: { ...s.streamIndexes, [agentId]: 0 },
+      inflight: { ...s.inflight, [agentId]: undefined },
+      activity: { ...s.activity, [agentId]: null },
+    }));
+    get().persist();
+    void window.studio.resetSession({ url, sessionId, continuationToken }).catch(() => undefined);
   },
 
   answerQuestion: (agentId, blockId, answer) => {
@@ -393,6 +483,7 @@ export const useStore = create<State>((set, get) => ({
     const bubbleId = `a${at}`;
     ensureListeners(get, set);
     streamOwners.set(streamId, agentId);
+    set((s) => ({ inflight: { ...s.inflight, [agentId]: { streamId } } }));
 
     void window.studio
       .send({
@@ -424,9 +515,14 @@ export const useStore = create<State>((set, get) => ({
         upsertBlock(get, set, agentId, bubbleId, e instanceof Error ? e.message : String(e)),
       )
       .finally(() => {
-        set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
+        set((s) => {
+          const flight = { ...s.inflight };
+          delete flight[agentId];
+          return { activity: { ...s.activity, [agentId]: null }, inflight: flight };
+        });
         setTimeout(() => streamOwners.delete(streamId), 30_000);
         get().persist();
+        flushQueue(get, agentId);
       });
   },
 

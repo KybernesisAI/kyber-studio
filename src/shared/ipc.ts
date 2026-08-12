@@ -69,6 +69,15 @@ export interface StudioApi {
   /** Subscribe to streaming deltas. Returns an unsubscribe function. */
   onDelta(handler: (payload: { streamId: string; text: string }) => void): () => void;
   /** Subscribe to "what the agent is doing" updates. null clears the line. */
+  cancelTurn(input: { url: string; sessionId: string; turnId?: string }): Promise<string>;
+  resetSession(input: {
+    url: string;
+    sessionId?: string;
+    continuationToken?: string;
+  }): Promise<void>;
+  onTurn(
+    handler: (payload: { streamId: string; sessionId: string; turnId?: string }) => void,
+  ): () => void;
   onActivity(
     handler: (payload: { streamId: string; label: string | null }) => void,
   ): () => void;

@@ -497,7 +497,8 @@ function RoutineView(): ReactNode {
 }
 
 function Settings(): ReactNode {
-  const { agents, activeAgentId, patchAgent, setPanel, details, models } = useStore();
+  const { agents, activeAgentId, patchAgent, setPanel, details, models, resetConversation, sessions } =
+    useStore();
   const agent = agents.find((a) => a.id === activeAgentId);
   const info = details[activeAgentId];
   if (!agent) return null;
@@ -517,6 +518,24 @@ function Settings(): ReactNode {
             value={agent.name}
             onChange={(e) => patchAgent(agent.id, { name: e.target.value })}
           />
+        </div>
+
+        <div className="card stack-row">
+          <div style={{ flex: 1 }}>
+            <div>Start a fresh conversation</div>
+            <div className="muted">
+              {sessions[activeAgentId]
+                ? "Retires the agent's current session. Use this if replies stopped arriving — an agent that restarted mid-turn leaves a session that can never finish."
+                : "No session yet; the next message starts one."}
+            </div>
+          </div>
+          <button
+            className="btn"
+            disabled={!sessions[activeAgentId]}
+            onClick={() => resetConversation(activeAgentId)}
+          >
+            Reset
+          </button>
         </div>
 
         <div className="card stack-row">

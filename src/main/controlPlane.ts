@@ -1,3 +1,4 @@
+import { Client, ClientError } from "eve/client";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -445,13 +446,115 @@ export async function agentInfo(url: string): Promise<Record<string, unknown> | 
 }
 
 /**
- * Send one turn to an agent's eve HTTP door and stream the reply back.
+ * One eve Client per agent host.
  *
- * eve's HTTP API is two calls, not one: POST /eve/v1/session starts the turn and
- * returns immediately with a sessionId, and the assistant's actual words arrive
- * on GET /eve/v1/session/:id/stream as newline-delimited JSON. A client that
- * only reads the POST response gets an empty reply and no error — it looks like
- * the agent had nothing to say.
+ * `eve/client` is the framework's own implementation of the session protocol,
+ * and using it is not a refactor — it is the fix. Studio used to hand-roll the
+ * POST and the NDJSON loop, which meant re-deriving three rules by inference:
+ *
+ *   - A turn ends at `session.waiting`, NOT at `turn.completed`. The two are
+ *     different events and there is real time between them. Treating the first
+ *     as the end let Studio release the composer while the session was still
+ *     settling, so the next message raced the runtime that had not parked yet.
+ *   - `session.waiting` carries the CURRENT continuation token. A session has
+ *     one active continuation and rejects a stale one, so a client that never
+ *     reads that event is holding a handle that expires under it.
+ *   - The stream cursor, reconnects, and credential refresh all have to move
+ *     together, or a reconnect resumes at the wrong index with a dead token.
+ *
+ * Every one of those was wrong here, in ways that surfaced as "sometimes it
+ * answers and sometimes it doesn't". The framework already gets them right.
+ */
+const clients = new Map<string, Client>();
+
+function clientFor(base: string): Client {
+  const existing = clients.get(base);
+  if (existing) return existing;
+  const client = new Client({
+    host: base,
+    // Resolved before every request INCLUDING stream reconnects, so a long turn
+    // that outlives the access token it started with refreshes mid-flight
+    // instead of dying at the first reconnect.
+    auth: { bearer: async () => (await activeSession())?.token ?? "" },
+    headers: async (): Promise<Record<string, string>> => {
+      const s = await activeSession();
+      return s?.bundle ? { "x-kybernesis-bundle": s.bundle } : {};
+    },
+    // Credential-bearing client: never let fetch forward these headers to
+    // another origin behind a redirect.
+    redirect: "manual",
+  });
+  clients.set(base, client);
+  return client;
+}
+
+/** Turn a ClientError into something that says what to do about it. */
+function describeClientError(error: unknown, base: string): Error {
+  if (!(error instanceof ClientError)) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+  const body = typeof error.body === "string" ? error.body : JSON.stringify(error.body ?? "");
+  const snippet = body.replace(/\s+/g, " ").slice(0, 220);
+
+  switch (error.status) {
+    case 401:
+      if (body.includes(UNVERIFIABLE)) {
+        return new Error(
+          `${base} could not reach the Kybernesis control plane to check your sign-in. Your ` +
+            `session is fine — this clears once the agent can reach the control plane again.`,
+        );
+      }
+      if (/^\s*<(!doctype|html)/i.test(body)) {
+        return new Error(
+          `${base} answered with a sign-in page rather than the eve API — deployment protection ` +
+            `(such as Vercel SSO) is in front of it, so Studio's token never reached the agent.`,
+        );
+      }
+      return new Error(
+        `The agent refused Studio's identity token (401). Check that its KYBERNESIS_ISSUER matches ` +
+          `the control plane you signed in to, and that it can fetch that issuer's JWKS. ${snippet}`,
+      );
+    case 403:
+      return new Error(
+        `You are authenticated but have no grant for this agent (403). Grant your user access to it ` +
+          `in the control plane — the agent's KYBERNESIS_AGENT must match its registered name. ${snippet}`,
+      );
+    case 404:
+      return new Error(
+        `No eve API at ${base} (404). The registered URL may be wrong, or the deployment is not ` +
+          `serving /eve/v1/session.`,
+      );
+    case 409:
+      return new Error(
+        `That conversation is busy: a previous turn has not finished yet. Wait for it, or stop it ` +
+          `and start again.`,
+      );
+    default:
+      if (error.status >= 500) {
+        return new Error(
+          `${base} is not answering right now (${error.status}). The agent is usually restarting — ` +
+            `applying a new routine or capability does that — so this normally clears in a few seconds.`,
+        );
+      }
+      return new Error(`Agent returned HTTP ${error.status}. ${snippet}`);
+  }
+}
+
+/**
+ * How long a turn may emit NOTHING before Studio stops believing in it.
+ *
+ * Not a limit on how long the agent may think: every event resets it, so a turn
+ * that streams tool calls for an hour is fine. It catches the turn that is not
+ * running at all — the one whose step died with a restarted process. eve does
+ * not resume a step killed mid-flight, so that turn never emits again, the
+ * session never parks, and every later message queues behind a turn that will
+ * never end. Waiting forever on that is indistinguishable from a hang, which
+ * is exactly what it is.
+ */
+const SILENCE_LIMIT_MS = 150_000;
+
+/**
+ * Send one turn to an agent and stream the reply back.
  *
  * Deltas are pushed to the renderer as they arrive, because a chat window that
  * sits blank for thirty seconds reads as broken even when it is working.
@@ -477,6 +580,8 @@ export async function sendTurn(input: {
    * already answered as if the agent had just asked them.
    */
   onCursor(index: number): void;
+  /** The live turn, as soon as it is known, so the user can stop it. */
+  onTurn?(turn: { sessionId: string; turnId?: string }): void;
   /**
    * The agent is asking the user something and will not continue until it is
    * answered. Dropping this event is why a turn that ended in a question looked
@@ -498,7 +603,6 @@ export async function sendTurn(input: {
 }> {
   const s = await activeSession();
   if (!s) throw new Error("Not signed in.");
-  const base = input.url.replace(/\/$/, "");
   if (!s.bundle) {
     // Fail here rather than at the agent: without the bundle the agent reads the
     // request as an A2A call and answers "Authorization is required", which
@@ -507,253 +611,213 @@ export async function sendTurn(input: {
       "Your session has no policy bundle, so no agent can check your grants. Sign out and sign in again.",
     );
   }
-  const headers = {
-    "content-type": "application/json",
-    authorization: `Bearer ${s.token}`,
-    "x-kybernesis-bundle": s.bundle,
+
+  const base = input.url.replace(/\/$/, "");
+  const session = clientFor(base).session({
+    sessionId: input.sessionId,
+    continuationToken: input.continuationToken,
+    streamIndex: input.streamIndex ?? 0,
+  });
+
+  let reply = "";
+  let askedQuestion = false;
+  let turnId: string | undefined;
+  const memo: { lastTool: string | null } = { lastTool: null };
+  let sawSpecific = false;
+
+  const publishCursor = (): void => {
+    const at = session.state.streamIndex;
+    if (typeof at === "number") input.onCursor(at);
   };
 
-  // A follow-up posts to the existing session so the agent keeps its thread.
-  const startUrl = input.sessionId
-    ? `${base}/eve/v1/session/${encodeURIComponent(input.sessionId)}`
-    : `${base}/eve/v1/session`;
-
-  /**
-   * Applying a routine or a plugin restarts the agent, which lands as a 502/503
-   * on whatever turn happens to be in flight — including the very turn that
-   * asked for the change. Retry briefly instead of reporting a failure for
-   * something that succeeded.
-   */
-  const postTurn = async (): Promise<Response> => {
-    let last: Response | null = null;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const res = await fetch(startUrl, buildInit());
-      if (!(await isTransient(res))) return res;
-      last = res;
-      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
-    }
-    return last as Response;
-  };
-
-  const buildInit = (): RequestInit => ({
-    method: "POST",
-    headers,
-    body: JSON.stringify({
+  let response;
+  try {
+    response = await session.send({
       // A resumed turn may carry only answers, with no new message.
       ...(input.text ? { message: input.text } : {}),
       ...(input.inputResponses?.length ? { inputResponses: input.inputResponses } : {}),
-      ...(input.clientContext ? { clientContext: input.clientContext } : {}),
-      ...(input.continuationToken ? { continuationToken: input.continuationToken } : {}),
-    }),
-    signal: AbortSignal.timeout(30_000),
-  });
-
-  const started = await postTurn();
-  if (!started.ok) throw await describeFailure(started, base);
-
-  const startBody = (await started.json().catch(() => ({}))) as Record<string, unknown>;
-  const sessionId = String(startBody.sessionId ?? input.sessionId ?? "");
-  const continuationToken =
-    typeof startBody.continuationToken === "string"
-      ? startBody.continuationToken
-      : input.continuationToken;
-  if (!sessionId) throw new Error("The agent started no session (no sessionId in its response).");
-
-  // Resume the stream after the events we have already seen. The session's
-  // event log is cumulative: streaming from 0 on every turn replays the whole
-  // conversation and stops at the FIRST turn boundary, so every message comes
-  // back with the first reply the agent ever gave. startIndex is not an
-  // optimization — without it a follow-up is silently answered with old words.
-  const startIndex = input.sessionId === sessionId ? (input.streamIndex ?? 0) : 0;
-  let consumed = startIndex;
-  let reply = "";
-  let done = false;
-  let turnStarted = false;
-  const memo: { lastTool: string | null } = { lastTool: null };
-  let sawSpecific = false;
-  let askedQuestion = false;
-
-  /**
-   * An event stream can end without the turn being over: the agent restarts,
-   * a proxy times out an idle connection, the network blips. Undici surfaces
-   * that as a bare "terminated", which is both alarming and useless — the turn
-   * is usually still running on the agent, and the cursor tells us exactly
-   * where to pick it up. So reconnect and continue rather than reporting a
-   * failure for work that is still happening.
-   */
-  const MAX_RECONNECTS = 6;
-  /** No events for this long means the turn is not coming back. */
-  const IDLE_STREAM_MS = 75_000;
-  let reconnects = 0;
-
-  while (!done) {
-    const streamUrl = new URL(`${base}/eve/v1/session/${encodeURIComponent(sessionId)}/stream`);
-    if (consumed > 0) streamUrl.searchParams.set("startIndex", String(consumed));
-
-    let stream: Response;
-    try {
-      stream = await fetch(streamUrl, {
-        headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
-        signal: AbortSignal.timeout(300_000),
-      });
-    } catch (e) {
-      if (reconnects++ >= MAX_RECONNECTS) {
-        throw new Error(
-          `Lost the connection to ${base} while the agent was working, and could not pick it back up. The turn may still have completed — check the conversation after a moment.`,
-        );
-      }
-      await new Promise((r) => setTimeout(r, 800 * reconnects));
-      continue;
-    }
-
-    if (!stream.ok) throw await describeFailure(stream, base);
-    if (!stream.body) throw new Error("The agent opened no event stream for this turn.");
-
-    const reader = stream.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let clean = false;
-
-    try {
-      while (!done) {
-        // A stream can stay open on a session that will never speak again —
-        // the agent restarted and lost it, so the connection is fine and the
-        // conversation is over. Without this the window sits on the request
-        // timeout, which is five minutes of looking broken.
-        const value = await Promise.race([
-          reader.read(),
-          new Promise<{ value: undefined; done: true; idle: true }>((r) =>
-            setTimeout(() => r({ value: undefined, done: true, idle: true }), IDLE_STREAM_MS),
-          ),
-        ]);
-        if ((value as { idle?: boolean }).idle) {
-          throw new Error(
-            `The agent stopped sending for ${Math.round(IDLE_STREAM_MS / 1000)}s. It usually restarted mid-turn — applying a routine or a plugin does that. Ask again; anything it already saved is saved.`,
-          );
-        }
-        const { value: chunk, done: finished } = value as { value?: Uint8Array; done: boolean };
-        if (finished) break;
-        buffer += decoder.decode(chunk, { stream: true });
-
-        let newline = buffer.indexOf("\n");
-        while (newline !== -1) {
-          const line = buffer.slice(0, newline).trim();
-          buffer = buffer.slice(newline + 1);
-          newline = buffer.indexOf("\n");
-          if (!line) continue;
-
-          let event: Record<string, unknown>;
-          try {
-            event = JSON.parse(line) as Record<string, unknown>;
-          } catch {
-            continue;
-          }
-          consumed += 1;
-          input.onCursor(consumed);
-
-          const type = String(event.type ?? "");
-          const data = (event.data ?? {}) as Record<string, unknown>;
-
-          if (process.env.KYBER_STUDIO_DEBUG_STREAM) {
-            console.log(`[stream] ${type} ${JSON.stringify(data).slice(0, 220)}`);
-          }
-
-          const nextLabel = activityLabel(type, data, memo);
-          if (nextLabel) {
-            if (nextLabel.specific) {
-              sawSpecific = true;
-              input.onActivity(nextLabel.label);
-            } else if (!sawSpecific) {
-              input.onActivity(nextLabel.label);
-            }
-          }
-
-          if (type === "input.requested") {
-            if (process.env.KYBER_STUDIO_DEBUG_STREAM) {
-              console.log(`[question] ${JSON.stringify(data)}`);
-            }
-            for (const raw of Array.isArray(data.requests) ? data.requests : []) {
-              const r = raw as Record<string, unknown>;
-              // The request carries its fields at the top level, and the tool
-              // call that produced it carries the same shape under action.input.
-              // Read both: a question the user never sees because one field sat
-              // a level deeper is indistinguishable from a broken agent.
-              const action = (r.action ?? {}) as Record<string, unknown>;
-              const inner = (action.input ?? {}) as Record<string, unknown>;
-              const requestId =
-                (typeof r.requestId === "string" && r.requestId) ||
-                (typeof action.callId === "string" && action.callId) ||
-                "";
-              const prompt =
-                (typeof r.prompt === "string" && r.prompt) ||
-                (typeof inner.prompt === "string" && inner.prompt) ||
-                (typeof inner.question === "string" && inner.question) ||
-                "";
-              if (!requestId || !prompt) continue;
-              const options = Array.isArray(r.options)
-                ? r.options
-                : Array.isArray(inner.options)
-                  ? inner.options
-                  : undefined;
-              askedQuestion = true;
-              input.onQuestion({
-                requestId,
-                prompt,
-                options: options as
-                  | { id: string; label: string; description?: string; style?: string }[]
-                  | undefined,
-                allowFreeform: r.allowFreeform === true || inner.allowFreeform === true,
-              });
-            }
-          }
-
-          if (type === "turn.started") {
-            turnStarted = true;
-          } else if (type === "message.appended" && typeof data.messageDelta === "string") {
-            turnStarted = true;
-            sawSpecific = false;
-            memo.lastTool = null;
-            input.onActivity(null);
-            reply += data.messageDelta;
-            input.onDelta(data.messageDelta);
-          } else if (type === "message.completed" && typeof data.text === "string" && !reply) {
-            reply = data.text;
-            input.onDelta(data.text);
-          } else if (type === "turn.failed" || type === "session.failed") {
-            const message = typeof data.message === "string" ? data.message : "the turn failed";
-            throw new Error(`Agent error: ${message}`);
-          } else if (
-            type === "turn.completed" ||
-            type === "session.waiting" ||
-            type === "turn.cancelled"
-          ) {
-            if (!turnStarted && !reply) continue;
-            done = true;
-            clean = true;
-            break;
-          }
-        }
-      }
-    } catch (e) {
-      // A read that dies mid-turn is a disconnect, not an agent failure — unless
-      // the agent itself told us it failed, which is thrown above and must not
-      // be retried into silence.
-      if (e instanceof Error && e.message.startsWith("Agent error:")) throw e;
-      if (reconnects++ >= MAX_RECONNECTS) {
-        throw new Error(
-          `The connection to ${base} kept dropping mid-turn (${e instanceof Error ? e.message : String(e)}).`,
-        );
-      }
-    } finally {
-      await reader.cancel().catch(() => undefined);
-    }
-
-    if (clean) break;
-    // The stream ended without a boundary: the turn is probably still running.
-    if (!done) await new Promise((r) => setTimeout(r, 500));
+      // Serialized here rather than passed as an object: eve JSON-serializes it
+      // into one user-role context message either way, and a string keeps this
+      // code free of the framework's internal JSON types.
+      ...(input.clientContext ? { clientContext: JSON.stringify(input.clientContext) } : {}),
+    });
+  } catch (error) {
+    throw describeClientError(error, base);
   }
 
-  return { reply: reply.trim(), sessionId, continuationToken, streamIndex: consumed, askedQuestion };
+  if (session.state.sessionId) {
+    input.onTurn?.({ sessionId: session.state.sessionId });
+  }
+
+  /**
+   * A watchdog over the gap BETWEEN events rather than over the turn.
+   *
+   * `for await` on a silent stream simply never yields, so without this the UI
+   * spins on a dead turn until something else gives up. Each event rearms it.
+   */
+  let silenceTimer: NodeJS.Timeout | undefined;
+  let silent = false;
+  const rearm = (): void => {
+    if (silenceTimer) clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(() => {
+      silent = true;
+      void session.cancel({ ...(turnId ? { turnId } : {}) }).catch(() => undefined);
+    }, SILENCE_LIMIT_MS);
+  };
+
+  try {
+    rearm();
+    for await (const event of response) {
+      rearm();
+      const type = String(event.type ?? "");
+      const data = ((event as { data?: unknown }).data ?? {}) as Record<string, unknown>;
+
+      if (process.env.KYBER_STUDIO_DEBUG_STREAM) {
+        console.log(`[stream] ${type} ${JSON.stringify(data).slice(0, 220)}`);
+      }
+
+      if (typeof data.turnId === "string" && data.turnId !== turnId) {
+        turnId = data.turnId;
+        if (session.state.sessionId) {
+          input.onTurn?.({ sessionId: session.state.sessionId, turnId });
+        }
+      }
+
+      const nextLabel = activityLabel(type, data, memo);
+      if (nextLabel) {
+        if (nextLabel.specific) {
+          sawSpecific = true;
+          input.onActivity(nextLabel.label);
+        } else if (!sawSpecific) {
+          input.onActivity(nextLabel.label);
+        }
+      }
+
+      if (type === "input.requested") {
+        if (process.env.KYBER_STUDIO_DEBUG_STREAM) {
+          console.log(`[question] ${JSON.stringify(data)}`);
+        }
+        for (const raw of Array.isArray(data.requests) ? data.requests : []) {
+          const r = raw as Record<string, unknown>;
+          // The request carries its fields at the top level, and the tool call
+          // that produced it carries the same shape under action.input. Read
+          // both: a question the user never sees because one field sat a level
+          // deeper is indistinguishable from a broken agent.
+          const action = (r.action ?? {}) as Record<string, unknown>;
+          const inner = (action.input ?? {}) as Record<string, unknown>;
+          const requestId =
+            (typeof r.requestId === "string" && r.requestId) ||
+            (typeof action.callId === "string" && action.callId) ||
+            "";
+          const prompt =
+            (typeof r.prompt === "string" && r.prompt) ||
+            (typeof inner.prompt === "string" && inner.prompt) ||
+            (typeof inner.question === "string" && inner.question) ||
+            "";
+          if (!requestId || !prompt) continue;
+          const options = Array.isArray(r.options)
+            ? r.options
+            : Array.isArray(inner.options)
+              ? inner.options
+              : undefined;
+          askedQuestion = true;
+          input.onQuestion({
+            requestId,
+            prompt,
+            options: options as
+              | { id: string; label: string; description?: string; style?: string }[]
+              | undefined,
+            allowFreeform: r.allowFreeform === true || inner.allowFreeform === true,
+          });
+        }
+      } else if (type === "message.appended" && typeof data.messageDelta === "string") {
+        sawSpecific = false;
+        memo.lastTool = null;
+        input.onActivity(null);
+        reply += data.messageDelta;
+        input.onDelta(data.messageDelta);
+      } else if (type === "message.completed" && typeof data.message === "string" && !reply) {
+        reply = data.message;
+        input.onDelta(data.message);
+      } else if (type === "turn.failed" || type === "session.failed" || type === "step.failed") {
+        const message = typeof data.message === "string" ? data.message : "the turn failed";
+        throw new Error(`Agent error: ${message}`);
+      }
+
+      publishCursor();
+    }
+  } catch (error) {
+    throw describeClientError(error, base);
+  } finally {
+    if (silenceTimer) clearTimeout(silenceTimer);
+    input.onActivity(null);
+    publishCursor();
+  }
+
+  if (silent && !reply) {
+    throw new Error(
+      `The agent accepted this message and then went silent for ${Math.round(
+        SILENCE_LIMIT_MS / 1000,
+      )} seconds without producing anything. That usually means the agent restarted mid-turn — ` +
+        `applying a routine does that — and the interrupted turn does not resume. Studio asked it ` +
+        `to stop, so you can send the message again.`,
+    );
+  }
+
+  return {
+    reply: reply.trim(),
+    sessionId: session.state.sessionId,
+    continuationToken: session.state.continuationToken,
+    streamIndex: session.state.streamIndex ?? 0,
+    askedQuestion,
+  };
+}
+
+/**
+ * Stop the turn a session is currently running.
+ *
+ * Both outcomes are success: `accepted` means the turn took the signal, and
+ * `no_active_turn` means it had already settled.
+ */
+export async function cancelTurn(input: {
+  url: string;
+  sessionId: string;
+  turnId?: string;
+}): Promise<string> {
+  const base = input.url.replace(/\/$/, "");
+  const session = clientFor(base).session({ sessionId: input.sessionId, streamIndex: 0 });
+  try {
+    const result = await session.cancel({ ...(input.turnId ? { turnId: input.turnId } : {}) });
+    return result.status;
+  } catch (error) {
+    throw describeClientError(error, base);
+  }
+}
+
+/**
+ * Retire a session so the next message starts a fresh one.
+ *
+ * The escape hatch for a conversation that cannot move: a turn interrupted by a
+ * restart never settles, so the session never parks, and every later message
+ * queues behind it forever. Cancelling a turn whose executor is gone does not
+ * always land — reset releases the durable owner regardless.
+ */
+export async function resetSession(input: {
+  url: string;
+  sessionId?: string;
+  continuationToken?: string;
+}): Promise<void> {
+  const base = input.url.replace(/\/$/, "");
+  const session = clientFor(base).session({
+    sessionId: input.sessionId,
+    continuationToken: input.continuationToken,
+    streamIndex: 0,
+  });
+  try {
+    await session.reset();
+  } catch (error) {
+    throw describeClientError(error, base);
+  }
 }
 
 export function currentSession(): Session | null {

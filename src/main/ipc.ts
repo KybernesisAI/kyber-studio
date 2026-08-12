@@ -10,10 +10,12 @@ import {
 import {
   type DeviceStart,
   agentInfo,
+  cancelTurn,
   manageCall,
   currentSession,
   listAgents,
   pollDeviceAuth,
+  resetSession,
   sendTurn,
   signOut,
   startDeviceAuth,
@@ -80,6 +82,17 @@ export function registerIpc(): void {
   );
 
   ipcMain.handle(
+    "studio:cancelTurn",
+    (_e, input: { url: string; sessionId: string; turnId?: string }) => cancelTurn(input),
+  );
+
+  ipcMain.handle(
+    "studio:resetSession",
+    (_e, input: { url: string; sessionId?: string; continuationToken?: string }) =>
+      resetSession(input),
+  );
+
+  ipcMain.handle(
     "studio:send",
     (
       e,
@@ -109,6 +122,11 @@ export function registerIpc(): void {
         onCursor: (index) => {
           if (!sender.isDestroyed()) {
             sender.send("studio:cursor", { streamId: input.streamId, index });
+          }
+        },
+        onTurn: (turn) => {
+          if (!sender.isDestroyed()) {
+            sender.send("studio:turn", { streamId: input.streamId, ...turn });
           }
         },
         onQuestion: (request) => {

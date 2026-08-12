@@ -36,6 +36,13 @@ const studio: StudioApi = {
     ipcRenderer.on("studio:cursor", listener);
     return () => ipcRenderer.off("studio:cursor", listener);
   },
+  cancelTurn: (input) => ipcRenderer.invoke("studio:cancelTurn", input),
+  resetSession: (input) => ipcRenderer.invoke("studio:resetSession", input),
+  onTurn: (handler) => {
+    const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);
+    ipcRenderer.on("studio:turn", listener);
+    return () => ipcRenderer.off("studio:turn", listener);
+  },
   onQuestion: (handler) => {
     const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);
     ipcRenderer.on("studio:question", listener);

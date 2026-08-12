@@ -163,6 +163,9 @@ export function Conversation(): ReactNode {
     details,
     setPluginsOpen,
     answerQuestion,
+    inflight,
+    queued,
+    stopTurn,
     activity,
     models,
     loadAgentInfo,
@@ -188,6 +191,10 @@ export function Conversation(): ReactNode {
 
   const busy = activity[activeAgentId] ?? null;
   const model = models[activeAgentId];
+  // A turn in flight, which is a stronger fact than an activity label: the
+  // label goes quiet between steps, but the session is still not accepting.
+  const running = Boolean(inflight[activeAgentId]);
+  const waiting = queued[activeAgentId]?.length ?? 0;
 
 
   // A trigger only counts at the start of a word, so an email address does not
@@ -406,11 +413,21 @@ export function Conversation(): ReactNode {
             }}
           />
           <button
-            className={`icon-btn${draft.trim() ? " icon-btn--filled" : ""}`}
-            title={draft.trim() ? "Send" : "Dictate"}
-            onClick={() => (draft.trim() ? submit() : undefined)}
+            className={`icon-btn${running || draft.trim() ? " icon-btn--filled" : ""}`}
+            title={running ? "Stop" : draft.trim() ? "Send" : "Dictate"}
+            onClick={() => {
+              // While a turn runs, this is a stop button. A user watching a turn
+              // that has gone nowhere for two minutes needs a way out that does
+              // not involve quitting the app.
+              if (running) stopTurn(activeAgentId);
+              else if (draft.trim()) submit();
+            }}
           >
-            {busy ? <Spinner /> : <Icon name={draft.trim() ? "arrowUp" : "mic"} />}
+            {running ? (
+              <Icon name="stop" />
+            ) : (
+              <Icon name={draft.trim() ? "arrowUp" : "mic"} />
+            )}
           </button>
         </div>
         {model || busy ? (
@@ -421,6 +438,11 @@ export function Conversation(): ReactNode {
               </span>
             ) : null}
             {busy ? <span className="composer__status">{busy}…</span> : null}
+            {waiting ? (
+              <span className="composer__status" title="Sent in order once this turn settles">
+                {waiting} queued
+              </span>
+            ) : null}
           </div>
         ) : null}
       </div>
