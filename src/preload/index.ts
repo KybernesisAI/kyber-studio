@@ -19,6 +19,7 @@ const studio: StudioApi = {
   loadState: (name) => ipcRenderer.invoke("studio:loadState", name),
   saveState: (input) => ipcRenderer.invoke("studio:saveState", input),
   pickFolder: () => ipcRenderer.invoke("studio:pickFolder"),
+  manage: (input) => ipcRenderer.invoke("studio:manage", input),
   setLocalPermission: (input) => ipcRenderer.invoke("studio:setLocalPermission", input),
   onLocalAsk: (handler) => {
     const listener = (_e: unknown, ask: Parameters<typeof handler>[0]): void => handler(ask);

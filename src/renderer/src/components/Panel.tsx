@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useState } from "react";
 import { useStore } from "@/lib/store";
 import { Avatar, Icon, Toggle } from "./primitives";
 
@@ -113,6 +114,66 @@ function Empty({ loaded, none }: { loaded: boolean; none: string }): ReactNode {
   return <div className="muted" style={{ padding: "2px 8px 6px" }}>{loaded ? none : "Loading…"}</div>;
 }
 
+/** Create a routine that is actually written into the agent's repository. */
+function NewRoutine(): ReactNode {
+  const { activeAgentId, createSchedule, manageSecrets, manageError } = useStore();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [cron, setCron] = useState("0 9 * * 1-5");
+  const [instruction, setInstruction] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (!manageSecrets[activeAgentId]) return null;
+
+  if (!open) {
+    return (
+      <button className="btn" style={{ width: "100%", marginBottom: 8 }} onClick={() => setOpen(true)}>
+        New routine
+      </button>
+    );
+  }
+
+  const submit = async (): Promise<void> => {
+    if (!name.trim() || !instruction.trim()) return;
+    setBusy(true);
+    const ok = await createSchedule(activeAgentId, { name: name.trim(), cron: cron.trim(), instruction: instruction.trim() });
+    setBusy(false);
+    if (ok) {
+      setOpen(false);
+      setName("");
+      setInstruction("");
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 10 }}>
+      <div className="field" style={{ marginBottom: 10 }}>
+        <div className="field__label">Name</div>
+        <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Morning digest" />
+      </div>
+      <div className="field" style={{ marginBottom: 10 }}>
+        <div className="field__label">Cron</div>
+        <input className="input" value={cron} onChange={(e) => setCron(e.target.value)} />
+      </div>
+      <div className="field" style={{ marginBottom: 10 }}>
+        <div className="field__label">What should it do?</div>
+        <textarea className="textarea" value={instruction} onChange={(e) => setInstruction(e.target.value)} />
+      </div>
+      {manageError ? <div className="muted" style={{ color: "var(--danger)", marginBottom: 8 }}>{manageError}</div> : null}
+      <div className="stack-row">
+        <button className="btn" onClick={() => setOpen(false)} disabled={busy}>Cancel</button>
+        <div style={{ flex: 1 }} />
+        <button className="btn btn--primary" onClick={() => void submit()} disabled={busy}>
+          {busy ? "Writing…" : "Create"}
+        </button>
+      </div>
+      <div className="muted" style={{ marginTop: 8 }}>
+        Writes agent/schedules/&lt;name&gt;.ts in the agent's repo, rebuilds, and restarts it.
+      </div>
+    </div>
+  );
+}
+
 function Overview(): ReactNode {
   const { agents, activeAgentId, details, models, setPanel, openRoutine } = useStore();
   const agent = agents.find((a) => a.id === activeAgentId);
@@ -145,6 +206,7 @@ function Overview(): ReactNode {
         </div>
 
         <Section title="Routines" count={loaded ? schedules.length : undefined}>
+          <NewRoutine />
           {schedules.length === 0 ? (
             <Empty loaded={loaded} none="This agent runs nothing on a schedule." />
           ) : (
@@ -273,7 +335,7 @@ function RoutineView(): ReactNode {
 }
 
 function Settings(): ReactNode {
-  const { agents, activeAgentId, patchAgent, setPanel, details, models } = useStore();
+  const { agents, activeAgentId, patchAgent, setPanel, details, models, manageSecrets, setManageSecret } = useStore();
   const agent = agents.find((a) => a.id === activeAgentId);
   const info = details[activeAgentId];
   if (!agent) return null;
@@ -293,6 +355,21 @@ function Settings(): ReactNode {
             value={agent.name}
             onChange={(e) => patchAgent(agent.id, { name: e.target.value })}
           />
+        </div>
+
+        <div className="field">
+          <div className="field__label">Management key</div>
+          <input
+            className="input"
+            type="password"
+            placeholder="KYB_MANAGE_SECRET from this agent"
+            value={manageSecrets[agent.id] ?? ""}
+            onChange={(e) => setManageSecret(agent.id, e.target.value)}
+          />
+          <div className="muted" style={{ marginTop: 6 }}>
+            Lets Studio install capabilities and write routines on this agent. Stored on this
+            machine only. Without it the agent can still be talked to, just not changed.
+          </div>
         </div>
 
         <div className="card stack-row">

@@ -503,3 +503,34 @@ export async function sendTurn(input: {
 export function currentSession(): Session | null {
   return loadSession();
 }
+
+/**
+ * Management calls against an agent's own /eve/v1/kyb routes.
+ *
+ * These use a per-agent management secret rather than the user's identity token
+ * because the routes are not part of eve's authenticated surface — they are a
+ * separate channel with its own guard. That is a rough edge worth removing:
+ * installing software on an agent should ride the same governed identity as
+ * talking to it, not a second static credential.
+ */
+export async function manageCall(input: {
+  url: string;
+  secret: string;
+  path: string;
+  body?: unknown;
+}): Promise<{ ok: boolean; status: number; data: unknown }> {
+  const base = input.url.replace(/\/$/, "");
+  const res = await fetch(`${base}/eve/v1/kyb${input.path}`, {
+    method: input.body === undefined ? "GET" : "POST",
+    headers: {
+      authorization: `Bearer ${input.secret}`,
+      ...(input.body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    body: input.body === undefined ? undefined : JSON.stringify(input.body),
+    // Installs run npm and a full rebuild; a short timeout here would report a
+    // failure for work that is actually still going.
+    signal: AbortSignal.timeout(420_000),
+  });
+  const data = await res.json().catch(() => null);
+  return { ok: res.ok, status: res.status, data };
+}

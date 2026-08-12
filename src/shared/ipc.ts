@@ -83,6 +83,7 @@ export interface StudioApi {
   saveState(input: { name: string; value: unknown }): Promise<void>;
   /** Native folder picker; null when cancelled. */
   pickFolder(): Promise<string | null>;
+  manage(input: { url: string; secret: string; path: string; body?: unknown }): Promise<{ ok: boolean; status: number; data: unknown }>;
   setLocalPermission(input: {
     action: LocalAction;
     value: LocalPermission;

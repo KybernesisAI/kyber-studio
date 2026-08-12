@@ -10,6 +10,7 @@ import {
 import {
   type DeviceStart,
   agentInfo,
+  manageCall,
   currentSession,
   listAgents,
   pollDeviceAuth,
@@ -65,6 +66,11 @@ export function registerIpc(): void {
     saveState(input.name, input.value);
   });
   ipcMain.handle("studio:pickFolder", () => pickFolder());
+
+  ipcMain.handle(
+    "studio:manage",
+    (_e, input: { url: string; secret: string; path: string; body?: unknown }) => manageCall(input),
+  );
   ipcMain.handle(
     "studio:setLocalPermission",
     (_e, input: { action: LocalAction; value: LocalPermission }) => {

@@ -48,6 +48,22 @@ interface State {
    * must not conflate those.
    */
   details: Record<string, AgentSummary | undefined>;
+  /** Per-agent management secret. Local to this machine; never sent anywhere else. */
+  manageSecrets: Record<string, string | undefined>;
+  /** The agent's install catalog: what can be added, and what already is. */
+  catalog: Record<
+    string,
+    | {
+        items: { name: string; title?: string; description?: string; dependencies?: string[] }[];
+        installed: string[];
+        writable: boolean;
+        reason: string | null;
+      }
+    | undefined
+  >;
+  /** Item name currently installing, so the UI can show which row is working. */
+  installing: string | null;
+  manageError: string | null;
   /** Per-agent project folder on this machine, sent as context each turn. */
   workspaces: Record<string, string | undefined>;
   streaming: Record<string, string>;
@@ -67,6 +83,10 @@ interface State {
   persist(): void;
   refreshAgents(): Promise<void>;
   loadAgentInfo(agentId: string): Promise<void>;
+  setManageSecret(agentId: string, secret: string): void;
+  loadCatalog(agentId: string): Promise<void>;
+  install(agentId: string, item: string): Promise<void>;
+  createSchedule(agentId: string, input: { name: string; cron: string; instruction: string }): Promise<boolean>;
   setWorkspace(agentId: string, path: string | null): void;
   chooseWorkspace(agentId: string): Promise<void>;
   signIn(onCode: (code: string) => void): Promise<boolean>;
@@ -95,6 +115,10 @@ export const useStore = create<State>((set, get) => ({
   activity: {},
   models: {},
   details: {},
+  manageSecrets: {},
+  catalog: {},
+  installing: null,
+  manageError: null,
   workspaces: {},
   streaming: {},
 
@@ -230,6 +254,102 @@ export const useStore = create<State>((set, get) => ({
   patchAgent: (id, patch) =>
     set((s) => ({ agents: s.agents.map((a) => (a.id === id ? { ...a, ...patch } : a)) })),
 
+  setManageSecret: (agentId, secret) => {
+    set((s) => ({ manageSecrets: { ...s.manageSecrets, [agentId]: secret || undefined } }));
+    void window.studio?.saveState({ name: "manage.json", value: get().manageSecrets });
+  },
+
+  loadCatalog: async (agentId) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    const secret = get().manageSecrets[agentId];
+    if (!window.studio || !agent?.url || !secret) return;
+    set({ manageError: null });
+    const res = await window.studio.manage({ url: agent.url, secret, path: "/catalog" });
+    if (!res.ok) {
+      set({
+        manageError:
+          res.status === 401
+            ? "This agent rejected the management key."
+            : `The agent's management routes answered ${res.status}.`,
+      });
+      return;
+    }
+    const data = res.data as {
+      catalog?: { items?: { name: string; title?: string; description?: string }[] };
+      installed?: string[];
+      writable?: boolean;
+      reason?: string | null;
+    };
+    set((s) => ({
+      catalog: {
+        ...s.catalog,
+        [agentId]: {
+          items: data.catalog?.items ?? [],
+          installed: data.installed ?? [],
+          writable: Boolean(data.writable),
+          reason: data.reason ?? null,
+        },
+      },
+    }));
+  },
+
+  install: async (agentId, item) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    const secret = get().manageSecrets[agentId];
+    if (!window.studio || !agent?.url || !secret) return;
+    set({ installing: item, manageError: null });
+    try {
+      const res = await window.studio.manage({
+        url: agent.url,
+        secret,
+        path: "/install",
+        body: { item },
+      });
+      const data = (res.data ?? {}) as { ok?: boolean; error?: string; output?: string; note?: string };
+      if (!res.ok || !data.ok) {
+        // Show the agent's own output. An install failure is usually npm saying
+        // something specific, and hiding it behind "install failed" wastes the
+        // one piece of information that would fix it.
+        set({
+          manageError:
+            data.error ??
+            `Install failed${data.output ? `: ${data.output.slice(-400)}` : "."}`,
+        });
+        return;
+      }
+      // The agent is restarting; give it a moment before asking what it has now.
+      await new Promise((r) => setTimeout(r, 6000));
+      await get().loadCatalog(agentId);
+      await get().loadAgentInfo(agentId);
+    } finally {
+      set({ installing: null });
+    }
+  },
+
+  createSchedule: async (agentId, input) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    const secret = get().manageSecrets[agentId];
+    if (!window.studio || !agent?.url || !secret) {
+      set({ manageError: "Add this agent's management key in Settings first." });
+      return false;
+    }
+    set({ manageError: null });
+    const res = await window.studio.manage({
+      url: agent.url,
+      secret,
+      path: "/schedule",
+      body: input,
+    });
+    const data = (res.data ?? {}) as { ok?: boolean; error?: string; output?: string };
+    if (!res.ok || !data.ok) {
+      set({ manageError: data.error ?? `Could not create the routine (${res.status}).` });
+      return false;
+    }
+    await new Promise((r) => setTimeout(r, 6000));
+    await get().loadAgentInfo(agentId);
+    return true;
+  },
+
   setWorkspace: (agentId, path) => {
     set((s) => ({ workspaces: { ...s.workspaces, [agentId]: path ?? undefined } }));
     void window.studio?.saveState({ name: "workspaces.json", value: get().workspaces });
@@ -263,6 +383,8 @@ export const useStore = create<State>((set, get) => ({
     }
     const ws = await window.studio.loadState<Record<string, string>>("workspaces.json");
     if (ws) set({ workspaces: ws });
+    const secrets = await window.studio.loadState<Record<string, string>>("manage.json");
+    if (secrets) set({ manageSecrets: secrets });
   },
 
   /** Write the transcript now. Cheap, and called at every point worth surviving. */

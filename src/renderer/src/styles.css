@@ -583,3 +583,11 @@ input, textarea { font: inherit; color: inherit; }
 .crash__title { font-size: 16px; font-weight: 620; }
 .crash__detail { font-family: var(--font-mono); font-size: 12px; color: var(--danger); word-break: break-word; }
 .crash__hint { font-size: 12.5px; color: var(--ink-tertiary); }
+
+.modal__banner {
+  margin: 0 20px 4px; padding: 9px 12px; border-radius: 9px;
+  background: var(--hover); font-size: 12.5px; color: var(--ink-secondary);
+}
+.modal__banner--error { color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.linkish { color: var(--accent-deep); text-decoration: underline; font-size: 12.5px; }
+.plugin-row__added { display: flex; align-items: center; gap: 5px; color: var(--accent-deep); font-size: 12.5px; }
