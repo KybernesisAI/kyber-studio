@@ -7,7 +7,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "bash scripts/dev.sh",
     "start": "electron-vite preview",
     "build": "electron-vite build",
     "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
