@@ -106,6 +106,11 @@ export function registerIpc(): void {
             sender.send("studio:activity", { streamId: input.streamId, label });
           }
         },
+        onCursor: (index) => {
+          if (!sender.isDestroyed()) {
+            sender.send("studio:cursor", { streamId: input.streamId, index });
+          }
+        },
         onQuestion: (request) => {
           // Logged because a question that never reaches the window is
           // indistinguishable from an agent that said nothing.

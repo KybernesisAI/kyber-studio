@@ -431,6 +431,15 @@ export async function sendTurn(input: {
   onDelta(text: string): void;
   onActivity(label: string | null): void;
   /**
+   * The stream position, reported as it advances.
+   *
+   * A turn that throws never returns a result, so a cursor saved only on
+   * success goes stale the moment anything fails — and the next turn resumes
+   * from an old position and REPLAYS history, re-emitting questions the user
+   * already answered as if the agent had just asked them.
+   */
+  onCursor(index: number): void;
+  /**
    * The agent is asking the user something and will not continue until it is
    * answered. Dropping this event is why a turn that ended in a question looked
    * like an empty reply.
@@ -602,6 +611,7 @@ export async function sendTurn(input: {
             continue;
           }
           consumed += 1;
+          input.onCursor(consumed);
 
           const type = String(event.type ?? "");
           const data = (event.data ?? {}) as Record<string, unknown>;

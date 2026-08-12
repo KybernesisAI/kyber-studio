@@ -72,6 +72,7 @@ export interface StudioApi {
   onActivity(
     handler: (payload: { streamId: string; label: string | null }) => void,
   ): () => void;
+  onCursor(handler: (payload: { streamId: string; index: number }) => void): () => void;
   onQuestion(
     handler: (payload: {
       streamId: string;

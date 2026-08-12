@@ -53,6 +53,14 @@ function ensureListeners(
     set((s) => ({ activity: { ...s.activity, [agentId]: label } }));
   });
 
+  window.studio.onCursor(({ streamId, index }) => {
+    const agentId = streamOwners.get(streamId);
+    if (!agentId) return;
+    // Saved continuously, not just on success: a stale cursor makes the next
+    // turn replay old questions.
+    set((s) => ({ streamIndexes: { ...s.streamIndexes, [agentId]: index } }));
+  });
+
   window.studio.onQuestion(({ streamId, request }) => {
     const agentId = streamOwners.get(streamId);
     if (!agentId) return;
@@ -106,6 +114,28 @@ function upsertBlock(
       ),
     };
   });
+}
+
+/**
+ * Retire questions the agent has moved past.
+ *
+ * A turn that ends with a real answer and no new question means anything still
+ * unanswered above it is moot — the agent is not waiting on it. Leaving those
+ * cards live invites the user to answer a question that will never be read.
+ */
+function retireStaleQuestions(
+  get: () => State,
+  set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
+  agentId: string,
+): void {
+  set((s) => ({
+    conversations: {
+      ...s.conversations,
+      [agentId]: (s.conversations[agentId] ?? []).map((b) =>
+        b.kind === "question" && !b.answered ? { ...b, answered: "— no longer needed" } : b,
+      ),
+    },
+  }));
 }
 
 export type PanelView = "none" | "overview" | "routine" | "settings" | "channels";
@@ -312,6 +342,7 @@ export const useStore = create<State>((set, get) => ({
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
         }));
         if (res.reply) {
+          if (!res.askedQuestion) retireStaleQuestions(get, set, agentId);
           upsertBlock(get, set, agentId, bubbleId, res.reply);
         } else if (!res.askedQuestion) {
           upsertBlock(get, set, agentId, bubbleId, "(the agent returned no text for this turn)");
@@ -382,8 +413,10 @@ export const useStore = create<State>((set, get) => ({
           continuations: { ...s.continuations, [agentId]: res.continuationToken },
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
         }));
-        if (res.reply) upsertBlock(get, set, agentId, bubbleId, res.reply);
-        else if (!res.askedQuestion) {
+        if (res.reply) {
+          if (!res.askedQuestion) retireStaleQuestions(get, set, agentId);
+          upsertBlock(get, set, agentId, bubbleId, res.reply);
+        } else if (!res.askedQuestion) {
           upsertBlock(get, set, agentId, bubbleId, "(the agent returned no text for this turn)");
         }
       })
