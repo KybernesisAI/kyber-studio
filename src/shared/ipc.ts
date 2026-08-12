@@ -90,30 +90,25 @@ export interface StudioApi {
 }
 
 /**
- * What an agent reports about itself at `/eve/v1/info`.
+ * A flat, safe view of what an agent reports at `/eve/v1/info`.
  *
- * Shapes mirror eve's own schema. Everything is optional because this is a
- * remote agent that may run a different eve version than we expect — a missing
- * field must render as "not reported", never as an empty list that looks like a
- * confident "you have none".
+ * eve's own payload nests and groups: tools arrive as
+ * { authored, available, framework, … }, skills as { static, dynamic },
+ * channels as { authored, available, … }, subagents as { local, total }, and
+ * the model under an `agent` object. Consuming that shape directly in five
+ * components is how one wrong assumption crashed the window — so it is
+ * normalized once, defensively, and the UI only ever sees arrays.
  */
-export interface AgentInfo {
+export interface AgentSummary {
   name?: string;
-  model?: string | { id?: string };
-  instructions?: { name: string; markdown: string }[];
-  skills?: { name: string; description?: string; markdown?: string }[];
-  tools?: {
-    name: string;
-    description?: string;
-    origin?: "authored" | "framework";
-    requiresApproval?: boolean;
-  }[];
-  connections?: { connectionName: string; description?: string; hasAuthorization?: boolean }[];
-  subagents?: {
-    name: string;
-    description?: string;
-    summary?: { tools?: number; skills?: number; connections?: number; schedules?: number };
-  }[];
-  channels?: { name: string; method?: string; urlPath?: string; origin?: string }[];
-  schedules?: { name: string; cron?: string; hasRun?: boolean; markdown?: string }[];
+  model?: string;
+  schedules: { name: string; cron?: string; hasRun?: boolean; markdown?: string }[];
+  connections: { name: string; description?: string }[];
+  channels: { name: string; urlPath?: string }[];
+  skills: { name: string; description?: string }[];
+  tools: { name: string; description?: string }[];
+  subagents: { name: string; description?: string }[];
 }
+
+/** Raw payload, deliberately loose: a remote agent may run a different eve. */
+export type AgentInfo = Record<string, unknown>;

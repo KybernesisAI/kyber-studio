@@ -20,9 +20,9 @@ export function Plugins(): ReactNode {
   const query = q.trim().toLowerCase();
   const match = (t: string): boolean => !query || t.toLowerCase().includes(query);
 
-  const connections = (info?.connections ?? []).filter((c) => match(c.connectionName));
+  const connections = (info?.connections ?? []).filter((c) => match(c.name));
   const skills = (info?.skills ?? []).filter((s) => match(s.name));
-  const tools = (info?.tools ?? []).filter((t) => t.origin !== "framework" && match(t.name));
+  const tools = (info?.tools ?? []).filter((t) => match(t.name));
   const nothing = connections.length + skills.length + tools.length === 0;
 
   const group = (
@@ -86,11 +86,7 @@ export function Plugins(): ReactNode {
             <>
               {group(
                 "Connections",
-                connections.map((c) => ({
-                  key: c.connectionName,
-                  title: c.connectionName,
-                  detail: c.description,
-                })),
+                connections.map((c) => ({ key: c.name, title: c.name, detail: c.description })),
               )}
               {group("Skills", skills.map((s) => ({ key: s.name, title: s.name, detail: s.description })))}
               {group("Tools", tools.map((t) => ({ key: t.name, title: t.name, detail: t.description })))}

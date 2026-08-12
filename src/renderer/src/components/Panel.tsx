@@ -125,7 +125,7 @@ function Overview(): ReactNode {
   const channels = info?.channels ?? [];
   const skills = info?.skills ?? [];
   const subagents = info?.subagents ?? [];
-  const authored = (info?.tools ?? []).filter((t) => t.origin !== "framework");
+  const authored = info?.tools ?? [];
 
   return (
     <>
@@ -166,9 +166,9 @@ function Overview(): ReactNode {
           ) : (
             connections.map((c) => (
               <Row
-                key={c.connectionName}
+                key={c.name}
                 icon={<Icon name="plug" size={14} />}
-                title={c.connectionName}
+                title={c.name}
                 detail={c.description}
               />
             ))
@@ -197,10 +197,7 @@ function Overview(): ReactNode {
                 key={s.name}
                 icon={<Icon name="package" size={14} />}
                 title={s.name}
-                detail={
-                  s.description ??
-                  `${s.summary?.tools ?? 0} tools · ${s.summary?.skills ?? 0} skills`
-                }
+                detail={s.description}
               />
             ))}
           </Section>

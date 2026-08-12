@@ -154,15 +154,15 @@ export function Conversation(): ReactNode {
       .filter((r) => match(r.name))
       .map((r) => ({ id: `routine:${r.name}`, title: r.name, detail: r.cron, type: "Routine" }));
     const fromConnections: Suggestion[] = (info?.connections ?? [])
-      .filter((c) => match(c.connectionName))
+      .filter((c) => match(c.name))
       .map((c) => ({
-        id: `conn:${c.connectionName}`,
-        title: c.connectionName,
+        id: `conn:${c.name}`,
+        title: c.name,
         detail: c.description,
         type: "Plugin",
       }));
     const fromTools: Suggestion[] = (info?.tools ?? [])
-      .filter((t) => t.origin !== "framework" && match(t.name))
+      .filter((t) => match(t.name))
       .map((t) => ({ id: `tool:${t.name}`, title: t.name, detail: t.description, type: "Plugin" }));
     return [...fromRoutines, ...fromConnections, ...fromTools].slice(0, 8);
   })();

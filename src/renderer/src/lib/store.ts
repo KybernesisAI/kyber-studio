@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import type { AgentInfo } from "@shared/ipc";
+import type { AgentSummary } from "@shared/ipc";
+import { summarize } from "./agentInfo";
 import type {
   Agent,
   Block,
@@ -46,7 +47,7 @@ interface State {
    * a present-but-empty section means the agent genuinely has none. The panels
    * must not conflate those.
    */
-  details: Record<string, AgentInfo | undefined>;
+  details: Record<string, AgentSummary | undefined>;
   /** Per-agent project folder on this machine, sent as context each turn. */
   workspaces: Record<string, string | undefined>;
   streaming: Record<string, string>;
@@ -358,12 +359,14 @@ export const useStore = create<State>((set, get) => ({
   loadAgentInfo: async (agentId) => {
     const agent = get().agents.find((a) => a.id === agentId);
     if (!window.studio || !agent?.url) return;
-    const info = await window.studio.agentInfo(agent.url);
-    if (!info) return;
-    const model = typeof info.model === "string" ? info.model : info.model?.id;
+    const raw = await window.studio.agentInfo(agent.url);
+    if (!raw) return;
+    // Flatten eve's nested payload once, here, so no component has to know its
+    // shape — and so a change in that shape breaks one function, not five views.
+    const info = summarize(raw);
     set((s) => ({
       details: { ...s.details, [agentId]: info },
-      models: model ? { ...s.models, [agentId]: model } : s.models,
+      models: info.model ? { ...s.models, [agentId]: info.model } : s.models,
     }));
   },
 
