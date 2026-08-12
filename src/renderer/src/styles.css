@@ -175,7 +175,15 @@ input, textarea { font: inherit; color: inherit; }
 
 /* ── Conversation ──────────────────────────────────────────────────── */
 
-.main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--surface); }
+/* min-height: 0 is load-bearing. A flex item defaults to min-height: auto, so
+   it refuses to shrink below its content — the thread grows the column past the
+   window and carries the composer off the bottom of the screen with it. The
+   composer is not "unpinned"; it is being pushed. Same reason on .thread: only
+   an item that may shrink can scroll its own overflow. */
+.main {
+  flex: 1; display: flex; flex-direction: column;
+  min-width: 0; min-height: 0; background: var(--surface);
+}
 
 .topbar {
   height: 52px; flex: none;
@@ -193,7 +201,7 @@ input, textarea { font: inherit; color: inherit; }
 .topbar__btn:hover { background: var(--hover); }
 .topbar__btn--on { background: var(--selected); color: var(--ink); }
 
-.thread { flex: 1; overflow-y: auto; padding: 6px 0 4px; }
+.thread { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 0 4px; }
 .thread__inner { max-width: 780px; margin: 0 auto; padding: 0 20px; display: flex; flex-direction: column; gap: 8px; }
 .thread::-webkit-scrollbar { width: 8px; }
 .thread::-webkit-scrollbar-thumb { background: var(--stroke-strong); border-radius: 4px; }

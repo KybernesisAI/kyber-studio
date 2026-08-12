@@ -178,12 +178,48 @@ export function Conversation(): ReactNode {
   const [draft, setDraft] = useState("");
   const [acCursor, setAcCursor] = useState(0);
   const [folderMenu, setFolderMenu] = useState(false);
-  const endRef = useRef<HTMLDivElement>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /**
+   * Whether the view is following the tail of the conversation.
+   *
+   * Scrolling on new blocks alone is not enough: a reply arrives as one block
+   * whose text keeps growing, and the activity line and tool calls appear
+   * underneath it. None of that changes the block COUNT, so the window sat
+   * still while the answer wrote itself just out of sight — the agent looked
+   * idle when it was working.
+   *
+   * Following is a mode the user controls by scrolling. Scroll up to read
+   * something and the view stops chasing; return to the bottom and it resumes.
+   * Yanking someone back mid-read would be worse than not scrolling at all.
+   */
+  const following = useRef(true);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
-  }, [blocks.length, activeAgentId]);
+    const thread = threadRef.current;
+    const inner = innerRef.current;
+    if (!thread || !inner) return;
+
+    const toBottom = (): void => {
+      // Assigning scrollTop rather than scrollIntoView: this scrolls exactly
+      // one container, and stays smooth under rapid streaming updates.
+      thread.scrollTop = thread.scrollHeight;
+    };
+
+    // Any change in rendered height — a delta, a tool call, a card expanding.
+    const observer = new ResizeObserver(() => {
+      if (following.current) toBottom();
+    });
+    observer.observe(inner);
+    toBottom();
+    return () => observer.disconnect();
+  }, [activeAgentId]);
+
+  // Switching conversations always lands at the newest message.
+  useEffect(() => {
+    following.current = true;
+  }, [activeAgentId]);
 
   useEffect(() => {
     void loadAgentInfo(activeAgentId);
@@ -321,8 +357,17 @@ export function Conversation(): ReactNode {
         </button>
       </div>
 
-      <div className="thread">
-        <div className="thread__inner">
+      <div
+        className="thread"
+        ref={threadRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          // A small tolerance: sub-pixel layout and the last delta both leave
+          // you a few pixels short of the true bottom.
+          following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+        }}
+      >
+        <div className="thread__inner" ref={innerRef}>
           {blocks.map((b) => {
             if (b.kind === "peer-activity") return <PeerActivity key={b.id} events={b.events} />;
             if (b.kind === "connection") return <ConnectionCard key={b.id} block={b} />;
@@ -349,7 +394,6 @@ export function Conversation(): ReactNode {
               <span className="activity__label">{busy}</span>
             </div>
           ) : null}
-          <div ref={endRef} />
         </div>
       </div>
 
