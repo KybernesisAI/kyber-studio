@@ -154,12 +154,13 @@ input, textarea { font: inherit; color: inherit; }
 }
 .row__pin { color: var(--ink-tertiary); flex: none; }
 
-.sidebar__foot { padding: 6px 0; border-top: 0.5px solid var(--stroke); -webkit-app-region: no-drag; }
+.sidebar__foot { padding: 4px 8px 6px; border-top: 0.5px solid var(--stroke); -webkit-app-region: no-drag; }
 .foot-row {
+  /* The same inset and radius as .row above it: the footer is the bottom of
+     the same list, so its highlight has to be the same shape as an agent's. */
   display: flex; align-items: center; gap: 10px; width: 100%;
-  /* Full width of the sidebar: the highlight should read as a row in a list,
-     not as a floating pill inset from every edge. */
-  padding: 9px 14px; font-size: 13.5px; min-height: 40px;
+  padding: 8px; border-radius: var(--radius);
+  font-size: 13.5px; min-height: 36px;
 }
 .foot-row:hover { background: var(--hover); }
 .foot-row__label { flex: 1; text-align: left; }
@@ -555,7 +556,11 @@ input, textarea { font: inherit; color: inherit; }
 .md-ul { margin: 0 0 8px; padding-left: 20px; }
 .md-ul li { margin: 2px 0; }
 
-.bubble--agent { max-width: 100%; }
+/* Neither side runs the full width of the thread. The ragged edge is what makes
+   a conversation legible at a glance: yours hug the right, the agent's hug the
+   left, and the gap opposite each one says who is speaking before you read a
+   word. Full-width blocks on both sides lose that entirely. */
+.bubble--agent { max-width: 86%; }
 
 .code {
   margin: 9px 0; border-radius: 10px; overflow: hidden;
