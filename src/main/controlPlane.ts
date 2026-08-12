@@ -488,6 +488,44 @@ function clientFor(base: string): Client {
   return client;
 }
 
+/**
+ * The absolute index of the last event durably recorded for a session.
+ *
+ * eve answers this from a header when a catch-up read asks for it, so it costs
+ * one request and no body. Null means we could not find out — the caller then
+ * falls back to its remembered cursor rather than guessing at zero, which would
+ * replay the entire conversation.
+ */
+async function tailIndex(base: string, sessionId: string, from: number): Promise<number | null> {
+  const s = await activeSession();
+  if (!s?.bundle) return null;
+  const url = new URL(`${base}/eve/v1/session/${encodeURIComponent(sessionId)}/stream`);
+  // Start from the cursor we already hold rather than 0: includeTailIndex makes
+  // this a catch-up read that stops at the tail instead of following the live
+  // stream, so an accurate cursor means an empty body and an immediate close.
+  url.searchParams.set("startIndex", String(Math.max(0, from)));
+  url.searchParams.set("includeTailIndex", "1");
+  const controller = new AbortController();
+  try {
+    const res = await fetch(url, {
+      headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
+      signal: controller.signal,
+    });
+    const header = res.headers.get("x-eve-stream-tail-index");
+    // The body is a full replay of the session; we only ever wanted the header.
+    controller.abort();
+    if (!res.ok || header === null) return null;
+    const tail = Number.parseInt(header, 10);
+    if (!Number.isFinite(tail)) return null;
+    // The header is the index of the LAST recorded event; resuming means the
+    // one after it. -1 (nothing recorded yet) correctly becomes 0.
+    return tail + 1;
+  } catch {
+    controller.abort();
+    return null;
+  }
+}
+
 /** Turn a ClientError into something that says what to do about it. */
 function describeClientError(error: unknown, base: string): Error {
   if (!(error instanceof ClientError)) {
@@ -613,10 +651,31 @@ export async function sendTurn(input: {
   }
 
   const base = input.url.replace(/\/$/, "");
+
+  /**
+   * Start this turn at the stream's CURRENT tail, not at a remembered cursor.
+   *
+   * A cursor that falls behind never recovers on its own, and it fails in the
+   * most misleading way available: the client resumes at the old position,
+   * reads the previous turn's events, stops at the boundary it finds there, and
+   * hands back that turn's reply. The agent looks like it is answering the
+   * wrong question. Ask three things and you get three answers, each one behind
+   * — and because each turn only advances to the boundary it just replayed, the
+   * lag is self-sustaining.
+   *
+   * Studio renders its own persisted transcript, so it never wants history from
+   * this stream — only the turn it is about to send. The tail is therefore the
+   * only correct starting point, and reading it fresh each time makes any drift
+   * self-correcting rather than permanent.
+   */
+  const resumeAt = input.sessionId
+    ? ((await tailIndex(base, input.sessionId, input.streamIndex ?? 0)) ?? input.streamIndex ?? 0)
+    : 0;
+
   const session = clientFor(base).session({
     sessionId: input.sessionId,
     continuationToken: input.continuationToken,
-    streamIndex: input.streamIndex ?? 0,
+    streamIndex: resumeAt,
   });
 
   let reply = "";
@@ -625,6 +684,14 @@ export async function sendTurn(input: {
   const memo: { lastTool: string | null } = { lastTool: null };
   let sawSpecific = false;
 
+  /**
+   * Publish the cursor only once the turn is over.
+   *
+   * `ClientSession.state` advances in the stream generator's finally block, so
+   * reading it mid-turn returns the value we passed IN. Publishing that on every
+   * event raced the correct value through IPC and could overwrite it with the
+   * pre-turn position — re-creating the very drift this is meant to avoid.
+   */
   const publishCursor = (): void => {
     const at = session.state.streamIndex;
     if (typeof at === "number") input.onCursor(at);
@@ -743,8 +810,6 @@ export async function sendTurn(input: {
         const message = typeof data.message === "string" ? data.message : "the turn failed";
         throw new Error(`Agent error: ${message}`);
       }
-
-      publishCursor();
     }
   } catch (error) {
     throw describeClientError(error, base);
