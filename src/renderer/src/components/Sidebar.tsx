@@ -1,0 +1,202 @@
+import { type ReactNode, useEffect, useState } from "react";
+import type { Agent } from "@shared/types";
+import { useStore } from "@/lib/store";
+import { Avatar, Icon, timeLabel } from "./primitives";
+
+interface MenuState {
+  x: number;
+  y: number;
+  agent: Agent;
+}
+
+function ContextMenu({
+  state,
+  onClose,
+}: {
+  state: MenuState;
+  onClose(): void;
+}): ReactNode {
+  const { patchAgent, setPanel, select } = useStore();
+  const { agent } = state;
+
+  useEffect(() => {
+    const dismiss = (): void => onClose();
+    window.addEventListener("click", dismiss);
+    window.addEventListener("contextmenu", dismiss);
+    return () => {
+      window.removeEventListener("click", dismiss);
+      window.removeEventListener("contextmenu", dismiss);
+    };
+  }, [onClose]);
+
+  const item = (icon: string, label: string, action: () => void, danger = false): ReactNode => (
+    <button
+      className={`menu__item${danger ? " menu__item--danger" : ""}`}
+      onClick={() => {
+        action();
+        onClose();
+      }}
+    >
+      <Icon name={icon} />
+      {label}
+    </button>
+  );
+
+  // Keep the menu on screen when the click lands near the bottom edge.
+  const top = Math.min(state.y, window.innerHeight - 330);
+
+  return (
+    <div className="menu" style={{ left: state.x, top }} onClick={(e) => e.stopPropagation()}>
+      {item("pin", agent.pinned ? "Unpin" : "Pin", () => patchAgent(agent.id, { pinned: !agent.pinned }))}
+      {item("folderPlus", "Move to new section", () => undefined)}
+      {item("bell", agent.unread ? "Mark as Read" : "Mark as Unread", () =>
+        patchAgent(agent.id, { unread: !agent.unread }),
+      )}
+      <div className="menu__sep" />
+      {item("pencil", "Edit Profile", () => {
+        select(agent.id);
+        setPanel("settings");
+      })}
+      {item("copy", "Duplicate", () => undefined)}
+      <div className="menu__sep" />
+      {item("copy", "Copy conversation ID", () => {
+        void navigator.clipboard.writeText(agent.id);
+      })}
+      <div className="menu__sep" />
+      {item("eyeOff", "Hide from sidebar", () => patchAgent(agent.id, { hidden: true }))}
+      {item("trash", "Delete", () => patchAgent(agent.id, { hidden: true }), true)}
+    </div>
+  );
+}
+
+function Row({
+  agent,
+  onMenu,
+}: {
+  agent: Agent;
+  onMenu(state: MenuState): void;
+}): ReactNode {
+  const { activeAgentId, select } = useStore();
+  const active = agent.id === activeAgentId;
+
+  return (
+    <div
+      className={`row${active ? " row--active" : ""}`}
+      onClick={() => select(agent.id)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        select(agent.id);
+        onMenu({ x: e.clientX, y: e.clientY, agent });
+      }}
+    >
+      <Avatar name={agent.name} accent={agent.accent} />
+      <div className="row__body">
+        <div className="row__line">
+          <span className="row__name">{agent.name}</span>
+          {agent.pinned ? <span className="row__pin"><Icon name="pin" size={12} /></span> : null}
+          <span className="row__time">{agent.lastMessageAt ? timeLabel(agent.lastMessageAt) : ""}</span>
+        </div>
+        <div className="row__line">
+          <div className="row__preview">{agent.lastMessagePreview ?? "No messages yet"}</div>
+          {agent.unread ? <span className="row__unread" /> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function Sidebar(): ReactNode {
+  const { agents, query, setPluginsOpen, setPaletteOpen, account, signOut, refreshAgents, issuer } =
+    useStore();
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const [accountMenu, setAccountMenu] = useState(false);
+
+  const q = query.trim().toLowerCase();
+  const visible = agents
+    .filter((a) => !a.hidden)
+    .filter((a) => !q || a.name.toLowerCase().includes(q) || (a.lastMessagePreview ?? "").toLowerCase().includes(q));
+
+  const pinned = visible.filter((a) => a.pinned);
+  const rest = visible.filter((a) => !a.pinned);
+
+  return (
+    <aside className="sidebar">
+      <div className="sidebar__top">
+        <button className="topbar__btn" title="New conversation" style={{ WebkitAppRegion: "no-drag" } as never}>
+          <Icon name="plus" />
+        </button>
+      </div>
+
+      <div className="sidebar__search">
+        <button className="search search--button" onClick={() => setPaletteOpen(true)}>
+          <Icon name="search" size={14} />
+          <span className="search__placeholder">Search</span>
+          <span className="kbd">⌘K</span>
+        </button>
+      </div>
+
+      <div className="sidebar__list">
+        {pinned.length > 0 ? (
+          <>
+            <div className="section-head">Pinned</div>
+            {pinned.map((a) => (
+              <Row key={a.id} agent={a} onMenu={setMenu} />
+            ))}
+            {rest.length > 0 ? <div className="section-head">Agents</div> : null}
+          </>
+        ) : null}
+        {rest.map((a) => (
+          <Row key={a.id} agent={a} onMenu={setMenu} />
+        ))}
+        {visible.length === 0 ? <div className="empty">No agents match “{query}”.</div> : null}
+      </div>
+
+      <div className="sidebar__foot">
+        <button className="foot-row" onClick={() => setPluginsOpen(true)}>
+          <Icon name="plug" />
+          <span className="foot-row__label">Plugins</span>
+        </button>
+        <button className="foot-row" onClick={() => setAccountMenu((v) => !v)}>
+          <Avatar name={account?.email ?? "?"} accent="#1b3a34" size={26} />
+          <span className="foot-row__label">
+            <span style={{ display: "block" }}>{account?.email ?? "Not signed in"}</span>
+            {account?.orgName ? (
+              <span style={{ display: "block", fontSize: 11.5, color: "var(--ink-tertiary)" }}>
+                {account.orgName}
+              </span>
+            ) : null}
+          </span>
+          <Icon name="chevronRight" size={13} />
+        </button>
+
+        {accountMenu ? (
+          <div className="account-menu">
+            <button
+              className="menu__item"
+              onClick={() => {
+                setAccountMenu(false);
+                void refreshAgents();
+              }}
+            >
+              <Icon name="download" /> Refresh agents
+            </button>
+            <div className="menu__sep" />
+            <button
+              className="menu__item menu__item--danger"
+              onClick={() => {
+                setAccountMenu(false);
+                void signOut();
+              }}
+            >
+              <Icon name="close" /> Sign out
+            </button>
+            <div className="account-menu__issuer">{issuer}</div>
+          </div>
+        ) : null}
+      </div>
+
+      {menu ? <ContextMenu state={menu} onClose={() => setMenu(null)} /> : null}
+    </aside>
+  );
+}

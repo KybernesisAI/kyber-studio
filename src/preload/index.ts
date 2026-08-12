@@ -1,0 +1,59 @@
+import { electronAPI } from "@electron-toolkit/preload";
+import { contextBridge, ipcRenderer } from "electron";
+import type { StudioApi } from "../shared/ipc";
+
+/**
+ * The only bridge. Tokens live in the main process and never reach the
+ * renderer — web content gets answers, not credentials.
+ */
+const studio: StudioApi = {
+  session: () => ipcRenderer.invoke("studio:session"),
+  signIn: () => ipcRenderer.invoke("studio:signIn"),
+  awaitSignIn: () => ipcRenderer.invoke("studio:awaitSignIn"),
+  signOut: () => ipcRenderer.invoke("studio:signOut"),
+  listAgents: () => ipcRenderer.invoke("studio:listAgents"),
+  send: (input) => ipcRenderer.invoke("studio:send", input),
+  agentInfo: (url) => ipcRenderer.invoke("studio:agentInfo", url),
+  localAnswer: (input) => ipcRenderer.invoke("studio:localAnswer", input),
+  localPermissions: () => ipcRenderer.invoke("studio:localPermissions"),
+  loadState: (name) => ipcRenderer.invoke("studio:loadState", name),
+  saveState: (input) => ipcRenderer.invoke("studio:saveState", input),
+  pickFolder: () => ipcRenderer.invoke("studio:pickFolder"),
+  setLocalPermission: (input) => ipcRenderer.invoke("studio:setLocalPermission", input),
+  onLocalAsk: (handler) => {
+    const listener = (_e: unknown, ask: Parameters<typeof handler>[0]): void => handler(ask);
+    ipcRenderer.on("studio:local-ask", listener);
+    return () => ipcRenderer.off("studio:local-ask", listener);
+  },
+  onLocalDone: (handler) => {
+    const listener = (_e: unknown, p: { id: string }): void => handler(p);
+    ipcRenderer.on("studio:local-done", listener);
+    return () => ipcRenderer.off("studio:local-done", listener);
+  },
+  onActivity: (handler) => {
+    const listener = (_e: unknown, payload: { streamId: string; label: string | null }): void =>
+      handler(payload);
+    ipcRenderer.on("studio:activity", listener);
+    return () => ipcRenderer.off("studio:activity", listener);
+  },
+  onDelta: (handler) => {
+    const listener = (_e: unknown, payload: { streamId: string; text: string }): void =>
+      handler(payload);
+    ipcRenderer.on("studio:delta", listener);
+    return () => ipcRenderer.off("studio:delta", listener);
+  },
+};
+
+if (process.contextIsolated) {
+  try {
+    contextBridge.exposeInMainWorld("electron", electronAPI);
+    contextBridge.exposeInMainWorld("studio", studio);
+  } catch (error) {
+    console.error(error);
+  }
+} else {
+  // @ts-expect-error -- contextIsolation disabled
+  window.electron = electronAPI;
+  // @ts-expect-error -- contextIsolation disabled
+  window.studio = studio;
+}
