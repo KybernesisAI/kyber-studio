@@ -15,149 +15,6 @@ import type {
  * client is a change of source, not of shape.
  */
 
-const now = Date.now();
-const mins = (n: number) => now - n * 60_000;
-
-const AGENTS: Agent[] = [
-  {
-    id: "sid",
-    name: "Chief of Staff",
-    title: "Personal chief of staff",
-    description: "Holds commitments, follow-ups, and the calendar. Pulls you in for decisions.",
-    url: "https://sid-agent.exe.xyz",
-    accent: "#2ec4a6",
-    pinned: true,
-    notifications: true,
-    status: "online",
-    lastMessageAt: mins(4),
-    lastMessagePreview: "OPS-13 is on the board — renew the DE registered agent.",
-  },
-  {
-    id: "gtm",
-    name: "Content",
-    title: "GTM content agent",
-    description: "Drafts, edits, and ships go-to-market content.",
-    url: "https://eve-gtm.vercel.app",
-    accent: "#f0883e",
-    status: "online",
-    lastMessageAt: mins(52),
-    lastMessagePreview: "Draft is ready for the launch note.",
-  },
-  {
-    id: "builder",
-    name: "Developer",
-    title: "Engineer",
-    description: "Builds and ships software. Screenshots what it makes.",
-    url: "https://sid-agent.exe.xyz",
-    accent: "#7c6cf0",
-    status: "online",
-    unread: true,
-    lastMessageAt: mins(96),
-    lastMessagePreview: "Preview is up — the pricing page renders correctly now.",
-  },
-];
-
-const SECTIONS: Section[] = [];
-
-const CONVERSATIONS: Record<string, Block[]> = {
-  sid: [
-    {
-      kind: "text",
-      id: "m1",
-      role: "user",
-      at: mins(14),
-      text: "What's on the Company Operations Board right now?",
-    },
-    {
-      kind: "text",
-      id: "m2",
-      role: "agent",
-      at: mins(13),
-      text: "Ten live rows. The ones that actually want you this week:\n\nBOI setup — incorporate Thai entity (In Progress)\nUnblock Vertex Retail onboarding — client data access (In Progress)\nFollow up with Harrison Assessments on the consulting agreement (Planning)",
-    },
-    {
-      kind: "peer-activity",
-      id: "p1",
-      at: mins(12),
-      events: [
-        {
-          id: "pe1",
-          direction: "outbound",
-          peer: { id: "builder", name: "Developer", accent: "#7c6cf0" },
-          text: "Can you check whether the Vertex data-access blocker is on our side?",
-          at: mins(12),
-        },
-        {
-          id: "pe2",
-          direction: "inbound",
-          peer: { id: "builder", name: "Developer", accent: "#7c6cf0" },
-          text: "Their IP allowlist is missing our egress range. Not a code issue — needs their IT.",
-          at: mins(11),
-        },
-        {
-          id: "pe3",
-          direction: "outbound",
-          peer: { id: "gtm", name: "Content", accent: "#f0883e" },
-          text: "Hold the Vertex case study until onboarding clears.",
-          at: mins(11),
-        },
-      ],
-    },
-    {
-      kind: "text",
-      id: "m3",
-      role: "agent",
-      at: mins(10),
-      text: "Vertex is not blocked on us — their IP allowlist is missing our egress range, so it needs their IT, not a fix here. I've asked Content to hold the case study until it clears.",
-    },
-    {
-      kind: "connection",
-      id: "c1",
-      at: mins(9),
-      name: "Notion",
-      description: "Company boards — tasks, meetings, projects, goals, and the team directory.",
-      toolCount: 14,
-      icon: "N",
-      accounts: [
-        { id: "kyb", label: "kybernesis", connected: true },
-        { id: "personal", label: "personal", connected: false },
-      ],
-    },
-    {
-      kind: "text",
-      id: "m4",
-      role: "user",
-      at: mins(6),
-      text: "Add a task: renew the DE registered agent. Operations, high priority, due Sept 15.",
-    },
-    {
-      kind: "text",
-      id: "m5",
-      role: "agent",
-      at: mins(4),
-      text: "Added OPS-13: renew the DE registered agent. High priority, Operations, due September 15, 2026.",
-    },
-  ],
-  gtm: [
-    {
-      kind: "text",
-      id: "g1",
-      role: "agent",
-      at: mins(52),
-      text: "Draft is ready for the launch note. Two open questions in the margin — pricing line and whether we name the pilot client.",
-    },
-  ],
-  builder: [
-    {
-      kind: "text",
-      id: "b1",
-      role: "agent",
-      at: mins(96),
-      text: "Preview is up — the pricing page renders correctly now. The overflow was a grid-template on the comparison table, not the cards.",
-    },
-  ],
-};
-
 export type PanelView = "none" | "overview" | "routine" | "settings" | "channels";
 
 interface State {
@@ -205,6 +62,8 @@ interface State {
   patchAgent(id: string, patch: Partial<Agent>): void;
 
   bootstrap(): Promise<void>;
+  restore(): Promise<void>;
+  persist(): void;
   refreshAgents(): Promise<void>;
   loadAgentInfo(agentId: string): Promise<void>;
   setWorkspace(agentId: string, path: string | null): void;
@@ -214,11 +73,11 @@ interface State {
 }
 
 export const useStore = create<State>((set, get) => ({
-  agents: AGENTS,
-  sections: SECTIONS,
-  conversations: CONVERSATIONS,
+  agents: [],
+  sections: [],
+  conversations: {},
 
-  activeAgentId: "sid",
+  activeAgentId: "",
   query: "",
   panel: "none",
   activeRoutineId: null,
@@ -263,6 +122,9 @@ export const useStore = create<State>((set, get) => ({
         a.id === agentId ? { ...a, lastMessageAt: at, lastMessagePreview: text } : a,
       ),
     }));
+    // Save the question immediately. If the app dies mid-turn, losing the answer
+    // is annoying; losing what you asked is worse.
+    get().persist();
 
     const agent = get().agents.find((a) => a.id === agentId);
 
@@ -354,15 +216,7 @@ export const useStore = create<State>((set, get) => ({
       .finally(() => {
         unsubscribe();
         stopActivity();
-        void window.studio?.saveState({
-          name: "conversations.json",
-          value: {
-            conversations: get().conversations,
-            sessions: get().sessions,
-            continuations: get().continuations,
-            streamIndexes: get().streamIndexes,
-          },
-        });
+        get().persist();
         set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
         set((s) => {
           const rest = { ...s.streaming };
@@ -383,6 +237,44 @@ export const useStore = create<State>((set, get) => ({
   chooseWorkspace: async (agentId) => {
     const path = await window.studio?.pickFolder();
     if (path) get().setWorkspace(agentId, path);
+  },
+
+  /**
+   * Rehydrate from disk. Called on launch AND after signing in — signing in
+   * used to skip it, so a fresh login started empty and the next completed turn
+   * saved that emptiness over the real history.
+   */
+  restore: async () => {
+    if (!window.studio) return;
+    const saved = await window.studio.loadState<{
+      conversations: Record<string, Block[]>;
+      sessions: Record<string, string | undefined>;
+      continuations: Record<string, string | undefined>;
+      streamIndexes: Record<string, number | undefined>;
+    }>("conversations.json");
+    if (saved?.conversations) {
+      set({
+        conversations: saved.conversations,
+        sessions: saved.sessions ?? {},
+        continuations: saved.continuations ?? {},
+        streamIndexes: saved.streamIndexes ?? {},
+      });
+    }
+    const ws = await window.studio.loadState<Record<string, string>>("workspaces.json");
+    if (ws) set({ workspaces: ws });
+  },
+
+  /** Write the transcript now. Cheap, and called at every point worth surviving. */
+  persist: () => {
+    void window.studio?.saveState({
+      name: "conversations.json",
+      value: {
+        conversations: get().conversations,
+        sessions: get().sessions,
+        continuations: get().continuations,
+        streamIndexes: get().streamIndexes,
+      },
+    });
   },
 
   bootstrap: async () => {
@@ -408,25 +300,9 @@ export const useStore = create<State>((set, get) => ({
         account: { email: session.email, orgName: session.orgName },
       });
 
-      // Restore the last session before touching the network, so reopening the
-      // app shows the conversation immediately rather than an empty window that
-      // fills in later.
-      const saved = await window.studio.loadState<{
-        conversations: Record<string, Block[]>;
-        sessions: Record<string, string | undefined>;
-        continuations: Record<string, string | undefined>;
-        streamIndexes: Record<string, number | undefined>;
-      }>("conversations.json");
-      if (saved?.conversations) {
-        set({
-          conversations: saved.conversations,
-          sessions: saved.sessions ?? {},
-          continuations: saved.continuations ?? {},
-          streamIndexes: saved.streamIndexes ?? {},
-        });
-      }
-      const ws = await window.studio.loadState<Record<string, string>>("workspaces.json");
-      if (ws) set({ workspaces: ws });
+      // Restore before touching the network, so reopening shows the
+      // conversation immediately rather than an empty window that fills in later.
+      await get().restore();
 
       await get().refreshAgents();
     } catch (e) {
@@ -503,6 +379,7 @@ export const useStore = create<State>((set, get) => ({
         account: { email: session.email, orgName: session.orgName },
         authError: null,
       });
+      await get().restore();
       await get().refreshAgents();
       return true;
     } catch (e) {
@@ -512,7 +389,11 @@ export const useStore = create<State>((set, get) => ({
   },
 
   signOut: async () => {
+    // Persist first, and keep the transcript. Signing out ends a SESSION, not a
+    // history — the eve session ids are dropped because they will not resume,
+    // but what was said stays and reappears on the next sign-in.
+    get().persist();
     await window.studio?.signOut();
-    set({ authState: "signed-out", account: null, sessions: {} });
+    set({ authState: "signed-out", account: null, sessions: {}, streamIndexes: {} });
   },
 }));

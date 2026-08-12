@@ -15,6 +15,24 @@ import { Avatar, Icon, Toggle } from "./primitives";
  * Save button with nowhere to POST would be worse than no button.
  */
 
+/**
+ * Never throws.
+ *
+ * `new URL()` rejects anything that is not an absolute URL, and a control-plane
+ * record can legitimately hold a bare host or a daemon endpoint. A panel must
+ * not be able to take the whole renderer down because an agent was registered
+ * with an odd URL — showing the raw value is a fine answer; a white window is
+ * not.
+ */
+function hostOf(url?: string): string {
+  if (!url) return "—";
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 function Head({
   title,
   onBack,
@@ -116,7 +134,7 @@ function Overview(): ReactNode {
         <div className="card" style={{ marginBottom: 4 }}>
           <div className="stack-row" style={{ marginBottom: 6 }}>
             <span style={{ flex: 1 }} className="muted">Host</span>
-            <span style={{ fontSize: 12.5 }}>{agent.url ? new URL(agent.url).host : "—"}</span>
+            <span style={{ fontSize: 12.5 }}>{hostOf(agent.url)}</span>
           </div>
           <div className="stack-row">
             <span style={{ flex: 1 }} className="muted">Model</span>
@@ -306,7 +324,7 @@ function Settings(): ReactNode {
             </div>
             <div className="stack-row">
               <span style={{ flex: 1 }} className="muted">Host</span>
-              <span style={{ fontSize: 12.5 }}>{agent.url ? new URL(agent.url).host : "—"}</span>
+              <span style={{ fontSize: 12.5 }}>{hostOf(agent.url)}</span>
             </div>
           </div>
         </div>
