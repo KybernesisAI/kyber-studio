@@ -666,6 +666,8 @@ export async function sendTurn(input: {
   inputResponses?: { requestId: string; optionId?: string; text?: string }[];
   clientContext?: Record<string, unknown>;
   onDelta(text: string): void;
+  /** Clear what has been streamed so far: the block just ended was narration. */
+  onReset?(): void;
   onActivity(label: string | null): void;
   /**
    * The stream position, reported as it advances.
@@ -965,9 +967,31 @@ export async function sendTurn(input: {
         input.onActivity(null);
         reply += data.messageDelta;
         input.onDelta(data.messageDelta);
-      } else if (type === "message.completed" && typeof data.message === "string" && !reply) {
-        reply = data.message;
-        input.onDelta(data.message);
+      } else if (type === "message.completed" && typeof data.message === "string") {
+        /**
+         * An agent narrates before it acts: "I'll pull your recordings and
+         * check memory." eve emits each of those as its own completed message
+         * with finishReason "tool-calls", and only the last block — finishing
+         * on "stop" — is the answer.
+         *
+         * Treating them all as one reply concatenates a dozen intentions into a
+         * wall of text where the actual answer arrives last and unannounced. It
+         * reads like the model thinking out loud into the transcript, which is
+         * precisely what it is.
+         *
+         * So narration becomes the activity line, where a running commentary
+         * belongs, and the bubble is cleared for the real reply.
+         */
+        if (data.finishReason === "tool-calls") {
+          const narration = data.message.trim();
+          if (narration) input.onActivity(narration.slice(0, 120));
+          reply = "";
+          input.onReset?.();
+        } else {
+          reply = data.message;
+          input.onReset?.();
+          input.onDelta(data.message);
+        }
       } else if (type === "turn.failed" || type === "session.failed" || type === "step.failed") {
         const message = typeof data.message === "string" ? data.message : "the turn failed";
         throw new Error(`Agent error: ${message}`);

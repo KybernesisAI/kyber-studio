@@ -141,6 +141,7 @@ export interface StudioApi {
   onTurn(
     handler: (payload: { streamId: string; sessionId: string; turnId?: string }) => void,
   ): () => void;
+  onReset(handler: (payload: { streamId: string }) => void): () => void;
   onActivity(
     handler: (payload: { streamId: string; label: string | null }) => void,
   ): () => void;

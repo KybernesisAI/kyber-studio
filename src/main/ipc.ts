@@ -166,6 +166,9 @@ export function registerIpc(): void {
           // The window can go away mid-turn; writing to a destroyed sender throws.
           if (!sender.isDestroyed()) sender.send("studio:delta", { streamId: input.streamId, text });
         },
+        onReset: () => {
+          if (!sender.isDestroyed()) sender.send("studio:reset", { streamId: input.streamId });
+        },
         onActivity: (label) => {
           if (!sender.isDestroyed()) {
             sender.send("studio:activity", { streamId: input.streamId, label });

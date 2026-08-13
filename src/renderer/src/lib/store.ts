@@ -55,6 +55,22 @@ function ensureListeners(
     }));
   });
 
+  window.studio.onReset(({ streamId }) => {
+    const agentId = streamOwners.get(streamId);
+    if (!agentId) return;
+    // The block that just ended was the agent saying what it was about to do.
+    // Drop it from the transcript: it has already been shown as activity, and
+    // keeping it would leave a paragraph of intentions above the answer.
+    set((s) => ({ streaming: { ...s.streaming, [streamId]: "" } }));
+    const bubbleId = `a${streamId.slice(1)}`;
+    set((s) => ({
+      conversations: {
+        ...s.conversations,
+        [agentId]: (s.conversations[agentId] ?? []).filter((b) => b.id !== bubbleId),
+      },
+    }));
+  });
+
   window.studio.onActivity(({ streamId, label }) => {
     const agentId = streamOwners.get(streamId);
     if (!agentId) return;
