@@ -11,6 +11,7 @@ import {
 import {
   type DeviceStart,
   agentInfo,
+  addCustomConnector,
   cancelTurn,
   connectService,
   disconnectService,
@@ -103,6 +104,14 @@ export function registerIpc(): void {
   ipcMain.handle(
     "studio:disconnectService",
     (_e, input: { agent: string; slug: string; shared?: boolean }) => disconnectService(input),
+  );
+
+  ipcMain.handle(
+    "studio:addCustomConnector",
+    (
+      _e,
+      input: { agent: string; name: string; url: string; token?: string; shared?: boolean },
+    ) => addCustomConnector(input),
   );
 
   ipcMain.handle("studio:mcpServers", () => listServers());

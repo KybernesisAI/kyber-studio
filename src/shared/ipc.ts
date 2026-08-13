@@ -102,6 +102,13 @@ export interface StudioApi {
     slug: string;
     shared?: boolean;
   }): Promise<{ ok: boolean; error?: string }>;
+  addCustomConnector(input: {
+    agent: string;
+    name: string;
+    url: string;
+    token?: string;
+    shared?: boolean;
+  }): Promise<{ ok: boolean; error?: string }>;
   mcpServers(): Promise<LocalMcpServer[]>;
   saveMcpServers(servers: LocalMcpServer[]): Promise<LocalMcpServer[]>;
   openExternal(url: string): Promise<void>;

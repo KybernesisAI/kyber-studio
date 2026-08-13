@@ -39,6 +39,7 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
   } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [addingCustom, setAddingCustom] = useState(false);
 
   const refresh = async (): Promise<void> => {
     const next = await window.studio?.connectors(agent);
@@ -120,6 +121,20 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
           </div>
         ))}
       </div>
+
+      {addingCustom ? (
+        <AddCustomConnector
+          agent={agent}
+          onDone={() => {
+            setAddingCustom(false);
+            void refresh();
+          }}
+        />
+      ) : (
+        <button className="btn" style={{ marginTop: 12 }} onClick={() => setAddingCustom(true)}>
+          <Icon name="plus" size={13} /> Add a custom connector
+        </button>
+      )}
     </>
   );
 }
@@ -138,6 +153,110 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
  * npx flags and arguments would fight every server that does something slightly
  * unusual.
  */
+/**
+ * Adding a remote MCP server by URL.
+ *
+ * The half of the library no broker can cover: the server a company built last
+ * week, a vendor whose endpoint is three days old, anything internal. Two
+ * fields, because there are only two — nobody registered an OAuth app on their
+ * behalf, so a token is the honest ask.
+ *
+ * Unlike everything else in this app, this one does take a secret from the
+ * user. That is not the pattern we removed: there is no broker who could have
+ * done it for them, and the alternative is not supporting custom servers at
+ * all. It goes straight to their control plane and is never shown again.
+ */
+function AddCustomConnector({
+  agent,
+  onDone,
+}: {
+  agent: string;
+  onDone(): void;
+}): ReactNode {
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [token, setToken] = useState("");
+  const [shared, setShared] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (): Promise<void> => {
+    if (!name.trim() || !url.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await window.studio!.addCustomConnector({
+        agent,
+        name: name.trim(),
+        url: url.trim(),
+        token: token.trim() || undefined,
+        shared,
+      });
+      if (!res.ok) {
+        setError(res.error ?? "That did not work.");
+        return;
+      }
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginTop: 12 }}>
+      <div className="field">
+        <div className="field__label">Name</div>
+        <input
+          className="input"
+          value={name}
+          placeholder="Arcana"
+          onChange={(e) => setName(e.target.value)}
+        />
+      </div>
+      <div className="field">
+        <div className="field__label">Remote MCP server URL</div>
+        <input
+          className="input"
+          value={url}
+          spellCheck={false}
+          placeholder="https://mcp.example.com/mcp"
+          onChange={(e) => setUrl(e.target.value)}
+        />
+      </div>
+      <div className="field">
+        <div className="field__label">Access token (optional)</div>
+        <input
+          className="input"
+          type="password"
+          value={token}
+          spellCheck={false}
+          placeholder="Leave blank if the server needs no token"
+          onChange={(e) => setToken(e.target.value)}
+        />
+      </div>
+      <label className="row" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input type="checkbox" checked={shared} onChange={(e) => setShared(e.target.checked)} />
+        <span className="muted">
+          Everyone here uses this one connection — required if a routine should use it
+        </span>
+      </label>
+      {error ? (
+        <div className="muted" style={{ color: "var(--danger)", marginTop: 8 }}>
+          {error}
+        </div>
+      ) : null}
+      <div className="ask__options" style={{ marginTop: 12 }}>
+        <button className="btn btn--primary" disabled={busy} onClick={() => void submit()}>
+          {busy ? "Adding…" : "Add"}
+        </button>
+        <button className="btn" onClick={onDone}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function LocalMcpTab({ query }: { query: string }): ReactNode {
   const [servers, setServers] = useState<LocalMcpServer[] | null>(null);
   const [adding, setAdding] = useState(false);
