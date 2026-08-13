@@ -81,7 +81,39 @@ export function readPermissions(): Record<LocalAction, LocalPermission> {
 
 export function setPermission(action: LocalAction, value: LocalPermission): void {
   const next = { ...readPermissions(), [action]: value };
-  writeFileSync(permsPath(), JSON.stringify(next, null, 2), { mode: 0o600 });
+  writeFileSync(permsPath(), JSON.stringify({ ...readRaw(), ...next }, null, 2), { mode: 0o600 });
+}
+
+/**
+ * Consent for one named MCP server, rather than for MCP as a category.
+ *
+ * "Use a service running on this computer" was a single effect, so approving
+ * Plaud also approved a Postgres server added next week — the precise thing
+ * per-effect consent exists to prevent. A person approves the server they were
+ * asked about, and a new one asks again.
+ *
+ * Kept in the same file under an "mcp:" prefix so there is one place a user's
+ * decisions live, and one file to delete to start over.
+ */
+function readRaw(): Record<string, string> {
+  try {
+    return JSON.parse(readFileSync(permsPath(), "utf8")) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+export function serverPermission(serverId: string): LocalPermission {
+  const value = readRaw()[`mcp:${serverId}`];
+  return value === "always" || value === "never" ? value : DEFAULT_PERMISSION;
+}
+
+export function setServerPermission(serverId: string, value: LocalPermission): void {
+  writeFileSync(
+    permsPath(),
+    JSON.stringify({ ...readRaw(), [`mcp:${serverId}`]: value }, null, 2),
+    { mode: 0o600 },
+  );
 }
 
 // ── the ask flow ────────────────────────────────────────────────────────────
@@ -100,8 +132,11 @@ async function authorize(
   sender: WebContents | null,
   request: { id: string; agent: string; action: LocalAction; payload: Record<string, unknown> },
 ): Promise<boolean> {
-  const perms = readPermissions();
-  const setting = perms[request.action];
+  const server =
+    request.action === "local-mcp" ? String(request.payload?.server ?? "") : "";
+  const setting = server
+    ? serverPermission(server)
+    : readPermissions()[request.action];
   if (setting === "never") return false;
   if (setting === "always") return true;
 
@@ -128,8 +163,12 @@ async function authorize(
     }, 120_000);
   });
 
-  if (decision.allow && decision.remember) setPermission(request.action, "always");
-  if (!decision.allow && decision.remember) setPermission(request.action, "never");
+  // Remembered against whatever was actually asked about.
+  if (decision.remember) {
+    const value = decision.allow ? "always" : "never";
+    if (server) setServerPermission(server, value);
+    else setPermission(request.action, value);
+  }
   return decision.allow;
 }
 
