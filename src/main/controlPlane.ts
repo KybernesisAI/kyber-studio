@@ -1124,6 +1124,38 @@ export interface ConnectorCard {
  * "connected" after someone revoked access at Google, which is the one lie a
  * connections screen must never tell.
  */
+/**
+ * Logos, fetched here and handed over as data URLs.
+ *
+ * The renderer's CSP is `img-src 'self' data:` and stays that way. Loosening it
+ * to https: so a chat window can load images from wherever a catalog points is
+ * the kind of small concession that makes the next one easier, and it would
+ * have every user's machine announcing itself to a third party each time the
+ * library opens. The main process already does the network; it can do this too.
+ *
+ * Failures are silent on purpose: a card without a logo falls back to its mark,
+ * which is a cosmetic loss, where a thrown error would cost the whole library.
+ */
+const logoCache = new Map<string, string>();
+
+async function asDataUrl(url: string): Promise<string | undefined> {
+  const cached = logoCache.get(url);
+  if (cached) return cached;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return undefined;
+    const type = res.headers.get('content-type') ?? 'image/png';
+    const body = Buffer.from(await res.arrayBuffer());
+    // A logo that large is not a logo; something else is at that URL.
+    if (body.byteLength > 512_000) return undefined;
+    const data = `data:${type};base64,${body.toString('base64')}`;
+    logoCache.set(url, data);
+    return data;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function listConnectors(
   agent: string,
 ): Promise<{ configured: boolean; connectors: ConnectorCard[] }> {
@@ -1135,7 +1167,13 @@ export async function listConnectors(
       signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) return { configured: false, connectors: [] };
-    return (await res.json()) as { configured: boolean; connectors: ConnectorCard[] };
+    const body = (await res.json()) as { configured: boolean; connectors: ConnectorCard[] };
+    const connectors = await Promise.all(
+      body.connectors.map(async (c) =>
+        c.logo?.startsWith('http') ? { ...c, logo: await asDataUrl(c.logo) } : c,
+      ),
+    );
+    return { ...body, connectors };
   } catch {
     return { configured: false, connectors: [] };
   }
