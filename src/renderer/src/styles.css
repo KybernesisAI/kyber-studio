@@ -659,7 +659,23 @@ input, textarea { font: inherit; color: inherit; }
 .pl__row {
   display: flex; align-items: center; gap: 11px;
   padding: 9px 8px; border-radius: 10px; min-width: 0;
+  position: relative;
 }
+/* One primary action and a menu, never a row of buttons. Four actions competing
+   for a half-width card is how a name becomes "Pl…" and a command becomes
+   "np…" — the row stops describing the thing it is about. */
+.pl__menu {
+  position: absolute; right: 8px; top: calc(100% - 6px); z-index: 40;
+  min-width: 150px; padding: 5px;
+  background: var(--surface-raised); border-radius: var(--radius);
+  box-shadow: var(--shadow-menu);
+}
+.pl__menu button {
+  display: block; width: 100%; text-align: left;
+  padding: 7px 10px; border-radius: var(--radius-sm); font-size: var(--fs-base);
+}
+.pl__menu button:hover { background: var(--hover); }
+.pl__menu button.danger { color: var(--danger); }
 .pl__row:hover { background: var(--hover); }
 .pl__icon {
   width: 34px; height: 34px; flex: none; border-radius: 9px;

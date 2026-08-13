@@ -24,6 +24,7 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }): Reac
     filter: <path d="M2.5 4h11M4.5 8h7M6.5 12h3" />,
     download: <><path d="M8 2.5v7M5 7l3 3 3-3" /><path d="M3 12.5h10" /></>,
     arrowUp: <><path d="M8 13V4M4 8l4-4 4 4" /></>,
+    more: <><circle cx="3.5" cy="8" r="1.3" fill="currentColor" stroke="none" /><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none" /><circle cx="12.5" cy="8" r="1.3" fill="currentColor" stroke="none" /></>,
     stop: <rect x="5" y="5" width="6" height="6" rx="1.2" fill="currentColor" stroke="none" />,
     folder: <><path d="M2 4.5h4l1.2 1.5H14v6.5H2z" /></>,
     alert: <><path d="M8 2.6l6 10.8H2z" /><path d="M8 6.6v3.2M8 11.6v.01" /></>,

@@ -139,6 +139,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   const [remote, setRemote] = useState<{ slug: string; name: string; description?: string }[]>([]);
   const [mode, setMode] = useState<"none" | "remote" | "local">("none");
   const [checking, setChecking] = useState<string | null>(null);
+  const [menu, setMenu] = useState<string | null>(null);
   const [result, setResult] = useState<
     Record<string, { ok: boolean; tools?: string[]; error?: string; signInUrl?: string }>
   >({});
@@ -216,72 +217,91 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                   {s.command} {s.args.join(" ")}
                 </div>
                 <div className="pl__meta">
-                  {result[s.id]
-                    ? result[s.id]!.ok
-                      ? `${result[s.id]!.tools?.length ?? 0} tools · ready`
-                      : result[s.id]!.error
-                    : s.enabled
-                      ? "Runs here, never exposed"
-                      : "Off"}
+                  {!s.enabled
+                    ? "Off"
+                    : result[s.id]?.ok
+                      ? result[s.id]!.tools?.length
+                        ? `Connected · ${result[s.id]!.tools!.length} tools`
+                        : "Connected"
+                      : result[s.id]?.error
+                        ? result[s.id]!.error
+                        : "Runs here, never exposed"}
                 </div>
-                {result[s.id]?.signInUrl ? (
-                  <button
-                    className="btn"
-                    style={{ marginTop: 6 }}
-                    onClick={() => void window.studio?.openExternal(result[s.id]!.signInUrl!)}
-                  >
-                    Open sign-in
-                  </button>
-                ) : null}
               </div>
+
+              {/* One primary action, decided by state: sign in, or confirm it
+                  works. Everything else lives in the menu, because four buttons
+                  on a half-width card leaves no room for the name of the thing
+                  they act on. */}
+              {checking === s.id ? (
+                <span className="pl__added">
+                  <Spinner />
+                </span>
+              ) : result[s.id]?.ok ? (
+                <span className="pl__added">
+                  <Icon name="check" size={13} /> Ready
+                </span>
+              ) : (
+                <button
+                  className="btn btn--primary"
+                  onClick={async () => {
+                    setChecking(s.id);
+                    const outcome = await window.studio!.connectMcpServer(s.id);
+                    if (outcome.signInUrl) void window.studio!.openExternal(outcome.signInUrl);
+                    const verified = outcome.ok ? await window.studio!.testMcpServer(s.id) : null;
+                    setResult((r) => ({
+                      ...r,
+                      [s.id]: verified ?? { ok: outcome.ok, error: outcome.message },
+                    }));
+                    setChecking(null);
+                  }}
+                >
+                  Connect
+                </button>
+              )}
+
               <button
-                className="btn btn--primary"
-                disabled={checking === s.id}
-                onClick={async () => {
-                  // Sign-in is a button, not a thing you ask the agent to do.
-                  setChecking(s.id);
-                  const outcome = await window.studio!.connectMcpServer(s.id);
-                  if (outcome.signInUrl) void window.studio!.openExternal(outcome.signInUrl);
-                  setResult((r) => ({
-                    ...r,
-                    [s.id]: { ok: outcome.ok, error: outcome.ok ? undefined : outcome.message },
-                  }));
-                  setChecking(null);
-                }}
+                className="icon-btn"
+                title="More"
+                onClick={() => setMenu(menu === s.id ? null : s.id)}
               >
-                Connect
+                <Icon name="more" size={15} />
               </button>
-              <button
-                className="btn"
-                disabled={checking === s.id}
-                onClick={async () => {
-                  // Starting it is the only honest way to answer "does this
-                  // work" — and it is also what triggers a server's own
-                  // first-run sign-in, so any prompt appears now rather than
-                  // the first time someone asks the agent for something.
-                  setChecking(s.id);
-                  const outcome = await window.studio!.testMcpServer(s.id);
-                  setResult((r) => ({ ...r, [s.id]: outcome }));
-                  setChecking(null);
-                }}
-              >
-                {checking === s.id ? <Spinner /> : "Check"}
-              </button>
-              <button
-                className="btn"
-                onClick={() =>
-                  void save(local.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x)))
-                }
-              >
-                {s.enabled ? "Turn off" : "Turn on"}
-              </button>
-              <button
-                className="btn"
-                title="Remove"
-                onClick={() => void save(local.filter((x) => x.id !== s.id))}
-              >
-                <Icon name="trash" size={13} />
-              </button>
+
+              {menu === s.id ? (
+                <div className="pl__menu">
+                  <button
+                    onClick={async () => {
+                      setMenu(null);
+                      setChecking(s.id);
+                      const outcome = await window.studio!.testMcpServer(s.id);
+                      setResult((r) => ({ ...r, [s.id]: outcome }));
+                      setChecking(null);
+                    }}
+                  >
+                    Check again
+                  </button>
+                  <button
+                    onClick={() => {
+                      setMenu(null);
+                      void save(
+                        local.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x)),
+                      );
+                    }}
+                  >
+                    {s.enabled ? "Turn off" : "Turn on"}
+                  </button>
+                  <button
+                    className="danger"
+                    onClick={() => {
+                      setMenu(null);
+                      void save(local.filter((x) => x.id !== s.id));
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : null}
             </div>
           ))}
         </div>
