@@ -389,6 +389,8 @@ async function describeFailure(res: Response, base: string): Promise<Error> {
         `No eve API at ${base} (404). The registered URL may be wrong, or the deployment is not ` +
           `serving /eve/v1/session.`,
       );
+    case 410:
+      return new Error(`That conversation no longer exists on ${base}.`);
     case 502:
     case 503:
     case 504:
@@ -749,7 +751,7 @@ export async function sendTurn(input: {
     : 0;
 
   console.log(`[send] resume=${resumeAt}`);
-  const session = clientFor(base).session({
+  let session = clientFor(base).session({
     sessionId: input.sessionId,
     continuationToken: input.continuationToken,
     streamIndex: resumeAt,
@@ -822,6 +824,18 @@ export async function sendTurn(input: {
         console.log("[auth] agent refused the token; refreshing and retrying once");
         const renewed = await forceRefresh();
         if (!renewed) throw error;
+        response = await dispatch();
+      } else if (error instanceof ClientError && error.status === 404 && input.sessionId) {
+        // A 404 on a CONTINUE means the agent no longer has that session — its
+        // durable owner was retired, or a redeploy took the continuation with
+        // it. The route is obviously present, so reporting "no eve API here"
+        // sends someone to check a URL that was never wrong.
+        //
+        // The conversation cannot be resumed, so start a new one. The transcript
+        // is ours and stays on screen; only the agent's thread restarts, which
+        // is the same thing Reset does and does not need a person to ask for it.
+        console.log("[send] session gone; starting a fresh one");
+        session = clientFor(base).session({ streamIndex: 0 });
         response = await dispatch();
       } else {
         throw error;
