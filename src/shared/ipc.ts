@@ -72,6 +72,26 @@ export interface StudioApi {
   provisionLocal(input: { url: string; agent: string }): Promise<{ ok: boolean; error?: string; restarted?: boolean }>;
   localAccess(agent: string): Promise<boolean>;
   revokeLocal(agent: string): Promise<boolean>;
+  connectors(agent: string): Promise<{
+    configured: boolean;
+    connectors: {
+      slug: string;
+      name: string;
+      description?: string;
+      provider: string;
+      scope: string;
+      needsAdmin: boolean;
+      mark?: string;
+      connected: boolean;
+    }[];
+  }>;
+  connectService(input: { agent: string; slug: string }): Promise<{ ok: boolean; error?: string }>;
+  disconnectService(input: {
+    agent: string;
+    slug: string;
+    shared?: boolean;
+  }): Promise<{ ok: boolean; error?: string }>;
+  openExternal(url: string): Promise<void>;
   cancelTurn(input: { url: string; sessionId: string; turnId?: string }): Promise<string>;
   resetSession(input: {
     url: string;
@@ -85,6 +105,20 @@ export interface StudioApi {
     handler: (payload: { streamId: string; label: string | null }) => void,
   ): () => void;
   onCursor(handler: (payload: { streamId: string; index: number }) => void): () => void;
+  onAuthorization(
+    handler: (payload: {
+      streamId: string;
+      event: {
+        name: string;
+        description?: string;
+        url?: string;
+        userCode?: string;
+        instructions?: string;
+        expiresAt?: string;
+        outcome?: string;
+      };
+    }) => void,
+  ): () => void;
   onQuestion(
     handler: (payload: {
       streamId: string;

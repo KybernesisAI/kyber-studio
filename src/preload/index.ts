@@ -46,6 +46,15 @@ const studio: StudioApi = {
     ipcRenderer.on("studio:turn", listener);
     return () => ipcRenderer.off("studio:turn", listener);
   },
+  connectors: (agent) => ipcRenderer.invoke("studio:connectors", agent),
+  connectService: (input) => ipcRenderer.invoke("studio:connectService", input),
+  disconnectService: (input) => ipcRenderer.invoke("studio:disconnectService", input),
+  openExternal: (url) => ipcRenderer.invoke("studio:openExternal", url),
+  onAuthorization: (handler) => {
+    const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);
+    ipcRenderer.on("studio:authorization", listener);
+    return () => ipcRenderer.off("studio:authorization", listener);
+  },
   onQuestion: (handler) => {
     const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);
     ipcRenderer.on("studio:question", listener);

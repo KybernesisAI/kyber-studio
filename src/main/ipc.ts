@@ -1,4 +1,4 @@
-import { ipcMain, type WebContents } from "electron";
+import { ipcMain, shell, type WebContents } from "electron";
 import { loadState, pickFolder, saveState } from "./store";
 import {
   type LocalAction,
@@ -11,6 +11,9 @@ import {
   type DeviceStart,
   agentInfo,
   cancelTurn,
+  connectService,
+  disconnectService,
+  listConnectors,
   localAccessGranted,
   manageCall,
   provisionLocalAccess,
@@ -89,6 +92,20 @@ export function registerIpc(): void {
     (_e, input: { url: string; agent: string }) => provisionLocalAccess(input),
   );
 
+  // Sign-in happens in the user's real browser, where their sessions and
+  // password manager already are — never in an app window pretending to be one.
+  ipcMain.handle("studio:connectors", (_e, agent: string) => listConnectors(agent));
+  ipcMain.handle(
+    "studio:connectService",
+    (_e, input: { agent: string; slug: string }) => connectService(input),
+  );
+  ipcMain.handle(
+    "studio:disconnectService",
+    (_e, input: { agent: string; slug: string; shared?: boolean }) => disconnectService(input),
+  );
+
+  ipcMain.handle("studio:openExternal", (_e, url: string) => shell.openExternal(url));
+
   ipcMain.handle("studio:localAccess", (_e, agent: string) => localAccessGranted(agent));
 
   ipcMain.handle("studio:revokeLocal", (_e, agent: string) => revokeLocalAccess(agent));
@@ -139,6 +156,11 @@ export function registerIpc(): void {
         onTurn: (turn) => {
           if (!sender.isDestroyed()) {
             sender.send("studio:turn", { streamId: input.streamId, ...turn });
+          }
+        },
+        onAuthorization: (event) => {
+          if (!sender.isDestroyed()) {
+            sender.send("studio:authorization", { streamId: input.streamId, event });
           }
         },
         onQuestion: (request) => {

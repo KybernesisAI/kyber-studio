@@ -154,6 +154,59 @@ function QuestionCard({
   );
 }
 
+/**
+ * A connection asking the user to sign in, mid-conversation.
+ *
+ * eve parks the turn and resumes it after the callback, so this card is the
+ * whole interaction: the turn is not failing, it is waiting on a browser tab.
+ * Rendering it is what turns "the agent stopped" into "Gmail wants you to sign
+ * in", and it is the same card whatever brokered the connection.
+ *
+ * The link opens in the real browser, never in an app window. A window that
+ * asks for a Google password while pretending to be Chrome is indistinguishable
+ * from the thing security training tells people never to trust.
+ */
+function AuthorizationCard({
+  block,
+}: {
+  block: Extract<Block, { kind: "authorization" }>;
+}): ReactNode {
+  const settled = block.outcome && block.outcome !== "pending";
+  const good = block.outcome === "authorized";
+
+  if (settled) {
+    return (
+      <div className="ask ask--done">
+        <div className="ask__title" style={{ fontWeight: 500 }}>
+          {good ? `${block.name} connected` : `${block.name} was not connected`}
+        </div>
+        {!good ? <div className="muted">{block.outcome}</div> : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className="ask">
+      <div className="ask__title" style={{ marginBottom: 4 }}>
+        Sign in to {block.name}
+      </div>
+      <div className="muted" style={{ marginBottom: 10 }}>
+        {block.instructions ?? block.description ?? "The agent needs access before it can continue."}
+      </div>
+      <div className="ask__options">
+        <button
+          className="btn btn--primary"
+          disabled={!block.url}
+          onClick={() => block.url && void window.studio?.openExternal(block.url)}
+        >
+          Open sign-in
+        </button>
+        {block.userCode ? <span className="ask__code">{block.userCode}</span> : null}
+      </div>
+    </div>
+  );
+}
+
 function ConnectionCard({ block }: { block: Extract<Block, { kind: "connection" }> }): ReactNode {
   return (
     <div className="conn">
@@ -406,6 +459,7 @@ export function Conversation(): ReactNode {
             const body = ((): ReactNode => {
             if (b.kind === "peer-activity") return <PeerActivity key={b.id} events={b.events} />;
             if (b.kind === "connection") return <ConnectionCard key={b.id} block={b} />;
+            if (b.kind === "authorization") return <AuthorizationCard key={b.id} block={b} />;
             if (b.kind === "question")
               return (
                 <QuestionCard

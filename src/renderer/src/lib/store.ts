@@ -69,6 +69,36 @@ function ensureListeners(
     set((s) => ({ streamIndexes: { ...s.streamIndexes, [agentId]: index } }));
   });
 
+  window.studio.onAuthorization(({ streamId, event }) => {
+    const agentId = streamOwners.get(streamId);
+    if (!agentId) return;
+    // One card per connection, updated in place. The completed event carries the
+    // outcome for the same connection, so a second card would be the same
+    // question twice with different answers.
+    const id = `auth-${event.name}`;
+    set((s) => {
+      const conv = s.conversations[agentId] ?? [];
+      const existing = conv.find((b) => b.id === id);
+      if (existing) {
+        return {
+          conversations: {
+            ...s.conversations,
+            [agentId]: conv.map((b) =>
+              b.id === id && b.kind === "authorization" ? { ...b, ...event } : b,
+            ),
+          },
+        };
+      }
+      return {
+        conversations: {
+          ...s.conversations,
+          [agentId]: [...conv, { kind: "authorization", id, at: Date.now(), ...event }],
+        },
+      };
+    });
+    get().persist();
+  });
+
   window.studio.onQuestion(({ streamId, request }) => {
     const agentId = streamOwners.get(streamId);
     if (!agentId) return;

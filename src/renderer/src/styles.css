@@ -708,3 +708,11 @@ input, textarea { font: inherit; color: inherit; }
   user-select: none;
 }
 .thread__when:first-child { margin-top: var(--sp-2); }
+
+.ask__code {
+  font-family: var(--font-mono); font-size: var(--fs-lg); letter-spacing: 0.08em;
+  padding: 6px 10px; border-radius: var(--radius-sm); background: var(--surface-raised);
+  border: 0.5px solid var(--stroke); user-select: all;
+}
+
+.pl__meta { font-size: var(--fs-xs); color: var(--ink-tertiary); margin-top: 3px; }

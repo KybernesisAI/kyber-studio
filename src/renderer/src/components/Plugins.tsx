@@ -11,6 +11,109 @@ function tint(name: string): string {
   return palette[h % palette.length]!;
 }
 
+/**
+ * The connector library: services a person can sign in to, one click each.
+ *
+ * Two facts belong on every card and are easy to leave off. WHO it acts as —
+ * your account or the company's — because a user-scoped connection cannot fire
+ * from a schedule, and finding that out when a briefing does not arrive is the
+ * wrong time. And whether an ADMIN has to approve it, because "one click" is
+ * false for Slack, Notion, and Workspace, and someone should learn that before
+ * they start rather than at the end of a redirect chain.
+ */
+function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode {
+  const [state, setState] = useState<{
+    configured: boolean;
+    connectors: {
+      slug: string;
+      name: string;
+      description?: string;
+      provider: string;
+      scope: string;
+      needsAdmin: boolean;
+      mark?: string;
+      connected: boolean;
+    }[];
+  } | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async (): Promise<void> => {
+    const next = await window.studio?.connectors(agent);
+    if (next) setState(next);
+  };
+
+  useEffect(() => {
+    void refresh();
+    // Sign-in finishes in a browser tab, so nothing tells this window when it
+    // worked. A slow poll while the screen is open is the honest way to notice.
+    const timer = setInterval(() => void refresh(), 4000);
+    return () => clearInterval(timer);
+  }, [agent]);
+
+  if (!state) return <div className="empty">Loading the library…</div>;
+  if (!state.configured) {
+    return <div className="empty">Connectors are not configured on this control plane yet.</div>;
+  }
+
+  const term = query.trim().toLowerCase();
+  const shown = state.connectors.filter(
+    (c) => !term || c.name.toLowerCase().includes(term) || c.slug.includes(term),
+  );
+  if (!shown.length) return <div className="empty">Nothing matches “{query}”.</div>;
+
+  const act = async (slug: string, connected: boolean, shared: boolean): Promise<void> => {
+    setBusy(slug);
+    setError(null);
+    try {
+      const res = connected
+        ? await window.studio!.disconnectService({ agent, slug, shared })
+        : await window.studio!.connectService({ agent, slug });
+      if (!res.ok) setError(res.error ?? "That did not work.");
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <>
+      {error ? <div className="modal__banner modal__banner--error">{error}</div> : null}
+      <div className="pl__group">Apps</div>
+      <div className="pl__grid">
+        {shown.map((c) => (
+          <div className="pl__row" key={c.slug}>
+            <span className="pl__icon" style={{ background: tint(c.name) }}>
+              {c.mark ?? c.name.slice(0, 1)}
+            </span>
+            <div className="pl__body">
+              <div className="pl__name">{c.name}</div>
+              <div className="pl__desc">{c.description}</div>
+              <div className="pl__meta">
+                {c.scope === "app" ? "Connects for the company" : "Connects as you"}
+                {c.needsAdmin ? " · an admin must approve" : ""}
+              </div>
+            </div>
+            {busy === c.slug ? (
+              <span className="pl__added">
+                <Spinner /> Working
+              </span>
+            ) : c.connected ? (
+              <button className="btn" onClick={() => void act(c.slug, true, c.scope === "app")}>
+                Disconnect
+              </button>
+            ) : (
+              <button className="btn btn--primary" onClick={() => void act(c.slug, false, false)}>
+                Connect
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function Tile({ name }: { name: string }): ReactNode {
   return (
     <span className="pl__icon" style={{ background: tint(name) }}>
@@ -46,7 +149,7 @@ export function Plugins(): ReactNode {
     installing,
     manageError,
   } = useStore();
-  const [tab, setTab] = useState<"marketplace" | "yours">("marketplace");
+  const [tab, setTab] = useState<"apps" | "marketplace" | "yours">("apps");
   const [q, setQ] = useState("");
 
   useEffect(() => {
@@ -103,6 +206,12 @@ export function Plugins(): ReactNode {
 
         <div className="modal__tabs">
           <button
+            className={`tab${tab === "apps" ? " tab--on" : ""}`}
+            onClick={() => setTab("apps")}
+          >
+            Apps
+          </button>
+          <button
             className={`tab${tab === "marketplace" ? " tab--on" : ""}`}
             onClick={() => setTab("marketplace")}
           >
@@ -133,7 +242,9 @@ export function Plugins(): ReactNode {
         ) : null}
 
         <div className="modal__body">
-          {tab === "marketplace" ? (
+          {tab === "apps" ? (
+            <AppsTab agent={activeAgentId} query={q} />
+          ) : tab === "marketplace" ? (
             !cat ? (
               <div className="empty">
                 Loading the catalog…

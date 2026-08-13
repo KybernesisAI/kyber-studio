@@ -630,6 +630,24 @@ export async function sendTurn(input: {
    * answered. Dropping this event is why a turn that ended in a question looked
    * like an empty reply.
    */
+  /**
+   * A connection needs the user to sign in before the parked turn can continue.
+   *
+   * eve emits this, parks the turn, and resumes after the callback — the whole
+   * OAuth flow is already in the framework. A client that does not render it
+   * shows a turn that simply stopped, which is the exact failure eve's own
+   * troubleshooting table names: "authorization.required appears but no UI".
+   */
+  onAuthorization(event: {
+    name: string;
+    description?: string;
+    url?: string;
+    userCode?: string;
+    instructions?: string;
+    expiresAt?: string;
+    /** Present on the completed event: authorized | declined | failed | timed-out. */
+    outcome?: string;
+  }): void;
   onQuestion(request: {
     requestId: string;
     prompt: string;
@@ -779,6 +797,24 @@ export async function sendTurn(input: {
         } else if (!sawSpecific) {
           input.onActivity(nextLabel.label);
         }
+      }
+
+      if (type === "authorization.required" || type === "authorization.completed") {
+        const challenge = (data.authorization ?? {}) as Record<string, unknown>;
+        const name =
+          (typeof data.name === "string" && data.name) ||
+          (typeof data.connection === "string" && data.connection) ||
+          "a connection";
+        input.onAuthorization({
+          name,
+          description: typeof data.description === "string" ? data.description : undefined,
+          url: typeof challenge.url === "string" ? challenge.url : undefined,
+          userCode: typeof challenge.userCode === "string" ? challenge.userCode : undefined,
+          instructions:
+            typeof challenge.instructions === "string" ? challenge.instructions : undefined,
+          expiresAt: typeof challenge.expiresAt === "string" ? challenge.expiresAt : undefined,
+          outcome: typeof data.outcome === "string" ? data.outcome : undefined,
+        });
       }
 
       if (type === "input.requested") {
@@ -1064,4 +1100,96 @@ export async function revokeLocalAccess(agent: string): Promise<boolean> {
     signal: AbortSignal.timeout(20_000),
   });
   return res.ok;
+}
+
+export interface ConnectorCard {
+  slug: string;
+  name: string;
+  description?: string;
+  provider: string;
+  /** "user" — acts as you; "app" — acts as the company and can run unattended. */
+  scope: string;
+  needsAdmin: boolean;
+  mark?: string;
+  connected: boolean;
+}
+
+/**
+ * The connector library, as this person sees it.
+ *
+ * The catalog is the org's approved shelf; the connected flags come from the
+ * broker, live. Reading state from our own table instead would let a card claim
+ * "connected" after someone revoked access at Google, which is the one lie a
+ * connections screen must never tell.
+ */
+export async function listConnectors(
+  agent: string,
+): Promise<{ configured: boolean; connectors: ConnectorCard[] }> {
+  const s = await activeSession();
+  if (!s?.bundle) return { configured: false, connectors: [] };
+  try {
+    const res = await fetch(`${ISSUER}/api/connectors?agent=${encodeURIComponent(agent)}`, {
+      headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) return { configured: false, connectors: [] };
+    return (await res.json()) as { configured: boolean; connectors: ConnectorCard[] };
+  } catch {
+    return { configured: false, connectors: [] };
+  }
+}
+
+/**
+ * Begin connecting a service: opens the user's own browser and reports back.
+ *
+ * Sign-in happens where their sessions and password manager already are. An
+ * in-app window asking for a Google password is indistinguishable from the
+ * thing every security training tells people not to trust, and we are not going
+ * to teach customers to ignore that instinct.
+ */
+export async function connectService(input: {
+  agent: string;
+  slug: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const s = await activeSession();
+  if (!s?.bundle) return { ok: false, error: "Not signed in." };
+
+  const res = await fetch(`${ISSUER}/api/connectors/link`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${s.token}`,
+      "x-kybernesis-bundle": s.bundle,
+    },
+    body: JSON.stringify(input),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const body = (await res.json().catch(() => ({}))) as { redirectUrl?: string; error?: string };
+  if (!res.ok) return { ok: false, error: body.error ?? `The control plane refused (${res.status}).` };
+  if (!body.redirectUrl) {
+    return { ok: false, error: "No sign-in URL came back for that service." };
+  }
+  await shell.openExternal(body.redirectUrl);
+  return { ok: true };
+}
+
+export async function disconnectService(input: {
+  agent: string;
+  slug: string;
+  shared?: boolean;
+}): Promise<{ ok: boolean; error?: string }> {
+  const s = await activeSession();
+  if (!s?.bundle) return { ok: false, error: "Not signed in." };
+  const res = await fetch(`${ISSUER}/api/connectors/disconnect`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${s.token}`,
+      "x-kybernesis-bundle": s.bundle,
+    },
+    body: JSON.stringify(input),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) return { ok: false, error: `Could not disconnect (${res.status}).` };
+  return { ok: true };
 }

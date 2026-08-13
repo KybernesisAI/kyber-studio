@@ -60,6 +60,21 @@ export type Block =
     }
   | { kind: "peer-activity"; id: string; at: number; events: PeerEvent[] }
   | {
+      kind: "authorization";
+      id: string;
+      at: number;
+      /** The connection asking, e.g. "gmail". */
+      name: string;
+      description?: string;
+      /** Where the user signs in. Opened in their real browser, never in-app. */
+      url?: string;
+      userCode?: string;
+      instructions?: string;
+      expiresAt?: string;
+      /** Set when the flow resolves, so the card stops asking. */
+      outcome?: string;
+    }
+  | {
       kind: "question";
       id: string;
       at: number;
