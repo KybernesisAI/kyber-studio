@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "bash scripts/dev.sh",
     "start": "electron-vite preview",
-    "build": "electron-vite build",
+    "build": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && electron-vite build",
     "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
     "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",

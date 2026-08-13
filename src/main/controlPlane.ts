@@ -678,7 +678,9 @@ export async function sendTurn(input: {
   /** The turn parked on a question; there is no reply because none is due. */
   askedQuestion: boolean;
 }> {
+  console.log(`[send] start ${input.url} session=${input.sessionId ?? "new"}`);
   const s = await activeSession();
+  console.log(`[send] session=${s ? "ok" : "none"} bundle=${s?.bundle ? "yes" : "no"}`);
   if (!s) throw new Error("Not signed in.");
   if (!s.bundle) {
     // Fail here rather than at the agent: without the bundle the agent reads the
@@ -711,6 +713,7 @@ export async function sendTurn(input: {
     ? ((await tailIndex(base, input.sessionId, input.streamIndex ?? 0)) ?? input.streamIndex ?? 0)
     : 0;
 
+  console.log(`[send] resume=${resumeAt}`);
   const session = clientFor(base).session({
     sessionId: input.sessionId,
     continuationToken: input.continuationToken,
@@ -784,6 +787,7 @@ export async function sendTurn(input: {
     clearTimeout(dispatchGuard);
   }
 
+  console.log(`[send] dispatched session=${session.state.sessionId ?? "?"}`);
   if (session.state.sessionId) {
     input.onTurn?.({ sessionId: session.state.sessionId });
   }
