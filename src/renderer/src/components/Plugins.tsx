@@ -39,7 +39,6 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
   } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [addingCustom, setAddingCustom] = useState(false);
 
   const refresh = async (): Promise<void> => {
     const next = await window.studio?.connectors(agent);
@@ -121,38 +120,209 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
           </div>
         ))}
       </div>
-
-      {addingCustom ? (
-        <AddCustomConnector
-          agent={agent}
-          onDone={() => {
-            setAddingCustom(false);
-            void refresh();
-          }}
-        />
-      ) : (
-        <button className="btn" style={{ marginTop: 12 }} onClick={() => setAddingCustom(true)}>
-          <Icon name="plus" size={13} /> Add a custom connector
-        </button>
-      )}
     </>
   );
 }
 
 /**
- * MCP servers running on this machine.
+ * MCP servers, remote and local, on one screen.
  *
- * The one thing in the library that is not a hosted service: a program on the
- * user's own computer that the remote agent can call. It exists because some of
- * the most useful data a company has is the data it will never put behind a
- * public endpoint — a production database inside a VPN, a private monorepo, an
- * internal admin API. The desktop dials out, so none of it has to be exposed.
- *
- * The command is deliberately plain text. Anyone adding one of these is copying
- * a line out of that server's README, and a form that tried to be clever about
- * npx flags and arguments would fight every server that does something slightly
- * unusual.
+ * They were on separate tabs because they are implemented differently — one is
+ * a URL the agent calls, the other a process on this machine reached through
+ * the relay. That is our problem, not the user's. Someone adding an MCP server
+ * knows they have either a URL or a command, and asking them to first work out
+ * which tab that implies is asking them to understand our architecture before
+ * they can paste a line from a README.
  */
+function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
+  const [local, setLocal] = useState<LocalMcpServer[] | null>(null);
+  const [remote, setRemote] = useState<{ slug: string; name: string; description?: string }[]>([]);
+  const [mode, setMode] = useState<"none" | "remote" | "local">("none");
+
+  const refresh = async (): Promise<void> => {
+    const servers = await window.studio?.mcpServers();
+    if (servers) setLocal(servers);
+    const cards = await window.studio?.connectors(agent);
+    setRemote(
+      (cards?.connectors ?? [])
+        .filter((c) => c.provider === "mcp-direct" && c.connected)
+        .map((c) => ({ slug: c.slug, name: c.name, description: c.description })),
+    );
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, [agent]);
+
+  if (!local) return <div className="empty">Loading…</div>;
+
+  const save = async (next: LocalMcpServer[]): Promise<void> => {
+    setLocal(await window.studio!.saveMcpServers(next));
+  };
+
+  const term = query.trim().toLowerCase();
+  const matches = (name: string): boolean => !term || name.toLowerCase().includes(term);
+  const shownLocal = local.filter((s) => matches(s.name));
+  const shownRemote = remote.filter((s) => matches(s.name));
+
+  return (
+    <>
+      {shownRemote.length ? (
+        <>
+          <div className="pl__group">Remote servers</div>
+          <div className="pl__grid">
+            {shownRemote.map((s) => (
+              <div className="pl__row" key={s.slug}>
+                <span className="pl__icon" style={{ background: tint(s.name) }}>
+                  {s.name.slice(0, 1)}
+                </span>
+                <div className="pl__body">
+                  <div className="pl__name">{s.name}</div>
+                  <div className="pl__desc">{s.description}</div>
+                  <div className="pl__meta">Your agents call this directly</div>
+                </div>
+                <button
+                  className="btn"
+                  onClick={async () => {
+                    await window.studio!.disconnectService({ agent, slug: s.slug });
+                    await refresh();
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+
+      <div className="pl__group" style={{ marginTop: shownRemote.length ? 18 : 0 }}>
+        On this computer
+      </div>
+      {shownLocal.length ? (
+        <div className="pl__grid">
+          {shownLocal.map((s) => (
+            <div className="pl__row" key={s.id}>
+              <span className="pl__icon" style={{ background: tint(s.name) }}>
+                {s.name.slice(0, 1)}
+              </span>
+              <div className="pl__body">
+                <div className="pl__name">{s.name}</div>
+                <div className="pl__desc">
+                  {s.command} {s.args.join(" ")}
+                </div>
+                <div className="pl__meta">
+                  {s.enabled ? "Runs here, never exposed" : "Off"}
+                </div>
+              </div>
+              <button
+                className="btn"
+                onClick={() =>
+                  void save(local.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x)))
+                }
+              >
+                {s.enabled ? "Turn off" : "Turn on"}
+              </button>
+              <button
+                className="btn"
+                title="Remove"
+                onClick={() => void save(local.filter((x) => x.id !== s.id))}
+              >
+                <Icon name="trash" size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty" style={{ paddingBottom: 8 }}>
+          Nothing running here yet — a server on this machine is reachable by your
+          agents without being exposed to anyone else.
+        </div>
+      )}
+
+      {mode === "remote" ? (
+        <AddRemoteServer agent={agent} onDone={() => { setMode("none"); void refresh(); }} />
+      ) : mode === "local" ? (
+        <AddLocalServer
+          onAdd={async (server) => {
+            await save([...local, server]);
+            setMode("none");
+          }}
+          onCancel={() => setMode("none")}
+        />
+      ) : (
+        <div className="ask__options" style={{ marginTop: 14 }}>
+          <button className="btn" onClick={() => setMode("remote")}>
+            <Icon name="plus" size={13} /> Add by URL
+          </button>
+          <button className="btn" onClick={() => setMode("local")}>
+            <Icon name="plus" size={13} /> Add one on this computer
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** The local half: a command this machine runs. */
+function AddLocalServer({
+  onAdd,
+  onCancel,
+}: {
+  onAdd(server: LocalMcpServer): Promise<void>;
+  onCancel(): void;
+}): ReactNode {
+  const [name, setName] = useState("");
+  const [command, setCommand] = useState("");
+
+  const submit = async (): Promise<void> => {
+    const trimmed = command.trim();
+    if (!trimmed || !name.trim()) return;
+    // Split on whitespace: `npx -y @plaud-ai/mcp@latest` is what a README gives
+    // you, and it is what people will paste.
+    const [bin, ...args] = trimmed.split(/\s+/);
+    await onAdd({
+      id: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+      name: name.trim(),
+      command: bin!,
+      args,
+      enabled: true,
+    });
+  };
+
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="field">
+        <div className="field__label">Name</div>
+        <input
+          className="input"
+          value={name}
+          placeholder="Plaud"
+          onChange={(e) => setName(e.target.value)}
+        />
+      </div>
+      <div className="field" style={{ marginBottom: 8 }}>
+        <div className="field__label">Command</div>
+        <input
+          className="input"
+          value={command}
+          spellCheck={false}
+          placeholder="npx -y @plaud-ai/mcp@latest"
+          onChange={(e) => setCommand(e.target.value)}
+        />
+      </div>
+      <div className="ask__options">
+        <button className="btn btn--primary" onClick={() => void submit()}>
+          Add
+        </button>
+        <button className="btn" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Adding a remote MCP server by URL.
  *
@@ -166,7 +336,7 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
  * done it for them, and the alternative is not supporting custom servers at
  * all. It goes straight to their control plane and is never shown again.
  */
-function AddCustomConnector({
+function AddRemoteServer({
   agent,
   onDone,
 }: {
@@ -254,132 +424,6 @@ function AddCustomConnector({
         </button>
       </div>
     </div>
-  );
-}
-
-function LocalMcpTab({ query }: { query: string }): ReactNode {
-  const [servers, setServers] = useState<LocalMcpServer[] | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [name, setName] = useState("");
-  const [command, setCommand] = useState("");
-
-  useEffect(() => {
-    void window.studio?.mcpServers().then(setServers);
-  }, []);
-
-  if (!servers) return <div className="empty">Loading…</div>;
-
-  const save = async (next: LocalMcpServer[]): Promise<void> => {
-    const saved = await window.studio!.saveMcpServers(next);
-    setServers(saved);
-  };
-
-  const add = async (): Promise<void> => {
-    const trimmed = command.trim();
-    if (!trimmed || !name.trim()) return;
-    // Split on whitespace: `npx -y @modelcontextprotocol/server-postgres URL`
-    // is what people paste, and it is the shape every README uses.
-    const [bin, ...args] = trimmed.split(/\s+/);
-    await save([
-      ...servers,
-      {
-        id: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-"),
-        name: name.trim(),
-        command: bin!,
-        args,
-        enabled: true,
-      },
-    ]);
-    setName("");
-    setCommand("");
-    setAdding(false);
-  };
-
-  const term = query.trim().toLowerCase();
-  const shown = servers.filter((s) => !term || s.name.toLowerCase().includes(term));
-
-  return (
-    <>
-      <div className="pl__group">On this computer</div>
-      {shown.length ? (
-        <div className="pl__grid">
-          {shown.map((s) => (
-            <div className="pl__row" key={s.id}>
-              <span className="pl__icon" style={{ background: tint(s.name) }}>
-                {s.name.slice(0, 1)}
-              </span>
-              <div className="pl__body">
-                <div className="pl__name">{s.name}</div>
-                <div className="pl__desc">
-                  {s.command} {s.args.join(" ")}
-                </div>
-                <div className="pl__meta">
-                  {s.enabled ? "Available to your agents" : "Off"}
-                </div>
-              </div>
-              <button
-                className="btn"
-                onClick={() =>
-                  void save(
-                    servers.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x)),
-                  )
-                }
-              >
-                {s.enabled ? "Turn off" : "Turn on"}
-              </button>
-              <button
-                className="btn"
-                title="Remove"
-                onClick={() => void save(servers.filter((x) => x.id !== s.id))}
-              >
-                <Icon name="trash" size={13} />
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="empty" style={{ paddingBottom: 12 }}>
-          Nothing on this computer yet. Add a server and your agents can use it —
-          it never leaves this machine.
-        </div>
-      )}
-
-      {adding ? (
-        <div className="card" style={{ marginTop: 12 }}>
-          <div className="field">
-            <div className="field__label">Name</div>
-            <input
-              className="input"
-              value={name}
-              placeholder="Production database"
-              onChange={(e) => setName(e.target.value)}
-            />
-          </div>
-          <div className="field" style={{ marginBottom: 8 }}>
-            <div className="field__label">Command</div>
-            <input
-              className="input"
-              value={command}
-              placeholder="npx -y @modelcontextprotocol/server-postgres postgres://…"
-              spellCheck={false}
-              onChange={(e) => setCommand(e.target.value)}
-            />
-          </div>
-          <div className="ask__options">
-            <button className="btn btn--primary" onClick={() => void add()}>
-              Add
-            </button>
-            <button className="btn" onClick={() => setAdding(false)}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      ) : (
-        <button className="btn" style={{ marginTop: 12 }} onClick={() => setAdding(true)}>
-          <Icon name="plus" size={13} /> Add a server
-        </button>
-      )}
-    </>
   );
 }
 
@@ -484,7 +528,7 @@ export function Plugins(): ReactNode {
             className={`tab${tab === "local" ? " tab--on" : ""}`}
             onClick={() => setTab("local")}
           >
-            This computer
+            MCP servers
           </button>
           <button
             className={`tab${tab === "marketplace" ? " tab--on" : ""}`}
@@ -520,7 +564,7 @@ export function Plugins(): ReactNode {
           {tab === "apps" ? (
             <AppsTab agent={activeAgentId} query={q} />
           ) : tab === "local" ? (
-            <LocalMcpTab query={q} />
+            <McpTab agent={activeAgentId} query={q} />
           ) : tab === "marketplace" ? (
             !cat ? (
               <div className="empty">
