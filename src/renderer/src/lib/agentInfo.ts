@@ -33,6 +33,13 @@ function named(items: unknown[], nameKey = "name"): { name: string; description?
   return out;
 }
 
+/** Trim a compound model id to the part a person recognises. */
+function shortModel(id: string | undefined): string | undefined {
+  if (!id) return id;
+  const parts = id.split("/").filter(Boolean);
+  return parts.length > 2 ? parts.slice(-2).join("/") : id;
+}
+
 export function summarize(info: unknown): AgentSummary {
   const root = obj(info);
   const agent = obj(root.agent);
@@ -45,7 +52,12 @@ export function summarize(info: unknown): AgentSummary {
 
   return {
     name: str(agent.name) ?? str(root.name),
-    model: str(model.id) ?? str(agent.model) ?? str(root.model),
+    // eve reports provider/model, and an OpenAI-COMPATIBLE provider serving a
+    // third party gives you both prefixes: "openai/xai/grok-4.6". The first is
+    // the wire protocol, not the vendor, and showing it invites the reasonable
+    // question of why OpenAI is involved at all. Keep the last two segments —
+    // vendor and model — which is what the label is for.
+    model: shortModel(str(model.id) ?? str(agent.model) ?? str(root.model)),
 
     // Arrays in eve's payload, but verified rather than assumed.
     schedules: arr(root.schedules).map((s) => {
