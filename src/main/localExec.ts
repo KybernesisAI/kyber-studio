@@ -1,4 +1,4 @@
-import { callServer } from "./localMcp";
+import { callServer, listServers } from "./localMcp";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { hostname, platform } from "node:os";
@@ -411,6 +411,15 @@ async function execute(
     case "list-directory":
       return listLocalDir(payload);
     case "local-mcp":
+      // Discovery is answered from config, without starting anything: an agent
+      // asking what exists should not spin up a database connection to find out.
+      if (payload.method === "servers/list") {
+        return {
+          servers: listServers()
+            .filter((server) => server.enabled)
+            .map(({ id, name }) => ({ id, name })),
+        };
+      }
       return callServer({
         serverId: String(payload.server ?? ""),
         method: String(payload.method ?? "tools/list"),
@@ -519,7 +528,13 @@ export function startLocalExec(): void {
     }
 
     console.log(`[local] request ${request.action} from ${request.agent}`);
-    const allowed = await authorize(sender, request);
+
+    // Asking WHICH servers exist is not using one. It starts nothing, reads
+    // nothing, and returns names the user chose themselves — prompting for it
+    // would train people to click through the prompt that actually matters.
+    const isDiscovery =
+      request.action === "local-mcp" && request.payload?.method === "servers/list";
+    const allowed = isDiscovery || (await authorize(sender, request));
     if (!allowed) {
       await post("/api/local-exec/responses", { id: request.id, denied: true });
       if (sender && !sender.isDestroyed()) sender.send("studio:local-done", { id: request.id });
