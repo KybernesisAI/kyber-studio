@@ -509,7 +509,12 @@ async function tailIndex(base: string, sessionId: string, from: number): Promise
   try {
     const res = await fetch(url, {
       headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
-      signal: controller.signal,
+      // Both signals: the controller stops the body once the header is read, and
+      // the timeout stops US. Every fetch on the way to sending a turn needs a
+      // deadline — this one had none, so an agent that accepted the connection
+      // and then said nothing hung the send before a single stream event, which
+      // left the composer queueing behind a turn that had not begun.
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)]),
     });
     const header = res.headers.get("x-eve-stream-tail-index");
     // The body is a full replay of the session; we only ever wanted the header.

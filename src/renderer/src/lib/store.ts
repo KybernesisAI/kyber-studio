@@ -157,7 +157,7 @@ function flushQueue(get: () => State, agentId: string): void {
   if (!pending?.length) return;
   const [next, ...rest] = pending;
   useStore.setState((s) => ({ queued: { ...s.queued, [agentId]: rest } }));
-  setTimeout(() => get().send(agentId, next), 0);
+  setTimeout(() => get().send(agentId, next, true), 0);
 }
 
 export type PanelView = "none" | "overview" | "routine" | "settings" | "channels";
@@ -229,7 +229,7 @@ interface State {
   setPluginsOpen(open: boolean): void;
   setPaletteOpen(open: boolean): void;
 
-  send(agentId: string, text: string): void;
+  send(agentId: string, text: string, fromQueue?: boolean): void;
   /** Ask the agent to stop the turn it is running. */
   stopTurn(agentId: string): void;
   /**
@@ -299,20 +299,24 @@ export const useStore = create<State>((set, get) => ({
   setPluginsOpen: (pluginsOpen) => set({ pluginsOpen }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
 
-  send: (agentId, text) => {
+  send: (agentId, text, fromQueue) => {
     const at = Date.now();
-    set((s) => ({
-      conversations: {
-        ...s.conversations,
-        [agentId]: [
-          ...(s.conversations[agentId] ?? []),
-          { kind: "text", id: `u${at}`, role: "user", text, at },
-        ],
-      },
-      agents: s.agents.map((a) =>
-        a.id === agentId ? { ...a, lastMessageAt: at, lastMessagePreview: text } : a,
-      ),
-    }));
+    // A queued message was already shown when the user typed it. Adding it again
+    // on flush is how one message becomes two identical bubbles.
+    if (!fromQueue) {
+      set((s) => ({
+        conversations: {
+          ...s.conversations,
+          [agentId]: [
+            ...(s.conversations[agentId] ?? []),
+            { kind: "text", id: `u${at}`, role: "user", text, at },
+          ],
+        },
+        agents: s.agents.map((a) =>
+          a.id === agentId ? { ...a, lastMessageAt: at, lastMessagePreview: text } : a,
+        ),
+      }));
+    }
     // Save the question immediately. If the app dies mid-turn, losing the answer
     // is annoying; losing what you asked is worse.
     get().persist();
