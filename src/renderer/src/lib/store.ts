@@ -273,6 +273,21 @@ interface State {
   authError: string | null;
   issuer: string;
   account: { email?: string; orgName?: string } | null;
+  /**
+   * What the user decided about each agent, as opposed to what the control
+   * plane says about it.
+   *
+   * The agent LIST belongs to the control plane — a revoked grant has to remove
+   * an agent from the sidebar. But renaming one, pinning it, or hiding it are
+   * decisions about this person's own workspace, and rebuilding the list on
+   * every launch was quietly discarding all three. Kept apart so the two
+   * cannot overwrite each other: the server owns the set, the user owns the
+   * presentation.
+   */
+  prefs: Record<
+    string,
+    { name?: string; pinned?: boolean; hidden?: boolean; notifications?: boolean; accent?: string }
+  >;
   /** Per-agent eve session id, so a conversation keeps its thread across turns. */
   sessions: Record<string, string | undefined>;
   continuations: Record<string, string | undefined>;
@@ -372,6 +387,7 @@ export const useStore = create<State>((set, get) => ({
   sessions: {},
   continuations: {},
   streamIndexes: {},
+  prefs: {},
   activity: {},
   inflight: {},
   queued: {},
@@ -644,8 +660,25 @@ export const useStore = create<State>((set, get) => ({
       });
   },
 
-  patchAgent: (id, patch) =>
-    set((s) => ({ agents: s.agents.map((a) => (a.id === id ? { ...a, ...patch } : a)) })),
+  patchAgent: (id, patch) => {
+    set((s) => ({
+      agents: s.agents.map((a) => (a.id === id ? { ...a, ...patch } : a)),
+      // Only the fields a person chooses. Status, previews, and unread counts
+      // are observations about the world and must not survive a relaunch.
+      prefs: {
+        ...s.prefs,
+        [id]: {
+          ...s.prefs[id],
+          ...("name" in patch ? { name: patch.name } : {}),
+          ...("pinned" in patch ? { pinned: patch.pinned } : {}),
+          ...("hidden" in patch ? { hidden: patch.hidden } : {}),
+          ...("notifications" in patch ? { notifications: patch.notifications } : {}),
+          ...("accent" in patch ? { accent: patch.accent } : {}),
+        },
+      },
+    }));
+    get().persist();
+  },
 
   loadCatalog: async (agentId) => {
     const agent = get().agents.find((a) => a.id === agentId);
@@ -774,13 +807,16 @@ export const useStore = create<State>((set, get) => ({
       sessions: Record<string, string | undefined>;
       continuations: Record<string, string | undefined>;
       streamIndexes: Record<string, number | undefined>;
+      prefs: State["prefs"];
     }>("conversations.json");
+    if (saved?.prefs && !saved?.conversations) set({ prefs: saved.prefs });
     if (saved?.conversations) {
       set({
         conversations: saved.conversations,
         sessions: saved.sessions ?? {},
         continuations: saved.continuations ?? {},
         streamIndexes: saved.streamIndexes ?? {},
+        prefs: saved.prefs ?? {},
       });
     }
     const ws = await window.studio.loadState<Record<string, string>>("workspaces.json");
@@ -796,6 +832,7 @@ export const useStore = create<State>((set, get) => ({
         sessions: get().sessions,
         continuations: get().continuations,
         streamIndexes: get().streamIndexes,
+        prefs: get().prefs,
       },
     });
   },
@@ -854,14 +891,18 @@ export const useStore = create<State>((set, get) => ({
       set({
         agents: remote.map((r, i) => {
           const prior = existing.get(r.id);
+          const chosen = get().prefs[r.id] ?? {};
           return {
             id: r.id,
-            name: r.name,
+            // The user's name for it, if they gave one. The control plane's
+            // name is the default, not the authority.
+            name: chosen.name ?? r.name,
             url: r.url ?? "",
-            accent: prior?.accent ?? palette[i % palette.length] ?? "#2ec4a6",
-            pinned: prior?.pinned,
+            accent: chosen.accent ?? prior?.accent ?? palette[i % palette.length] ?? "#2ec4a6",
+            pinned: chosen.pinned ?? prior?.pinned,
+            hidden: chosen.hidden ?? prior?.hidden,
             unread: prior?.unread,
-            notifications: prior?.notifications ?? true,
+            notifications: chosen.notifications ?? prior?.notifications ?? true,
             status: r.reachable ? "online" : "offline",
             title: prior?.title,
             description: prior?.description,
