@@ -80,7 +80,12 @@ function ensure(server: LocalMcpServer): Running {
   const live = running.get(server.id);
   if (live && !live.child.killed) return live;
 
-  const child = spawn(server.command, server.args, {
+  // Through a login shell, for the same reason local commands are: an Electron
+  // app inherits a minimal PATH, and `npx` installed by nvm or Homebrew is not
+  // on it. Spawning directly fails with ENOENT for a command that works
+  // perfectly in the user's terminal.
+  const line = [server.command, ...server.args].join(" ");
+  const child = spawn(process.env.SHELL ?? "/bin/bash", ["-lc", line], {
     cwd: server.cwd ?? app.getPath("home"),
     env: { ...process.env, ...(server.env ?? {}) },
     stdio: ["pipe", "pipe", "pipe"],
@@ -137,12 +142,27 @@ function ensure(server: LocalMcpServer): Running {
     }
   });
 
-  child.on("exit", () => {
-    state.ready = undefined;
-    for (const waiting of state.pending.values()) {
-      waiting.reject(new Error(`${server.name} stopped.`));
-    }
+  // A command that cannot start at all — ENOENT, no permission — emits this and
+  // nothing else. Without it every pending call simply waited out its timeout,
+  // so a typo in a command looked identical to a server thinking hard.
+  child.on("error", (error) => {
+    state.log.push(`could not start: ${error.message}`);
+    for (const waiting of state.pending.values()) waiting.reject(error);
     state.pending.clear();
+    state.ready = undefined;
+    running.delete(server.id);
+  });
+
+  child.on("exit", (code) => {
+    state.ready = undefined;
+    // A server that exits during startup has usually said why on stderr — and
+    // has certainly not answered the call that started it.
+    if (state.pending.size) {
+      const said = state.log.slice(-2).join(" · ");
+      const detail = said || `${server.name} exited (${code ?? "no code"}) before answering.`;
+      for (const waiting of state.pending.values()) waiting.reject(new Error(detail));
+      state.pending.clear();
+    }
     running.delete(server.id);
   });
 
