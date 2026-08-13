@@ -1,3 +1,4 @@
+import { stopAll } from "./localMcp";
 import { join } from "node:path";
 import { BrowserWindow, app, shell } from "electron";
 import { electronApp, is, optimizer } from "@electron-toolkit/utils";
@@ -60,3 +61,9 @@ void app.whenReady().then(() => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
+
+// A local MCP server holds real resources — a database connection, a file
+// watcher, a port. None of them should outlive the app that started them, and
+// an orphaned server is the kind of thing a user finds in Activity Monitor a
+// week later and never trusts again.
+app.on("will-quit", () => stopAll());

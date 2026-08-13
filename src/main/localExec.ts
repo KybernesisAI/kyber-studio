@@ -1,3 +1,4 @@
+import { callServer } from "./localMcp";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { hostname, platform } from "node:os";
@@ -27,6 +28,11 @@ export const LOCAL_ACTIONS = [
   "read-file",
   "write-file",
   "list-directory",
+  // An MCP server on this machine, called by the remote agent. Its own effect,
+  // not run-command: the user approved a named server with a known job, which
+  // is a narrower thing than approving arbitrary commands, and folding it into
+  // one would take the wider permission for the narrower ask.
+  "local-mcp",
 ] as const;
 export type LocalAction = (typeof LOCAL_ACTIONS)[number];
 
@@ -45,6 +51,8 @@ export function actionLabel(action: LocalAction): string {
       return "Write a file on this computer?";
     case "list-directory":
       return "List a folder on this computer?";
+    case "local-mcp":
+      return "Use a service running on this computer?";
   }
 }
 
@@ -140,6 +148,10 @@ function describe(action: LocalAction, payload: Record<string, unknown>): string
         : String(payload.path ?? "");
     case "list-directory":
       return String(payload.path ?? "");
+    case "local-mcp":
+      // The server's name, not the method: "use Postgres on this machine" is
+      // the decision the user is making, and `tools/call` tells them nothing.
+      return String(payload.server ?? "a local service");
   }
 }
 
@@ -398,6 +410,12 @@ async function execute(
       return op === "edit" ? editLocalFile(payload) : writeLocalFile(payload);
     case "list-directory":
       return listLocalDir(payload);
+    case "local-mcp":
+      return callServer({
+        serverId: String(payload.server ?? ""),
+        method: String(payload.method ?? "tools/list"),
+        params: (payload.params ?? {}) as Record<string, unknown>,
+      });
   }
 }
 

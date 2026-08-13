@@ -1,0 +1,174 @@
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { app } from "electron";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+/**
+ * MCP servers running on the user's own machine, reachable by a remote agent.
+ *
+ * This is the thing a desktop chat app cannot do and a cloud agent cannot do,
+ * and it falls out of having both: the agent runs in the cloud, the server runs
+ * next to the data, and the relay already carries work between them. A Postgres
+ * inside a company network, a private repository, an internal tool with no
+ * ingress at all — none of them need a tunnel, a VPN seat, or a public endpoint,
+ * because nothing ever connects INTO this machine.
+ *
+ * The transport is JSON-RPC over the same request/response channel local
+ * execution uses. MCP's stdio framing is line-delimited JSON, which survives
+ * store-and-forward intact as long as one thing holds: requests for a server go
+ * to the same process, in order. That is why servers are long-lived here rather
+ * than spawned per call — a server that loses its session between calls has no
+ * memory of what it just told the agent.
+ */
+
+export interface LocalMcpServer {
+  /** Stable id, used by the agent to address it. */
+  id: string;
+  name: string;
+  /** The command to run, e.g. `npx`. */
+  command: string;
+  args: string[];
+  /** Extra environment for the server process. Never logged. */
+  env?: Record<string, string>;
+  /** Working directory; defaults to the user's home. */
+  cwd?: string;
+  enabled: boolean;
+}
+
+interface Running {
+  child: ChildProcessWithoutNullStreams;
+  buffer: string;
+  /** In-flight JSON-RPC calls, by id. */
+  pending: Map<number, { resolve(value: unknown): void; reject(error: Error): void }>;
+  nextId: number;
+  startedAt: number;
+}
+
+const running = new Map<string, Running>();
+
+function configPath(): string {
+  const dir = app.getPath("userData");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return join(dir, "local-mcp.json");
+}
+
+export function listServers(): LocalMcpServer[] {
+  try {
+    const raw = readFileSync(configPath(), "utf8");
+    const parsed = JSON.parse(raw) as { servers?: LocalMcpServer[] };
+    return parsed.servers ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveServers(servers: LocalMcpServer[]): void {
+  writeFileSync(configPath(), JSON.stringify({ servers }, null, 2), { mode: 0o600 });
+}
+
+/**
+ * Start a server, or return the one already running.
+ *
+ * Deliberately lazy: a server that nothing has asked for should not be holding
+ * a database connection open on someone's laptop all day.
+ */
+function ensure(server: LocalMcpServer): Running {
+  const live = running.get(server.id);
+  if (live && !live.child.killed) return live;
+
+  const child = spawn(server.command, server.args, {
+    cwd: server.cwd ?? app.getPath("home"),
+    env: { ...process.env, ...(server.env ?? {}) },
+    stdio: ["pipe", "pipe", "pipe"],
+  }) as ChildProcessWithoutNullStreams;
+
+  const state: Running = {
+    child,
+    buffer: "",
+    pending: new Map(),
+    nextId: 1,
+    startedAt: Date.now(),
+  };
+
+  child.stdout.on("data", (chunk: Buffer) => {
+    state.buffer += chunk.toString("utf8");
+    let newline = state.buffer.indexOf("\n");
+    while (newline !== -1) {
+      const line = state.buffer.slice(0, newline).trim();
+      state.buffer = state.buffer.slice(newline + 1);
+      newline = state.buffer.indexOf("\n");
+      if (!line) continue;
+      try {
+        const message = JSON.parse(line) as { id?: number; result?: unknown; error?: unknown };
+        if (typeof message.id !== "number") continue;
+        const waiting = state.pending.get(message.id);
+        if (!waiting) continue;
+        state.pending.delete(message.id);
+        if (message.error) {
+          const detail = (message.error as { message?: string }).message ?? "the server failed";
+          waiting.reject(new Error(detail));
+        } else {
+          waiting.resolve(message.result);
+        }
+      } catch {
+        // A server writing non-JSON to stdout is a server logging where it
+        // should not. Ignore the line rather than kill the session over it.
+      }
+    }
+  });
+
+  // stderr is where MCP servers log. Kept for diagnostics, never sent onward:
+  // it routinely contains connection strings.
+  child.stderr.on("data", () => undefined);
+
+  child.on("exit", () => {
+    for (const waiting of state.pending.values()) {
+      waiting.reject(new Error(`${server.name} stopped.`));
+    }
+    state.pending.clear();
+    running.delete(server.id);
+  });
+
+  running.set(server.id, state);
+  return state;
+}
+
+/** One JSON-RPC call to a local server. */
+export async function callServer(input: {
+  serverId: string;
+  method: string;
+  params?: Record<string, unknown>;
+  timeoutMs?: number;
+}): Promise<unknown> {
+  const server = listServers().find((s) => s.id === input.serverId && s.enabled);
+  if (!server) throw new Error(`No local MCP server called ${input.serverId} is set up here.`);
+
+  const state = ensure(server);
+  const id = state.nextId++;
+  const payload = JSON.stringify({ jsonrpc: "2.0", id, method: input.method, params: input.params ?? {} });
+
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      state.pending.delete(id);
+      reject(new Error(`${server.name} did not answer in time.`));
+    }, input.timeoutMs ?? 60_000);
+
+    state.pending.set(id, {
+      resolve: (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      reject: (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    });
+    state.child.stdin.write(`${payload}\n`);
+  });
+}
+
+/** Stop everything. Called when the app quits, so no server outlives the window. */
+export function stopAll(): void {
+  for (const [, state] of running) state.child.kill();
+  running.clear();
+}
