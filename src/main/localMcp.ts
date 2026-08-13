@@ -306,3 +306,72 @@ export function stopAll(): void {
   for (const [, state] of running) state.child.kill();
   running.clear();
 }
+
+/**
+ * Sign in to a local MCP server, the way a person expects to.
+ *
+ * There is no single way MCP servers ask for authorization, so this tries the
+ * two that exist in practice. Most expose a tool called login (or authenticate,
+ * or connect) which either completes on the spot or hands back a URL. Others
+ * print a URL to stderr on first run and wait. Either way the user's part is a
+ * button and, at most, a browser tab.
+ *
+ * The alternative — telling people to ask the agent to log in — is folklore
+ * dressed as a feature. It works, and nobody outside this company would ever
+ * discover it.
+ */
+export async function authenticate(id: string): Promise<{
+  ok: boolean;
+  message: string;
+  signInUrl?: string;
+}> {
+  const server = listServers().find((s) => s.id === id);
+  if (!server) return { ok: false, message: "That server is not set up here." };
+
+  let loginTool: string | undefined;
+  try {
+    const listed = (await callServer({ serverId: id, method: "tools/list", timeoutMs: 180_000 })) as {
+      tools?: { name: string }[];
+    };
+    loginTool = (listed?.tools ?? [])
+      .map((t) => t.name)
+      .find((name) => /^(login|log_in|sign_in|signin|authenticate|connect|authorize)$/i.test(name));
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "That server did not answer.",
+    };
+  }
+
+  if (loginTool) {
+    try {
+      const result = (await callServer({
+        serverId: id,
+        method: "tools/call",
+        params: { name: loginTool, arguments: {} },
+        timeoutMs: 180_000,
+      })) as { content?: { text?: string }[]; isError?: boolean };
+
+      const text = (result?.content ?? []).map((c) => c.text ?? "").join(" ").trim();
+      // Some servers answer with a URL to visit rather than completing inline.
+      const url = /https?:\/\/[^\s"']+/.exec(text)?.[0] ?? serverStatus(id).signInUrl;
+      if (url) return { ok: true, message: "Finish signing in in your browser.", signInUrl: url };
+      if (result?.isError) return { ok: false, message: text || "Sign-in failed." };
+      return { ok: true, message: text || `Signed in to ${server.name}.` };
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : "Sign-in failed.",
+      };
+    }
+  }
+
+  // No login tool: the server may have printed a link while starting.
+  const url = serverStatus(id).signInUrl;
+  if (url) return { ok: true, message: "Finish signing in in your browser.", signInUrl: url };
+
+  return {
+    ok: false,
+    message: `${server.name} offers no sign-in step — it either needs no account or expects credentials in its command.`,
+  };
+}

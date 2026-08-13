@@ -235,6 +235,23 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                 ) : null}
               </div>
               <button
+                className="btn btn--primary"
+                disabled={checking === s.id}
+                onClick={async () => {
+                  // Sign-in is a button, not a thing you ask the agent to do.
+                  setChecking(s.id);
+                  const outcome = await window.studio!.connectMcpServer(s.id);
+                  if (outcome.signInUrl) void window.studio!.openExternal(outcome.signInUrl);
+                  setResult((r) => ({
+                    ...r,
+                    [s.id]: { ok: outcome.ok, error: outcome.ok ? undefined : outcome.message },
+                  }));
+                  setChecking(null);
+                }}
+              >
+                Connect
+              </button>
+              <button
                 className="btn"
                 disabled={checking === s.id}
                 onClick={async () => {

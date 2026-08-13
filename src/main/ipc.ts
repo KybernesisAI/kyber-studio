@@ -1,6 +1,6 @@
 import { ipcMain, shell, type WebContents } from "electron";
 import { loadState, pickFolder, saveState } from "./store";
-import { type LocalMcpServer, listServers, saveServers, testServer } from "./localMcp";
+import { type LocalMcpServer, authenticate, listServers, saveServers, testServer } from "./localMcp";
 import {
   type LocalAction,
   type LocalPermission,
@@ -113,6 +113,8 @@ export function registerIpc(): void {
       input: { agent: string; name: string; url: string; token?: string; shared?: boolean },
     ) => addCustomConnector(input),
   );
+
+  ipcMain.handle("studio:connectMcpServer", (_e, id: string) => authenticate(id));
 
   ipcMain.handle("studio:testMcpServer", (_e, id: string) => testServer(id));
 
