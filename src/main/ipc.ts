@@ -26,6 +26,7 @@ import {
   resetSession,
   sendTurn,
   signOut,
+  testRemoteMcp,
   startDeviceAuth,
 } from "./controlPlane";
 
@@ -113,6 +114,8 @@ export function registerIpc(): void {
       input: { agent: string; name: string; url: string; token?: string; shared?: boolean },
     ) => addCustomConnector(input),
   );
+
+  ipcMain.handle("studio:testRemoteMcp", (_e, slug: string) => testRemoteMcp(slug));
 
   ipcMain.handle("studio:connectMcpServer", (_e, id: string) => authenticate(id));
 

@@ -184,16 +184,43 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                 <div className="pl__body">
                   <div className="pl__name">{s.name}</div>
                   <div className="pl__desc">{s.description}</div>
-                  <div className="pl__meta">Your agents call this directly</div>
+                  <div className="pl__meta">
+                    {result[s.slug]
+                      ? result[s.slug]!.ok
+                        ? `Answering · ${result[s.slug]!.tools?.length ?? 0} tools`
+                        : result[s.slug]!.error
+                      : "Your agents call this directly"}
+                  </div>
                 </div>
+                {checking === s.slug ? (
+                  <span className="pl__added">
+                    <Spinner />
+                  </span>
+                ) : (
+                  <button
+                    className="btn"
+                    onClick={async () => {
+                      // Tested from the control plane, which is where the agent
+                      // calls from — a server your laptop can reach and the
+                      // cloud cannot is an ordinary situation.
+                      setChecking(s.slug);
+                      const outcome = await window.studio!.testRemoteMcp(s.slug);
+                      setResult((r) => ({ ...r, [s.slug]: outcome }));
+                      setChecking(null);
+                    }}
+                  >
+                    Check
+                  </button>
+                )}
                 <button
-                  className="btn"
+                  className="icon-btn"
+                  title="Remove"
                   onClick={async () => {
                     await window.studio!.disconnectService({ agent, slug: s.slug });
                     await refresh();
                   }}
                 >
-                  Remove
+                  <Icon name="trash" size={14} />
                 </button>
               </div>
             ))}
@@ -346,6 +373,7 @@ function AddLocalServer({
 }): ReactNode {
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
+  const [env, setEnv] = useState("");
 
   const submit = async (): Promise<void> => {
     const trimmed = command.trim();
@@ -353,11 +381,24 @@ function AddLocalServer({
     // Split on whitespace: `npx -y @plaud-ai/mcp@latest` is what a README gives
     // you, and it is what people will paste.
     const [bin, ...args] = trimmed.split(/\s+/);
+
+    // KEY=value per line, the format every README prints. Parsed here rather
+    // than asking for a JSON object, because nobody pastes JSON.
+    const environment: Record<string, string> = {};
+    for (const line of env.split("\n")) {
+      const at = line.indexOf("=");
+      if (at <= 0) continue;
+      const key = line.slice(0, at).trim();
+      const value = line.slice(at + 1).trim();
+      if (key) environment[key] = value;
+    }
+
     await onAdd({
       id: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-"),
       name: name.trim(),
       command: bin!,
       args,
+      ...(Object.keys(environment).length ? { env: environment } : {}),
       enabled: true,
     });
   };
@@ -382,6 +423,21 @@ function AddLocalServer({
           placeholder="npx -y @plaud-ai/mcp@latest"
           onChange={(e) => setCommand(e.target.value)}
         />
+      </div>
+      <div className="field" style={{ marginBottom: 8 }}>
+        <div className="field__label">Environment (optional)</div>
+        <textarea
+          className="input"
+          rows={2}
+          value={env}
+          spellCheck={false}
+          placeholder={"API_KEY=…\nDATABASE_URL=…"}
+          onChange={(e) => setEnv(e.target.value)}
+        />
+        <div className="muted" style={{ marginTop: 4 }}>
+          One per line. Servers that want a key read it from here rather than
+          from the command, where it would sit in plain sight in the list.
+        </div>
       </div>
       <div className="ask__options">
         <button className="btn btn--primary" onClick={() => void submit()}>

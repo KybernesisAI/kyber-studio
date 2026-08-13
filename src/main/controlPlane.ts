@@ -1378,3 +1378,32 @@ export async function addCustomConnector(input: {
   if (!res.ok) return { ok: false, error: body.error ?? `The control plane refused (${res.status}).` };
   return { ok: true };
 }
+
+/** Ask the control plane whether a remote MCP server actually answers. */
+export async function testRemoteMcp(
+  slug: string,
+): Promise<{ ok: boolean; tools?: string[]; error?: string }> {
+  const s = await activeSession();
+  if (!s?.bundle) return { ok: false, error: "Not signed in." };
+  try {
+    const res = await fetch(`${ISSUER}/api/connectors/mcp/test`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${s.token}`,
+        "x-kybernesis-bundle": s.bundle,
+      },
+      body: JSON.stringify({ slug }),
+      signal: AbortSignal.timeout(40_000),
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      tools?: string[];
+      error?: string;
+    };
+    if (!res.ok) return { ok: false, error: body.error ?? `The control plane answered ${res.status}.` };
+    return { ok: Boolean(body.ok), tools: body.tools, error: body.error };
+  } catch {
+    return { ok: false, error: "Could not reach the control plane." };
+  }
+}

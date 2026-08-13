@@ -110,6 +110,7 @@ export interface StudioApi {
     shared?: boolean;
   }): Promise<{ ok: boolean; error?: string }>;
   connectMcpServer(id: string): Promise<{ ok: boolean; message: string; signInUrl?: string }>;
+  testRemoteMcp(slug: string): Promise<{ ok: boolean; tools?: string[]; error?: string }>;
   testMcpServer(id: string): Promise<{
     ok: boolean;
     tools?: string[];
