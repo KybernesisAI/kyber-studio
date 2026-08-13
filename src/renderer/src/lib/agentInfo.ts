@@ -33,11 +33,31 @@ function named(items: unknown[], nameKey = "name"): { name: string; description?
   return out;
 }
 
-/** Trim a compound model id to the part a person recognises. */
+/**
+ * The vendor whose model this is, inferred from the model's own name.
+ *
+ * eve reports provider/model, where provider is the SDK doing the talking. An
+ * OpenAI-COMPATIBLE client serving Grok therefore reports "openai/grok-4.6",
+ * which is true about the wire format and wrong about everyone involved. The
+ * model name is the reliable signal — no vendor ships another vendor's model
+ * names — so read the vendor from that and ignore the protocol.
+ */
+const VENDORS: [RegExp, string][] = [
+  [/^grok/i, "xai"],
+  [/^gpt|^o[134]\b/i, "openai"],
+  [/^claude/i, "anthropic"],
+  [/^gemini/i, "google"],
+  [/^qwen/i, "qwen"],
+  [/^llama/i, "meta"],
+  [/^mistral|^mixtral/i, "mistral"],
+  [/^deepseek/i, "deepseek"],
+];
+
 function shortModel(id: string | undefined): string | undefined {
   if (!id) return id;
-  const parts = id.split("/").filter(Boolean);
-  return parts.length > 2 ? parts.slice(-2).join("/") : id;
+  const name = id.split("/").filter(Boolean).pop() ?? id;
+  const vendor = VENDORS.find(([pattern]) => pattern.test(name))?.[1];
+  return vendor ? `${vendor}/${name}` : id;
 }
 
 export function summarize(info: unknown): AgentSummary {
