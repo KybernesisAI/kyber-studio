@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # Typecheck both processes separately: they have different tsconfigs and
+      # different globals, and a renderer mistake does not surface in a main
+      # process check. A ReferenceError once shipped into a running app because
+      # only the bundler ran — the bundler does not typecheck.
+      - name: Typecheck main
+        run: npx tsc --noEmit -p tsconfig.node.json
+      - name: Typecheck renderer
+        run: npx tsc --noEmit -p tsconfig.web.json
+
+      - name: Build
+        run: npx electron-vite build
+
+      - name: Tests
+        run: npm test --if-present
