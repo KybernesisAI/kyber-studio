@@ -44,6 +44,8 @@ interface Running {
   pending: Map<number, { resolve(value: unknown): void; reject(error: Error): void }>;
   nextId: number;
   startedAt: number;
+  /** Resolves once the MCP handshake has completed for this process. */
+  ready?: Promise<void>;
 }
 
 const running = new Map<string, Running>();
@@ -136,6 +138,7 @@ function ensure(server: LocalMcpServer): Running {
   });
 
   child.on("exit", () => {
+    state.ready = undefined;
     for (const waiting of state.pending.values()) {
       waiting.reject(new Error(`${server.name} stopped.`));
     }
@@ -147,25 +150,27 @@ function ensure(server: LocalMcpServer): Running {
   return state;
 }
 
-/** One JSON-RPC call to a local server. */
-export async function callServer(input: {
-  serverId: string;
-  method: string;
-  params?: Record<string, unknown>;
-  timeoutMs?: number;
-}): Promise<unknown> {
-  const server = listServers().find((s) => s.id === input.serverId && s.enabled);
-  if (!server) throw new Error(`No local MCP server called ${input.serverId} is set up here.`);
-
-  const state = ensure(server);
+/** Write one JSON-RPC message and wait for its answer. */
+function send(
+  state: Running,
+  name: string,
+  method: string,
+  params: Record<string, unknown> | undefined,
+  timeoutMs: number,
+  notify = false,
+): Promise<unknown> {
+  if (notify) {
+    state.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params: params ?? {} })}\n`);
+    return Promise.resolve(undefined);
+  }
   const id = state.nextId++;
-  const payload = JSON.stringify({ jsonrpc: "2.0", id, method: input.method, params: input.params ?? {} });
+  const payload = JSON.stringify({ jsonrpc: "2.0", id, method, params: params ?? {} });
 
-  return await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       state.pending.delete(id);
-      reject(new Error(`${server.name} did not answer in time.`));
-    }, input.timeoutMs ?? 60_000);
+      reject(new Error(`${name} did not answer in time.`));
+    }, timeoutMs);
 
     state.pending.set(id, {
       resolve: (value) => {
@@ -179,6 +184,50 @@ export async function callServer(input: {
     });
     state.child.stdin.write(`${payload}\n`);
   });
+}
+
+/**
+ * The MCP handshake, once per process.
+ *
+ * Missing this was why a perfectly good server timed out: an MCP server ignores
+ * everything until it has been initialized, so tools/list went into a process
+ * that was never going to answer it, and the only symptom was silence. The
+ * first call also has to allow for npx fetching the package, which on a cold
+ * cache is minutes rather than seconds.
+ */
+function handshake(state: Running, name: string): Promise<void> {
+  if (!state.ready) {
+    state.ready = (async () => {
+      await send(
+        state,
+        name,
+        "initialize",
+        {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "kyber-studio", version: "1.0.0" },
+        },
+        180_000,
+      );
+      await send(state, name, "notifications/initialized", undefined, 5_000, true);
+    })();
+  }
+  return state.ready;
+}
+
+/** One JSON-RPC call to a local server. */
+export async function callServer(input: {
+  serverId: string;
+  method: string;
+  params?: Record<string, unknown>;
+  timeoutMs?: number;
+}): Promise<unknown> {
+  const server = listServers().find((s) => s.id === input.serverId && s.enabled);
+  if (!server) throw new Error(`No local MCP server called ${input.serverId} is set up here.`);
+
+  const state = ensure(server);
+  await handshake(state, server.name);
+  return await send(state, server.name, input.method, input.params, input.timeoutMs ?? 60_000);
 }
 
 /**
@@ -214,15 +263,19 @@ export async function testServer(id: string): Promise<{
   signInUrl?: string;
 }> {
   try {
-    const result = (await callServer({ serverId: id, method: "tools/list", timeoutMs: 30_000 })) as {
+    const result = (await callServer({ serverId: id, method: "tools/list", timeoutMs: 180_000 })) as {
       tools?: { name: string }[];
     };
     return { ok: true, tools: (result?.tools ?? []).map((t) => t.name) };
   } catch (error) {
     const status = serverStatus(id);
+    // The server's own last words are far more useful than our timeout: they
+    // say "missing API key" or "sign in at …" where we can only say it went
+    // quiet.
+    const said = status.log.filter((l) => !/^\s*$/.test(l)).slice(-2).join(" · ");
     return {
       ok: false,
-      error: error instanceof Error ? error.message : String(error),
+      error: said || (error instanceof Error ? error.message : String(error)),
       ...(status.signInUrl ? { signInUrl: status.signInUrl } : {}),
     };
   }
