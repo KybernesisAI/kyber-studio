@@ -55,6 +55,15 @@ const studio: StudioApi = {
   testMcpServer: (id) => ipcRenderer.invoke("studio:testMcpServer", id),
   mcpServers: () => ipcRenderer.invoke("studio:mcpServers"),
   saveMcpServers: (servers) => ipcRenderer.invoke("studio:saveMcpServers", servers),
+  updaterState: () => ipcRenderer.invoke("studio:updaterState"),
+  updaterCheck: () => ipcRenderer.invoke("studio:updaterCheck"),
+  updaterDownload: () => ipcRenderer.invoke("studio:updaterDownload"),
+  updaterInstall: () => ipcRenderer.invoke("studio:updaterInstall"),
+  onUpdater: (handler) => {
+    const listener = (_e: unknown, state: Parameters<typeof handler>[0]): void => handler(state);
+    ipcRenderer.on("studio:updater", listener);
+    return () => ipcRenderer.off("studio:updater", listener);
+  },
   openExternal: (url) => ipcRenderer.invoke("studio:openExternal", url),
   onAuthorization: (handler) => {
     const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);

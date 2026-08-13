@@ -1,3 +1,10 @@
+export interface UpdateState {
+  status: "idle" | "checking" | "available" | "downloading" | "downloaded" | "error";
+  version: string | null;
+  percent?: number;
+  error?: string;
+}
+
 export interface LocalMcpServer {
   id: string;
   name: string;
@@ -119,6 +126,11 @@ export interface StudioApi {
   }>;
   mcpServers(): Promise<LocalMcpServer[]>;
   saveMcpServers(servers: LocalMcpServer[]): Promise<LocalMcpServer[]>;
+  updaterState(): Promise<UpdateState>;
+  updaterCheck(): Promise<{ ok: boolean; error?: string }>;
+  updaterDownload(): Promise<{ ok: boolean; error?: string }>;
+  updaterInstall(): Promise<void>;
+  onUpdater(handler: (state: UpdateState) => void): () => void;
   openExternal(url: string): Promise<void>;
   cancelTurn(input: { url: string; sessionId: string; turnId?: string }): Promise<string>;
   resetSession(input: {

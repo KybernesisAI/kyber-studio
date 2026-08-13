@@ -22,12 +22,7 @@ const { autoUpdater } = electronUpdater;
  * decides when.
  */
 
-export interface UpdateState {
-  status: "idle" | "checking" | "available" | "downloading" | "downloaded" | "error";
-  version: string | null;
-  percent?: number;
-  error?: string;
-}
+import type { UpdateState } from "@shared/ipc";
 
 const state: UpdateState = { status: "idle", version: null };
 let getWindow: (() => BrowserWindow | null) | null = null;

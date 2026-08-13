@@ -735,3 +735,6 @@ input, textarea { font: inherit; color: inherit; }
 
 .pl__icon--logo { background: #fff; padding: 5px; border: 0.5px solid var(--stroke); }
 .pl__icon--logo img { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+.foot-row__note { font-size: var(--fs-xs); color: var(--ink-tertiary); font-family: var(--font-mono); }
+.foot-row--accent { color: var(--accent-deep); font-weight: 560; }

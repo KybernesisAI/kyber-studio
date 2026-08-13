@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
+import { UpdateRow } from "./UpdateRow";
 import type { Agent, Block } from "@shared/types";
 import { useStore } from "@/lib/store";
 import { Avatar, Icon, timeLabel } from "./primitives";
@@ -174,6 +175,8 @@ export function Sidebar(): ReactNode {
       </div>
 
       <div className="sidebar__foot">
+        {/* Above Plugins, and only when there is something to do. */}
+        <UpdateRow />
         <button className="foot-row" onClick={() => setPluginsOpen(true)}>
           <Icon name="plug" />
           <span className="foot-row__label">Plugins</span>
