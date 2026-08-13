@@ -697,9 +697,23 @@ export async function sendTurn(input: {
     if (typeof at === "number") input.onCursor(at);
   };
 
+  /**
+   * Abandoning a dead turn, as distinct from asking it to stop.
+   *
+   * Requesting cancellation is a message to a runtime that may not be listening
+   * — the executor that would honour it is exactly the one that died. Without
+   * aborting the read too, `for await` keeps waiting on a stream that will
+   * never yield, this function never returns, and the caller's "a turn is in
+   * flight" flag never clears. The user is then unable to send ANYTHING,
+   * because the client is politely queueing behind a turn that ended long ago.
+   * That is a worse failure than the hang it was meant to report.
+   */
+  const abandon = new AbortController();
+
   let response;
   try {
     response = await session.send({
+      signal: abandon.signal,
       // A resumed turn may carry only answers, with no new message.
       ...(input.text ? { message: input.text } : {}),
       ...(input.inputResponses?.length ? { inputResponses: input.inputResponses } : {}),
@@ -728,7 +742,9 @@ export async function sendTurn(input: {
     if (silenceTimer) clearTimeout(silenceTimer);
     silenceTimer = setTimeout(() => {
       silent = true;
+      // Ask the agent to stop, then stop listening regardless of the answer.
       void session.cancel({ ...(turnId ? { turnId } : {}) }).catch(() => undefined);
+      abandon.abort();
     }, SILENCE_LIMIT_MS);
   };
 
@@ -812,7 +828,7 @@ export async function sendTurn(input: {
       }
     }
   } catch (error) {
-    throw describeClientError(error, base);
+    if (!silent) throw describeClientError(error, base);
   } finally {
     if (silenceTimer) clearTimeout(silenceTimer);
     input.onActivity(null);

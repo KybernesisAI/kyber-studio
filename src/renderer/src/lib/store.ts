@@ -428,11 +428,23 @@ export const useStore = create<State>((set, get) => ({
   stopTurn: (agentId) => {
     const live = get().inflight[agentId];
     const agent = get().agents.find((a) => a.id === agentId);
-    if (!live?.sessionId || !agent?.url || !window.studio) return;
-    void window.studio
-      .cancelTurn({ url: agent.url, sessionId: live.sessionId, turnId: live.turnId })
-      .catch(() => undefined);
-    set((s) => ({ activity: { ...s.activity, [agentId]: "stopping" } }));
+    if (!live || !window.studio) return;
+
+    if (live.sessionId && agent?.url) {
+      void window.studio
+        .cancelTurn({ url: agent.url, sessionId: live.sessionId, turnId: live.turnId })
+        .catch(() => undefined);
+    }
+
+    // Release the composer here, without waiting to hear back. Cancellation is a
+    // request to a runtime that may be gone, and pressing stop must always give
+    // the user their input back — a stop button that can itself hang is not a
+    // stop button. The stream's own cleanup is idempotent when it arrives.
+    set((s) => {
+      const flight = { ...s.inflight };
+      delete flight[agentId];
+      return { inflight: flight, activity: { ...s.activity, [agentId]: null } };
+    });
   },
 
   resetConversation: (agentId) => {
