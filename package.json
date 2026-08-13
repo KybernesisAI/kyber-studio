@@ -13,13 +13,17 @@
     "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
     "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
-    "package": "npm run build && electron-builder --mac --dir"
+    "package": "npm run build && electron-builder",
+    "release:mac": "npm run build && electron-builder --mac --publish always",
+    "release": "npm version patch -m \"release: v%s\" && git push --follow-tags",
+    "release:minor": "npm version minor -m \"release: v%s\" && git push --follow-tags"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^3.0.0",
     "eve": "^0.30.8",
-    "zustand": "^5.0.2"
+    "zustand": "^5.0.2",
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
     "@types/react": "^19.0.2",
@@ -32,5 +36,51 @@
     "react-dom": "^19.0.0",
     "typescript": "^5.7.2",
     "vite": "^6.1.0"
+  },
+  "build": {
+    "appId": "ai.kybernesis.kyberstudio",
+    "productName": "KYBER Studio",
+    "directories": {
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "resources/**/*"
+    ],
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "icon": "build/icon.png"
+    },
+    "linux": {
+      "icon": "build/icon.png"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "KybernesisAI",
+      "repo": "kyber-studio",
+      "releaseType": "release"
+    }
   }
 }

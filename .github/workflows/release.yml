@@ -1,0 +1,78 @@
+name: release
+
+# Builds, signs, notarizes, and publishes the macOS app to a GitHub Release on
+# this repo. electron-updater in the shipped app polls that release's
+# latest-mac.yml, so apps on a lower version show the in-app update control.
+#
+# Trigger: push a tag `vX.Y.Z` matching package.json "version".
+#
+# Same shape as eve-studio's release workflow, deliberately: two desktop apps
+# with two different release procedures is one procedure nobody remembers.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Tag/ref to build (defaults to the triggering ref)
+        required: false
+
+permissions:
+  contents: write # create the Release + upload assets
+
+jobs:
+  release-mac:
+    # Apple silicon runner — matches the arm64 target in package.json build.
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      # All optional: absent secrets produce an unsigned build that still
+      # publishes, rather than a hard failure. An unsigned build will not be
+      # applied by the updater on macOS, which is the honest outcome.
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          # Full history so the changelog step can diff against the previous tag.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The build script typechecks both processes before bundling. That is not
+      # belt-and-braces: the bundler does not typecheck, and a ReferenceError
+      # once shipped into a running app because only the bundler ran.
+      - name: Build, sign, notarize & publish
+        run: npm run release:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Write release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo '')"
+          RANGE="${TAG}"
+          [ -n "$PREV" ] && RANGE="${PREV}..${TAG}"
+          CHANGES="$(git log --no-merges --invert-grep --grep='^release: v' --pretty='- %s' "$RANGE")"
+          [ -z "$CHANGES" ] && CHANGES="- Maintenance release."
+          {
+            echo "## What's changed in ${TAG}"
+            echo
+            echo "$CHANGES"
+            echo
+            [ -n "$PREV" ] && echo "**Full changelog:** https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${TAG}"
+          } | gh release edit "$TAG" --notes-file -

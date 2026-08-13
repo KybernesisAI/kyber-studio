@@ -1,4 +1,5 @@
 import { stopAll } from "./localMcp";
+import { registerUpdater } from "./updater";
 import { join } from "node:path";
 import { BrowserWindow, app, shell } from "electron";
 import { electronApp, is, optimizer } from "@electron-toolkit/utils";
@@ -50,6 +51,9 @@ function createWindow(): void {
 void app.whenReady().then(() => {
   electronApp.setAppUserModelId("ai.kybernesis.kyberstudio");
   registerIpc();
+  // The updater needs a live window to report progress to, and windows come and
+  // go on macOS — so it takes a getter rather than an instance.
+  registerUpdater(() => BrowserWindow.getAllWindows()[0] ?? null);
   startLocalExec();
   app.on("browser-window-created", (_, window) => optimizer.watchWindowShortcuts(window));
   createWindow();
