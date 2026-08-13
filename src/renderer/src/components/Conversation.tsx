@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import type { Block, PeerEvent } from "@shared/types";
 import { peerSummaryLabel, summarizePeerEvents } from "@shared/types";
 import { useStore } from "@/lib/store";
@@ -17,6 +17,34 @@ import { Avatar, Icon, RichText, timeLabel } from "./primitives";
  * because those read very differently and a generic "3 events" tells you
  * nothing about who is talking to whom.
  */
+/**
+ * When a message was sent, shown only where it tells you something.
+ *
+ * A timestamp on every message is noise: in a live exchange you already know
+ * when it happened, because you were there. What carries information is the
+ * SEAM — the point where a conversation was picked up again after a gap. So one
+ * marker per sitting, and the same wording a messages app uses, because that is
+ * the reading people already have.
+ */
+function whenLabel(at: number, previous?: number): string | null {
+  const GAP_MS = 60 * 60_000;
+  if (previous !== undefined && at - previous < GAP_MS) return null;
+
+  const date = new Date(at);
+  const now = new Date();
+  const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const sameDay = date.toDateString() === now.toDateString();
+  if (sameDay) return time;
+
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return `Yesterday ${time}`;
+
+  const within7 = now.getTime() - at < 7 * 24 * 60 * 60_000;
+  const day = date.toLocaleDateString([], within7 ? { weekday: "long" } : { month: "short", day: "numeric" });
+  return `${day} ${time}`;
+}
+
 function PeerActivity({ events }: { events: PeerEvent[] }): ReactNode {
   const [open, setOpen] = useState(false);
   const summary = summarizePeerEvents(events);
@@ -368,7 +396,14 @@ export function Conversation(): ReactNode {
         }}
       >
         <div className="thread__inner" ref={innerRef}>
-          {blocks.map((b) => {
+          {blocks.map((b, i) => {
+            const when = whenLabel(b.at, i > 0 ? blocks[i - 1].at : undefined);
+            const marker = when ? (
+              <div className="thread__when" key={`w${b.id}`}>
+                {when}
+              </div>
+            ) : null;
+            const body = ((): ReactNode => {
             if (b.kind === "peer-activity") return <PeerActivity key={b.id} events={b.events} />;
             if (b.kind === "connection") return <ConnectionCard key={b.id} block={b} />;
             if (b.kind === "question")
@@ -379,10 +414,22 @@ export function Conversation(): ReactNode {
                   onAnswer={(answer) => answerQuestion(activeAgentId, b.id, answer)}
                 />
               );
-            return (
-              <div key={b.id} className={`bubble bubble--${b.role}`}>
-                {b.role === "agent" ? <Markdown text={b.text} /> : <RichText text={b.text} />}
-              </div>
+              return (
+                <div key={b.id} className={`bubble bubble--${b.role}`}>
+                  {b.role === "agent" ? <Markdown text={b.text} /> : <RichText text={b.text} />}
+                </div>
+              );
+            })();
+
+            // A marker and its block travel together, so the label always sits
+            // directly above the message that opened the sitting.
+            return marker ? (
+              <Fragment key={b.id}>
+                {marker}
+                {body}
+              </Fragment>
+            ) : (
+              body
             );
           })}
           {blocks.length === 0 ? (

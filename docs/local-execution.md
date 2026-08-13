@@ -103,14 +103,58 @@ it does not conclude your files are missing, and it does not retry in a loop.
   cannot analyze. Not needed for one person on their own laptop; needed the day
   this reaches a client with a security team.
 
-## The governance gap, stated plainly
+## Who is allowed, and how nobody types a credential
 
-Local execution currently authenticates the agent to the relay with a **shared
-secret**, and any holder of it can reach a connected desktop in the org. That is
-deliberate and temporary, so the feature could be built and used before the
-governance work.
+Two separate questions, and both must be answered before anything runs.
 
-It must become its own revocable capability on the agent edge. "May talk to this
-agent" and "may run commands on my laptop" are different decisions and should
-never share one switch. The control plane already has grants, orgs, and an audit
-log, so there is a home for it — the work is to put it there.
+**Identity — which agent is calling?** A signed agent credential, verified
+offline against the org's keys. It has to exist: with a standing permission in
+place, a relay that took the agent's NAME from the request body would let anyone
+who guessed `sid` run commands on that user's laptop. A name in a body is a
+claim, not proof.
+
+**Consent — did this person allow that agent on this machine?** A standing grant
+(`local_exec_grant`), no expiry, recorded per device. "Always allow" means
+always: whether the work starts in a chat window, a schedule, or a message sent
+from a phone. It ends when the person revokes it, the device is removed, or the
+agent is disabled. An expiring grant would be us quietly re-asking a question
+they already answered.
+
+An authenticated agent with no grant reaches nothing. A granted agent that
+cannot prove which agent it is reaches nothing either.
+
+### The credential is installed by software, never by a person
+
+This is the part that matters for anyone shipping this to a client. The earlier
+design had an operator copying a secret out of an admin screen and pasting it
+into a deployment's env file — not a setup step a customer will ever perform
+correctly, or at all.
+
+KYBER Studio is signed in as the owner, so it can mint from the control plane;
+it already talks to the agent over an authenticated channel, so it can install
+there. One switch in the agent's settings — *Work on this computer* — does all
+three steps:
+
+1. `POST {issuer}/api/agents/credential` — mint it (owner-or-manage only)
+2. `POST {agent}/eve/v1/kyb/credential` — install it; the agent restarts to load it
+3. `POST {issuer}/api/local-exec/grant` — record the standing permission
+
+Order matters: credential first, permission last. An agent that is allowed but
+cannot identify itself has a grant that does nothing, and a half-finished setup
+should look unfinished rather than allowed.
+
+The install route is deliberately **not** a general env-write route. It accepts
+only keys that identify the agent to the control plane, and no value can be read
+back out. A general one would set a model key or a webhook secret, and would sit
+one authenticated bug away from being the most dangerous route in the agent.
+
+## What is still not solved
+
+Reaching a desktop is not its own revocable capability on the agent edge. "May
+talk to this agent" and "may run commands on my laptop" are one decision today,
+taken at the point where the person allows the machine. The standing grant is
+where that split belongs when it comes.
+
+There is also no command policy — no denylist, nothing that fails closed on a
+command it cannot analyse. Fine for one person on their own laptop; needed the
+day this reaches a client with a security team.
