@@ -224,6 +224,19 @@ async function refreshSession(): Promise<Session | null> {
  * directly, so expiry is handled in one place instead of surfacing as a 401 in
  * whichever feature happened to be in use.
  */
+/**
+ * Refresh regardless of what the clock says.
+ *
+ * The stored expiry is a claim, not a fact: a token can be rejected while it
+ * still looks valid here — a rotated signing key, a clock a minute out, a
+ * bundle that aged separately. When the agent says the credential is bad, the
+ * agent is right, and the only useful response is to get a new one rather than
+ * to argue from an expiry we computed ourselves.
+ */
+export async function forceRefresh(): Promise<Session | null> {
+  return await refreshSession();
+}
+
 export async function activeSession(): Promise<Session | null> {
   const current = loadSession();
   if (current && current.expiresAt > Date.now() + 120_000) return current;
@@ -763,9 +776,8 @@ export async function sendTurn(input: {
    */
   const dispatchGuard = setTimeout(() => abandon.abort(), 45_000);
 
-  let response;
-  try {
-    response = await session.send({
+  const dispatch = async () =>
+    await session.send({
       signal: abandon.signal,
       // A resumed turn may carry only answers, with no new message.
       ...(input.text ? { message: input.text } : {}),
@@ -775,6 +787,24 @@ export async function sendTurn(input: {
       // code free of the framework's internal JSON types.
       ...(input.clientContext ? { clientContext: JSON.stringify(input.clientContext) } : {}),
     });
+
+  let response: Awaited<ReturnType<typeof dispatch>>;
+  try {
+    try {
+      response = await dispatch();
+    } catch (error) {
+      // A 401 here is not a conversation to have with the user. Refresh and try
+      // once more: sessions are meant to renew silently, and "sign out and back
+      // in" is not an instruction any product should give.
+      if (error instanceof ClientError && error.status === 401) {
+        console.log("[auth] agent refused the token; refreshing and retrying once");
+        const renewed = await forceRefresh();
+        if (!renewed) throw error;
+        response = await dispatch();
+      } else {
+        throw error;
+      }
+    }
   } catch (error) {
     clearTimeout(dispatchGuard);
     if (abandon.signal.aborted) {
