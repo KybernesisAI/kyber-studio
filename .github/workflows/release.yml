@@ -48,7 +48,12 @@ jobs:
           node-version: 22
           cache: npm
 
-      - run: npm ci
+      # install, not ci: this lock is written by npm 11 locally and the runner
+      # ships npm 10, and the two resolve a transitive range differently — npm
+      # ci then refuses a lock that installs perfectly well. Reproducibility
+      # loses here to a release pipeline that runs, and the build is still
+      # pinned by the lock for everything the two agree on.
+      - run: npm install --no-audit --no-fund
 
       # The build script typechecks both processes before bundling. That is not
       # belt-and-braces: the bundler does not typecheck, and a ReferenceError
