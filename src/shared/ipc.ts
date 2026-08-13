@@ -109,6 +109,12 @@ export interface StudioApi {
     token?: string;
     shared?: boolean;
   }): Promise<{ ok: boolean; error?: string }>;
+  testMcpServer(id: string): Promise<{
+    ok: boolean;
+    tools?: string[];
+    error?: string;
+    signInUrl?: string;
+  }>;
   mcpServers(): Promise<LocalMcpServer[]>;
   saveMcpServers(servers: LocalMcpServer[]): Promise<LocalMcpServer[]>;
   openExternal(url: string): Promise<void>;

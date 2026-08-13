@@ -50,6 +50,7 @@ const studio: StudioApi = {
   connectService: (input) => ipcRenderer.invoke("studio:connectService", input),
   disconnectService: (input) => ipcRenderer.invoke("studio:disconnectService", input),
   addCustomConnector: (input) => ipcRenderer.invoke("studio:addCustomConnector", input),
+  testMcpServer: (id) => ipcRenderer.invoke("studio:testMcpServer", id),
   mcpServers: () => ipcRenderer.invoke("studio:mcpServers"),
   saveMcpServers: (servers) => ipcRenderer.invoke("studio:saveMcpServers", servers),
   openExternal: (url) => ipcRenderer.invoke("studio:openExternal", url),

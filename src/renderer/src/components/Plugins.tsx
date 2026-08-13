@@ -138,6 +138,10 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   const [local, setLocal] = useState<LocalMcpServer[] | null>(null);
   const [remote, setRemote] = useState<{ slug: string; name: string; description?: string }[]>([]);
   const [mode, setMode] = useState<"none" | "remote" | "local">("none");
+  const [checking, setChecking] = useState<string | null>(null);
+  const [result, setResult] = useState<
+    Record<string, { ok: boolean; tools?: string[]; error?: string; signInUrl?: string }>
+  >({});
 
   const refresh = async (): Promise<void> => {
     const servers = await window.studio?.mcpServers();
@@ -212,9 +216,40 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                   {s.command} {s.args.join(" ")}
                 </div>
                 <div className="pl__meta">
-                  {s.enabled ? "Runs here, never exposed" : "Off"}
+                  {result[s.id]
+                    ? result[s.id]!.ok
+                      ? `${result[s.id]!.tools?.length ?? 0} tools · ready`
+                      : result[s.id]!.error
+                    : s.enabled
+                      ? "Runs here, never exposed"
+                      : "Off"}
                 </div>
+                {result[s.id]?.signInUrl ? (
+                  <button
+                    className="btn"
+                    style={{ marginTop: 6 }}
+                    onClick={() => void window.studio?.openExternal(result[s.id]!.signInUrl!)}
+                  >
+                    Open sign-in
+                  </button>
+                ) : null}
               </div>
+              <button
+                className="btn"
+                disabled={checking === s.id}
+                onClick={async () => {
+                  // Starting it is the only honest way to answer "does this
+                  // work" — and it is also what triggers a server's own
+                  // first-run sign-in, so any prompt appears now rather than
+                  // the first time someone asks the agent for something.
+                  setChecking(s.id);
+                  const outcome = await window.studio!.testMcpServer(s.id);
+                  setResult((r) => ({ ...r, [s.id]: outcome }));
+                  setChecking(null);
+                }}
+              >
+                {checking === s.id ? <Spinner /> : "Check"}
+              </button>
               <button
                 className="btn"
                 onClick={() =>
