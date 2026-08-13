@@ -1,3 +1,13 @@
+export interface LocalMcpServer {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  enabled: boolean;
+}
+
 /**
  * The renderer's whole view of the outside world.
  *
@@ -92,6 +102,8 @@ export interface StudioApi {
     slug: string;
     shared?: boolean;
   }): Promise<{ ok: boolean; error?: string }>;
+  mcpServers(): Promise<LocalMcpServer[]>;
+  saveMcpServers(servers: LocalMcpServer[]): Promise<LocalMcpServer[]>;
   openExternal(url: string): Promise<void>;
   cancelTurn(input: { url: string; sessionId: string; turnId?: string }): Promise<string>;
   resetSession(input: {

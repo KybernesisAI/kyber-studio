@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
+import type { LocalMcpServer } from "@shared/ipc";
 import { useStore } from "@/lib/store";
 import { Spinner } from "./Spinner";
 import { Icon } from "./primitives";
@@ -123,6 +124,146 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
   );
 }
 
+/**
+ * MCP servers running on this machine.
+ *
+ * The one thing in the library that is not a hosted service: a program on the
+ * user's own computer that the remote agent can call. It exists because some of
+ * the most useful data a company has is the data it will never put behind a
+ * public endpoint — a production database inside a VPN, a private monorepo, an
+ * internal admin API. The desktop dials out, so none of it has to be exposed.
+ *
+ * The command is deliberately plain text. Anyone adding one of these is copying
+ * a line out of that server's README, and a form that tried to be clever about
+ * npx flags and arguments would fight every server that does something slightly
+ * unusual.
+ */
+function LocalMcpTab({ query }: { query: string }): ReactNode {
+  const [servers, setServers] = useState<LocalMcpServer[] | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [command, setCommand] = useState("");
+
+  useEffect(() => {
+    void window.studio?.mcpServers().then(setServers);
+  }, []);
+
+  if (!servers) return <div className="empty">Loading…</div>;
+
+  const save = async (next: LocalMcpServer[]): Promise<void> => {
+    const saved = await window.studio!.saveMcpServers(next);
+    setServers(saved);
+  };
+
+  const add = async (): Promise<void> => {
+    const trimmed = command.trim();
+    if (!trimmed || !name.trim()) return;
+    // Split on whitespace: `npx -y @modelcontextprotocol/server-postgres URL`
+    // is what people paste, and it is the shape every README uses.
+    const [bin, ...args] = trimmed.split(/\s+/);
+    await save([
+      ...servers,
+      {
+        id: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+        name: name.trim(),
+        command: bin!,
+        args,
+        enabled: true,
+      },
+    ]);
+    setName("");
+    setCommand("");
+    setAdding(false);
+  };
+
+  const term = query.trim().toLowerCase();
+  const shown = servers.filter((s) => !term || s.name.toLowerCase().includes(term));
+
+  return (
+    <>
+      <div className="pl__group">On this computer</div>
+      {shown.length ? (
+        <div className="pl__grid">
+          {shown.map((s) => (
+            <div className="pl__row" key={s.id}>
+              <span className="pl__icon" style={{ background: tint(s.name) }}>
+                {s.name.slice(0, 1)}
+              </span>
+              <div className="pl__body">
+                <div className="pl__name">{s.name}</div>
+                <div className="pl__desc">
+                  {s.command} {s.args.join(" ")}
+                </div>
+                <div className="pl__meta">
+                  {s.enabled ? "Available to your agents" : "Off"}
+                </div>
+              </div>
+              <button
+                className="btn"
+                onClick={() =>
+                  void save(
+                    servers.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x)),
+                  )
+                }
+              >
+                {s.enabled ? "Turn off" : "Turn on"}
+              </button>
+              <button
+                className="btn"
+                title="Remove"
+                onClick={() => void save(servers.filter((x) => x.id !== s.id))}
+              >
+                <Icon name="trash" size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty" style={{ paddingBottom: 12 }}>
+          Nothing on this computer yet. Add a server and your agents can use it —
+          it never leaves this machine.
+        </div>
+      )}
+
+      {adding ? (
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="field">
+            <div className="field__label">Name</div>
+            <input
+              className="input"
+              value={name}
+              placeholder="Production database"
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div className="field" style={{ marginBottom: 8 }}>
+            <div className="field__label">Command</div>
+            <input
+              className="input"
+              value={command}
+              placeholder="npx -y @modelcontextprotocol/server-postgres postgres://…"
+              spellCheck={false}
+              onChange={(e) => setCommand(e.target.value)}
+            />
+          </div>
+          <div className="ask__options">
+            <button className="btn btn--primary" onClick={() => void add()}>
+              Add
+            </button>
+            <button className="btn" onClick={() => setAdding(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button className="btn" style={{ marginTop: 12 }} onClick={() => setAdding(true)}>
+          <Icon name="plus" size={13} /> Add a server
+        </button>
+      )}
+    </>
+  );
+}
+
 function Tile({ name }: { name: string }): ReactNode {
   return (
     <span className="pl__icon" style={{ background: tint(name) }}>
@@ -158,7 +299,7 @@ export function Plugins(): ReactNode {
     installing,
     manageError,
   } = useStore();
-  const [tab, setTab] = useState<"apps" | "marketplace" | "yours">("apps");
+  const [tab, setTab] = useState<"apps" | "local" | "marketplace" | "yours">("apps");
   const [q, setQ] = useState("");
 
   useEffect(() => {
@@ -221,6 +362,12 @@ export function Plugins(): ReactNode {
             Apps
           </button>
           <button
+            className={`tab${tab === "local" ? " tab--on" : ""}`}
+            onClick={() => setTab("local")}
+          >
+            This computer
+          </button>
+          <button
             className={`tab${tab === "marketplace" ? " tab--on" : ""}`}
             onClick={() => setTab("marketplace")}
           >
@@ -253,6 +400,8 @@ export function Plugins(): ReactNode {
         <div className="modal__body">
           {tab === "apps" ? (
             <AppsTab agent={activeAgentId} query={q} />
+          ) : tab === "local" ? (
+            <LocalMcpTab query={q} />
           ) : tab === "marketplace" ? (
             !cat ? (
               <div className="empty">
