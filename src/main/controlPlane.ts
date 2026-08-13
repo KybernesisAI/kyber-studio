@@ -48,9 +48,14 @@ export function loadSession(): Session | null {
     if (!existsSync(p) || !safeStorage.isEncryptionAvailable()) return null;
     const decrypted = safeStorage.decryptString(readFileSync(p));
     const parsed = JSON.parse(decrypted) as Session;
-    // An expired token is not a session. Returning one produces 401s that look
-    // like a broken agent instead of a sign-in prompt.
-    if (parsed.expiresAt < Date.now() + 30_000) return null;
+    // An expired ACCESS token is not a signed-out user. The refresh token
+    // stored beside it exists for exactly this moment, and throwing the whole
+    // session away here meant refreshSession had nothing to read on a cold
+    // start — so every relaunch more than an hour after signing in demanded a
+    // new sign-in while a perfectly good refresh token sat on disk unused.
+    //
+    // Only a session with no way back is no session.
+    if (parsed.expiresAt < Date.now() + 30_000 && !parsed.refreshToken) return null;
     session = parsed;
     return session;
   } catch {
@@ -217,8 +222,14 @@ async function refreshSession(): Promise<Session | null> {
 export async function activeSession(): Promise<Session | null> {
   const current = loadSession();
   if (current && current.expiresAt > Date.now() + 120_000) return current;
+
   const refreshed = await refreshSession();
-  return refreshed ?? current;
+  if (refreshed) return refreshed;
+
+  // Refresh failed. Handing back an expired token would only produce 401s that
+  // read as a broken agent, so that is a real sign-out; a token with life left
+  // is still usable and the refresh can be retried on the next call.
+  return current && current.expiresAt > Date.now() + 30_000 ? current : null;
 }
 
 export function signOut(): void {
