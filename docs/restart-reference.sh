@@ -77,7 +77,11 @@ set -a
 [ -f .env.local ] && . ./.env.local
 set +a
 : > "$LOG"
-setsid env PORT=8000 npx eve start --host 0.0.0.0 < /dev/null > "$LOG" 2>&1 &
+# 9>&- closes the lock descriptor for the child. Without it the server INHERITS
+# the open fd and therefore holds the flock for as long as it runs, so the next
+# restart blocks the full timeout and then fails — the lock meant to serialize
+# restarts becomes the thing that prevents them.
+setsid env PORT=8000 npx eve start --host 0.0.0.0 < /dev/null > "$LOG" 2>&1 9>&- &
 sleep 45
 
 pid=$(pgrep -f 'server/index.mjs' | head -1)
