@@ -1,5 +1,12 @@
 import { app, ipcMain, type BrowserWindow } from "electron";
-import { autoUpdater } from "electron-updater";
+// Default import, then destructure: electron-updater is CommonJS and this
+// bundle is ESM ("type": "module"), so a named import compiles to a live
+// binding the package cannot provide. It works in dev — where the module is
+// bundled — and throws on launch once packaged, where it stays external. Eve
+// Studio does not hit this only because its main process is CommonJS.
+import electronUpdater from "electron-updater";
+
+const { autoUpdater } = electronUpdater;
 
 /**
  * In-app updates, the same shape Eve Studio uses.

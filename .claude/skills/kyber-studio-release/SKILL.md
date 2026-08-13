@@ -35,6 +35,23 @@ polls that release's `latest-mac.yml`; apps on a lower version then show the
 
 ---
 
+## 0. Launch the packaged app first — not the dev build
+
+`npm run dev` proves nothing about a release. The dev build BUNDLES
+dependencies; the packaged one leaves them external, so a CommonJS package
+imported by name compiles fine, runs fine in development, and throws on launch
+once packaged. That shipped once already, as a JavaScript error dialog on a
+signed, notarized v0.1.2 — the build was green the whole way.
+
+```bash
+npx electron-builder --mac dir          # skips dmg, which needs python locally
+"dist/mac-arm64/KYBER Studio.app/Contents/MacOS/KYBER Studio" &
+sleep 10 && pgrep -f "MacOS/KYBER Studio" && echo launched
+```
+
+If it exits, the app is broken; the tag would ship it anyway. A release job that
+goes green is evidence about the BUILD, never about the program.
+
 ## 1. Versioning — smallest sensible bump
 
 `package.json` `"version"` is the single source of truth. The updater compares
