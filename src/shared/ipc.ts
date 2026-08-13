@@ -69,6 +69,9 @@ export interface StudioApi {
   /** Subscribe to streaming deltas. Returns an unsubscribe function. */
   onDelta(handler: (payload: { streamId: string; text: string }) => void): () => void;
   /** Subscribe to "what the agent is doing" updates. null clears the line. */
+  provisionLocal(input: { url: string; agent: string }): Promise<{ ok: boolean; error?: string; restarted?: boolean }>;
+  localAccess(agent: string): Promise<boolean>;
+  revokeLocal(agent: string): Promise<boolean>;
   cancelTurn(input: { url: string; sessionId: string; turnId?: string }): Promise<string>;
   resetSession(input: {
     url: string;

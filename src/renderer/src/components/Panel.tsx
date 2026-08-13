@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   DEFAULT_SPEC,
   FREQUENCIES,
@@ -496,6 +496,68 @@ function RoutineView(): ReactNode {
   );
 }
 
+/**
+ * One switch for "this agent may work on this computer".
+ *
+ * Everything underneath it — minting the agent's credential, installing it,
+ * recording the standing permission — happens between the control plane, this
+ * app, and the agent. None of it is a step for the person, and the credential
+ * is never shown, because a setup that asks someone to carry a secret between
+ * two screens is a setup that will be done wrong or not at all.
+ */
+function LocalAccess({ agent, url }: { agent: string; url?: string }): ReactNode {
+  const [on, setOn] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void window.studio?.localAccess(agent).then((v) => live && setOn(v));
+    return () => {
+      live = false;
+    };
+  }, [agent]);
+
+  const toggle = async (next: boolean): Promise<void> => {
+    if (!url) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (next) {
+        const res = await window.studio!.provisionLocal({ url, agent });
+        if (!res.ok) {
+          setError(res.error ?? "Could not connect it to this computer.");
+          return;
+        }
+        setOn(true);
+      } else {
+        await window.studio!.revokeLocal(agent);
+        setOn(false);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card stack-row">
+      <div style={{ flex: 1 }}>
+        <div>Work on this computer</div>
+        <div className="muted">
+          {error
+            ? error
+            : busy
+              ? "Setting it up…"
+              : on
+                ? "Allowed on this Mac. It stays allowed until you turn this off."
+                : "Let this agent read and change files here, and run commands."}
+        </div>
+      </div>
+      <Toggle on={on === true} onChange={(v) => void toggle(v)} />
+    </div>
+  );
+}
+
 function Settings(): ReactNode {
   const { agents, activeAgentId, patchAgent, setPanel, details, models, resetConversation, sessions } =
     useStore();
@@ -519,6 +581,8 @@ function Settings(): ReactNode {
             onChange={(e) => patchAgent(agent.id, { name: e.target.value })}
           />
         </div>
+
+        <LocalAccess agent={info?.name ?? agent.name} url={agent.url} />
 
         <div className="card stack-row">
           <div style={{ flex: 1 }}>

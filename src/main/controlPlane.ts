@@ -922,3 +922,125 @@ export async function manageCall(input: {
   const data = await res.json().catch(() => null);
   return { ok: res.ok, status: res.status, data };
 }
+
+/**
+ * Give an agent what it needs to reach this machine, without anyone touching a
+ * credential.
+ *
+ * Three things have to be true before an agent can work on someone's files: it
+ * must be able to prove which agent it is, the person must have allowed it on
+ * this machine, and the desktop must be reachable. Only the middle one is a
+ * decision — the other two are plumbing, and plumbing is not something to hand
+ * a user as a setup checklist.
+ *
+ * Studio is the one place where all three are already available: it is signed
+ * in as the owner, so it can mint from the control plane; it talks to the agent
+ * over an authenticated channel, so it can install; and it IS the device, so it
+ * knows what it is granting. The credential passes between two pieces of
+ * software and is never displayed, logged, or persisted here.
+ */
+export async function provisionLocalAccess(input: {
+  url: string;
+  agent: string;
+}): Promise<{ ok: boolean; error?: string; restarted?: boolean }> {
+  const s = await activeSession();
+  if (!s?.bundle) return { ok: false, error: "Not signed in." };
+
+  const headers = {
+    "content-type": "application/json",
+    authorization: `Bearer ${s.token}`,
+    "x-kybernesis-bundle": s.bundle,
+  };
+
+  // 1. Mint. Owner-or-manage only, enforced at the control plane.
+  const minted = await fetch(`${ISSUER}/api/agents/credential`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ agent: input.agent }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!minted.ok) {
+    const detail = await minted.text().catch(() => "");
+    return {
+      ok: false,
+      error:
+        minted.status === 403
+          ? `You need manage access to "${input.agent}" to connect it to this computer.`
+          : `The control plane would not issue a credential for "${input.agent}" (${minted.status}). ${detail.slice(0, 160)}`,
+    };
+  }
+  const { credential } = (await minted.json()) as { credential?: string };
+  if (!credential) return { ok: false, error: "The control plane returned no credential." };
+
+  // 2. Install it on the agent, over the channel it already authenticates.
+  const base = input.url.replace(/\/$/, "");
+  const installed = await fetch(`${base}/eve/v1/kyb/credential`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ key: "KYBERNESIS_AGENT_CREDENTIAL", value: credential }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!installed.ok) {
+    const detail = await installed.text().catch(() => "");
+    return {
+      ok: false,
+      error:
+        installed.status === 404
+          ? `${input.agent} is not running a recent enough @kybernesis/manage to accept this.`
+          : `${input.agent} refused the credential (${installed.status}). ${detail.slice(0, 160)}`,
+    };
+  }
+  const result = (await installed.json().catch(() => ({}))) as { restarted?: boolean };
+
+  // 3. Record the standing permission. Deliberately last: an agent that is
+  // allowed but cannot identify itself is a grant that does nothing, and a
+  // half-finished setup should look unfinished rather than allowed.
+  const granted = await fetch(`${ISSUER}/api/local-exec/grant`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ agent: input.agent, deviceId: deviceId() }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!granted.ok) {
+    return { ok: false, error: `Could not record the permission (${granted.status}).` };
+  }
+
+  return { ok: true, restarted: result.restarted };
+}
+
+/** Whether this agent is already allowed to work on this machine. */
+export async function localAccessGranted(agent: string): Promise<boolean> {
+  const s = await activeSession();
+  if (!s?.bundle) return false;
+  try {
+    const res = await fetch(
+      `${ISSUER}/api/local-exec/grant?deviceId=${encodeURIComponent(deviceId())}`,
+      {
+        headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
+        signal: AbortSignal.timeout(20_000),
+      },
+    );
+    if (!res.ok) return false;
+    const body = (await res.json()) as { grants?: { agent: string }[] };
+    return (body.grants ?? []).some((g) => g.agent === agent);
+  } catch {
+    return false;
+  }
+}
+
+/** Withdraw it. The agent keeps its credential; what it loses is permission. */
+export async function revokeLocalAccess(agent: string): Promise<boolean> {
+  const s = await activeSession();
+  if (!s?.bundle) return false;
+  const res = await fetch(`${ISSUER}/api/local-exec/grant`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${s.token}`,
+      "x-kybernesis-bundle": s.bundle,
+    },
+    body: JSON.stringify({ agent, deviceId: deviceId(), revoke: true }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  return res.ok;
+}

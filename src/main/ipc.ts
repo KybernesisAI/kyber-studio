@@ -11,7 +11,10 @@ import {
   type DeviceStart,
   agentInfo,
   cancelTurn,
+  localAccessGranted,
   manageCall,
+  provisionLocalAccess,
+  revokeLocalAccess,
   currentSession,
   listAgents,
   pollDeviceAuth,
@@ -80,6 +83,15 @@ export function registerIpc(): void {
       return readPermissions();
     },
   );
+
+  ipcMain.handle(
+    "studio:provisionLocal",
+    (_e, input: { url: string; agent: string }) => provisionLocalAccess(input),
+  );
+
+  ipcMain.handle("studio:localAccess", (_e, agent: string) => localAccessGranted(agent));
+
+  ipcMain.handle("studio:revokeLocal", (_e, agent: string) => revokeLocalAccess(agent));
 
   ipcMain.handle(
     "studio:cancelTurn",

@@ -36,6 +36,9 @@ const studio: StudioApi = {
     ipcRenderer.on("studio:cursor", listener);
     return () => ipcRenderer.off("studio:cursor", listener);
   },
+  provisionLocal: (input) => ipcRenderer.invoke("studio:provisionLocal", input),
+  localAccess: (agent) => ipcRenderer.invoke("studio:localAccess", agent),
+  revokeLocal: (agent) => ipcRenderer.invoke("studio:revokeLocal", agent),
   cancelTurn: (input) => ipcRenderer.invoke("studio:cancelTurn", input),
   resetSession: (input) => ipcRenderer.invoke("studio:resetSession", input),
   onTurn: (handler) => {
