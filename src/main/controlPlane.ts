@@ -73,6 +73,20 @@ function saveSession(next: Session | null): void {
   writeFileSync(storePath(), safeStorage.encryptString(JSON.stringify(next)), { mode: 0o600 });
 }
 
+/**
+ * When the policy bundle dies, which is not when the token does.
+ *
+ * Both are verified by every agent, so the pair is only as good as its earlier
+ * half. Tracking the token alone is how a session that looked healthy for
+ * another fifty minutes was already being refused — and why signing out was the
+ * only thing that fixed it, because that is the one path that mints both.
+ */
+function bundleExpiry(bundle: string | undefined): number {
+  if (!bundle) return Number.POSITIVE_INFINITY;
+  const exp = readClaims(bundle).exp;
+  return exp ? exp * 1000 : Number.POSITIVE_INFINITY;
+}
+
 /** Claims are display-only; enforcement happens at the agent. Decode, never trust. */
 function readClaims(jwt: string): { email?: string; org_name?: string; exp?: number } {
   try {
@@ -139,6 +153,9 @@ export async function pollDeviceAuth(start: DeviceStart): Promise<Session> {
         email: claims.email,
         orgName: claims.org_name,
       };
+      console.log(
+        `[auth] pair: token ${Math.round((next.expiresAt - Date.now()) / 1000)}s, bundle ${Math.round((bundleExpiry(next.bundle) - Date.now()) / 1000)}s`,
+      );
       saveSession(next);
       return next;
     }
@@ -239,7 +256,12 @@ export async function forceRefresh(): Promise<Session | null> {
 
 export async function activeSession(): Promise<Session | null> {
   const current = loadSession();
-  if (current && current.expiresAt > Date.now() + 120_000) return current;
+  // The earlier of the two: a credential is a pair, and the pair expires when
+  // its first half does.
+  const good =
+    current &&
+    Math.min(current.expiresAt, bundleExpiry(current.bundle)) > Date.now() + 120_000;
+  if (current && good) return current;
 
   const refreshed = await refreshSession();
   if (refreshed) return refreshed;
@@ -1050,6 +1072,26 @@ export async function manageCall(input: {
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) {
+    // What we actually sent, in the terms the agent judges it by: which key
+    // signed it, who issued it, and whether it is still in date. A 401 is one
+    // of those three and guessing between them has cost hours.
+    const peek = (jwt: string | undefined, label: string): string => {
+      if (!jwt) return `${label}=absent`;
+      try {
+        const [head, body] = jwt.split(".");
+        const h = JSON.parse(Buffer.from(head!, "base64url").toString()) as { kid?: string };
+        const c = JSON.parse(Buffer.from(body!, "base64url").toString()) as {
+          iss?: string;
+          exp?: number;
+          sub?: string;
+        };
+        const left = c.exp ? Math.round((c.exp * 1000 - Date.now()) / 1000) : NaN;
+        return `${label}: kid=${h.kid ?? "?"} iss=${c.iss ?? "?"} expires_in=${left}s`;
+      } catch {
+        return `${label}=unparseable`;
+      }
+    };
+    console.log(`[manage] ${peek(s.token, "token")} | ${peek(s.bundle, "bundle")}`);
     // The agent's own words, not our summary. A 401 from a manage route can be
     // an expired token, a bundle that does not match, or a missing grant, and
     // those need three different fixes.
