@@ -59,6 +59,7 @@ function ensureListeners(
     const agentId = streamOwners.get(streamId);
     if (!agentId) return;
     set((s) => ({ activity: { ...s.activity, [agentId]: label } }));
+    if (get().inflight[agentId]) armDeadMan(get, set, agentId);
   });
 
   window.studio.onCursor(({ streamId, index }) => {
@@ -174,6 +175,54 @@ function retireStaleQuestions(
       ),
     },
   }));
+}
+
+/**
+ * A turn cannot hold the composer hostage, whatever the transport does.
+ *
+ * Every fix so far has been a timeout somewhere in the send path, and each one
+ * only covered the failure that had already happened. This is the layer that
+ * does not care WHERE it broke: the window arms its own timer when it marks an
+ * agent busy, and if nothing has come back by the time it fires, the user gets
+ * their input back. A client whose usability depends on the transport being
+ * correct is a client that will wedge in front of someone who is paying for it.
+ *
+ * Generous on purpose — a long tool run is normal, and any real activity
+ * (a delta, a tool call, a question) rearms it.
+ */
+const DEAD_MAN_MS = 240_000;
+const deadMan = new Map<string, ReturnType<typeof setTimeout>>();
+
+function armDeadMan(
+  get: () => State,
+  set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
+  agentId: string,
+): void {
+  clearTimeout(deadMan.get(agentId));
+  deadMan.set(
+    agentId,
+    setTimeout(() => {
+      if (!get().inflight[agentId]) return;
+      set((s) => {
+        const flight = { ...s.inflight };
+        delete flight[agentId];
+        return { inflight: flight, activity: { ...s.activity, [agentId]: null } };
+      });
+      upsertBlock(
+        get,
+        set,
+        agentId,
+        `a${Date.now()}`,
+        "That turn stopped responding, so I let it go. Nothing was lost — send it again.",
+      );
+      flushQueue(get, agentId);
+    }, DEAD_MAN_MS),
+  );
+}
+
+function disarmDeadMan(agentId: string): void {
+  clearTimeout(deadMan.get(agentId));
+  deadMan.delete(agentId);
 }
 
 /**
@@ -410,6 +459,7 @@ export const useStore = create<State>((set, get) => ({
     ensureListeners(get, set);
     streamOwners.set(streamId, agentId);
     set((s) => ({ inflight: { ...s.inflight, [agentId]: { streamId } } }));
+    armDeadMan(get, set, agentId);
 
     void window.studio
       .send({
@@ -453,6 +503,7 @@ export const useStore = create<State>((set, get) => ({
         });
         // Keep the owner mapping briefly: a late event that arrives after the
         // response is exactly what this whole change is about.
+        disarmDeadMan(agentId);
         setTimeout(() => streamOwners.delete(streamId), 30_000);
         get().persist();
         flushQueue(get, agentId);
@@ -474,11 +525,13 @@ export const useStore = create<State>((set, get) => ({
     // request to a runtime that may be gone, and pressing stop must always give
     // the user their input back — a stop button that can itself hang is not a
     // stop button. The stream's own cleanup is idempotent when it arrives.
+    disarmDeadMan(agentId);
     set((s) => {
       const flight = { ...s.inflight };
       delete flight[agentId];
       return { inflight: flight, activity: { ...s.activity, [agentId]: null } };
     });
+    flushQueue(get, agentId);
   },
 
   resetConversation: (agentId) => {
@@ -490,6 +543,7 @@ export const useStore = create<State>((set, get) => ({
     // Drop the local handles first. Even if the agent cannot retire the session
     // (its owner may already be gone), the next message must not be posted into
     // the session that was stuck — that is the whole point of resetting.
+    disarmDeadMan(agentId);
     set((s) => ({
       sessions: { ...s.sessions, [agentId]: undefined },
       continuations: { ...s.continuations, [agentId]: undefined },
@@ -530,6 +584,7 @@ export const useStore = create<State>((set, get) => ({
     ensureListeners(get, set);
     streamOwners.set(streamId, agentId);
     set((s) => ({ inflight: { ...s.inflight, [agentId]: { streamId } } }));
+    armDeadMan(get, set, agentId);
 
     void window.studio
       .send({
@@ -566,6 +621,7 @@ export const useStore = create<State>((set, get) => ({
           delete flight[agentId];
           return { activity: { ...s.activity, [agentId]: null }, inflight: flight };
         });
+        disarmDeadMan(agentId);
         setTimeout(() => streamOwners.delete(streamId), 30_000);
         get().persist();
         flushQueue(get, agentId);
@@ -583,9 +639,11 @@ export const useStore = create<State>((set, get) => ({
     if (!res.ok) {
       set({
         manageError:
-          res.status === 401
-            ? "This agent did not accept your sign-in. You may not have a grant for it."
-            : `The agent's management routes answered ${res.status}.`,
+          res.status === 440
+            ? "Your sign-in expired and could not be renewed. Sign out and back in."
+            : res.status === 401
+              ? "This agent did not accept your sign-in. You may not have a grant for it."
+              : `The agent's management routes answered ${res.status}.`,
       });
       return;
     }

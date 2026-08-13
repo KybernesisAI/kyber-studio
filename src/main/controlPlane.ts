@@ -183,11 +183,16 @@ async function refreshSession(): Promise<Session | null> {
         signal: AbortSignal.timeout(20_000),
       });
       if (!res.ok) {
+        // Logged because a silent refresh that silently fails is the hardest
+        // kind of session bug to see: everything downstream reports a 401 from
+        // somewhere else, and nothing says the refresh was the thing that went.
+        console.log(`[auth] refresh failed ${res.status}`);
         // 401 means the refresh token itself is done; 403 means the user was
         // suspended. Both are real sign-outs, not retryable.
         if (res.status === 401 || res.status === 403) signOut();
         return null;
       }
+      console.log("[auth] refreshed");
       const body = (await res.json()) as Record<string, unknown>;
       if (typeof body.token !== "string") return null;
       const claims = readClaims(body.token);
@@ -744,6 +749,17 @@ export async function sendTurn(input: {
    */
   const abandon = new AbortController();
 
+  /**
+   * Everything up to the first event has to be bounded too.
+   *
+   * The idle watchdog below only arms once send() has resolved, so anything
+   * that hangs before that — a POST that never answers, a proxy holding the
+   * connection, a resolve that never finishes — was outside every timeout in
+   * this file. That is how a turn could wedge with no stream events at all and
+   * nothing to cancel.
+   */
+  const dispatchGuard = setTimeout(() => abandon.abort(), 45_000);
+
   let response;
   try {
     response = await session.send({
@@ -757,7 +773,15 @@ export async function sendTurn(input: {
       ...(input.clientContext ? { clientContext: JSON.stringify(input.clientContext) } : {}),
     });
   } catch (error) {
+    clearTimeout(dispatchGuard);
+    if (abandon.signal.aborted) {
+      throw new Error(
+        `${base} accepted the connection but never started the turn. Nothing was sent — try again.`,
+      );
+    }
     throw describeClientError(error, base);
+  } finally {
+    clearTimeout(dispatchGuard);
   }
 
   if (session.state.sessionId) {
@@ -972,7 +996,10 @@ export async function manageCall(input: {
 }): Promise<{ ok: boolean; status: number; data: unknown }> {
   const s = await activeSession();
   if (!s?.bundle) {
-    return { ok: false, status: 401, data: { error: "Not signed in." } };
+    // 440, not 401: the agent never saw this request. Reporting it as the
+    // agent's refusal sends someone to check grants for a session that expired
+    // on this side.
+    return { ok: false, status: 440, data: { error: "Your sign-in has expired." } };
   }
   const base = input.url.replace(/\/$/, "");
   const res = await fetch(`${base}/eve/v1/kyb${input.path}`, {
@@ -988,6 +1015,12 @@ export async function manageCall(input: {
     signal: AbortSignal.timeout(420_000),
   });
   const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    // The agent's own words, not our summary. A 401 from a manage route can be
+    // an expired token, a bundle that does not match, or a missing grant, and
+    // those need three different fixes.
+    console.log(`[manage] ${input.path} -> ${res.status} ${JSON.stringify(data)?.slice(0, 240)}`);
+  }
   return { ok: res.ok, status: res.status, data };
 }
 
