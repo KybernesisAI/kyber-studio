@@ -1111,6 +1111,8 @@ export interface ConnectorCard {
   scope: string;
   needsAdmin: boolean;
   mark?: string;
+  /** Real logo from the broker catalog; the mark is the fallback. */
+  logo?: string;
   connected: boolean;
 }
 

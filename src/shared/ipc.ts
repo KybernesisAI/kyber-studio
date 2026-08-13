@@ -82,6 +82,7 @@ export interface StudioApi {
       scope: string;
       needsAdmin: boolean;
       mark?: string;
+      logo?: string;
       connected: boolean;
     }[];
   }>;

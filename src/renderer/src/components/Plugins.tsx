@@ -32,6 +32,7 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
       scope: string;
       needsAdmin: boolean;
       mark?: string;
+      logo?: string;
       connected: boolean;
     }[];
   } | null>(null);
@@ -83,9 +84,17 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
       <div className="pl__grid">
         {shown.map((c) => (
           <div className="pl__row" key={c.slug}>
-            <span className="pl__icon" style={{ background: tint(c.name) }}>
-              {c.mark ?? c.name.slice(0, 1)}
-            </span>
+            {c.logo ? (
+              // The real mark, on white: these are drawn for light backgrounds and
+              // several of them vanish on a dark tile.
+              <span className="pl__icon pl__icon--logo">
+                <img src={c.logo} alt="" />
+              </span>
+            ) : (
+              <span className="pl__icon" style={{ background: tint(c.name) }}>
+                {c.mark ?? c.name.slice(0, 1)}
+              </span>
+            )}
             <div className="pl__body">
               <div className="pl__name">{c.name}</div>
               <div className="pl__desc">{c.description}</div>

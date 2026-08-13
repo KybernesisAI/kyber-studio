@@ -716,3 +716,6 @@ input, textarea { font: inherit; color: inherit; }
 }
 
 .pl__meta { font-size: var(--fs-xs); color: var(--ink-tertiary); margin-top: 3px; }
+
+.pl__icon--logo { background: #fff; padding: 5px; border: 0.5px solid var(--stroke); }
+.pl__icon--logo img { width: 100%; height: 100%; object-fit: contain; display: block; }
