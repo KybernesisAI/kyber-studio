@@ -53,7 +53,6 @@ function whenLabel(at: number, previous?: number): string | null {
  * Deliberately not an accordion. The exchange is a conversation between two
  * agents; unfolding it inside this thread makes the user's own conversation the
  * container for someone else's, and the two read as one jumbled transcript.
- * Grok Bot solved this the same way and it is the right call.
  */
 function PeerActivity({
   events,
@@ -94,9 +93,9 @@ function PeerActivity({
  * The exchange itself, read as its own conversation.
  *
  * Attribution is by DIRECTION, which is the bug this replaces: every row used
- * to be captioned with the peer's name, so a thread where Kyber asked and Sid
- * answered read as Sid asking itself. Outbound is this agent speaking; inbound
- * is the peer.
+ * to be captioned with the peer's name, so a thread where this agent asked and
+ * the peer answered read as the peer asking itself. Outbound is this agent
+ * speaking; inbound is the peer.
  */
 function ExchangeView(): ReactNode {
   const exchange = useStore((s) => s.exchange);

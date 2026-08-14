@@ -37,8 +37,8 @@
   /* Type scale. Four sizes and their line heights, not sixteen ad-hoc values.
      Half-pixel sizes (13.5, 12.5, 11.5) were the loudest of the small wrongs:
      they land between the hinting grid, so text renders a shade blurrier than
-     its neighbours and nothing quite lines up. This is the scale Grok Bot uses,
-     which is the one macOS itself is drawn on. */
+     its neighbours and nothing quite lines up. This is the scale macOS itself
+     is drawn on. */
   --fs-xs: 11px;    --lh-xs: 14px;
   --fs-sm: 12px;    --lh-sm: 16px;
   --fs-base: 13px;  --lh-base: 18px;

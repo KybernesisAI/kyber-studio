@@ -11,7 +11,7 @@ import { readPeerEvents } from "../src/main/peerEvents.ts";
 const here = dirname(fileURLToPath(import.meta.url));
 
 /**
- * A real Kyber→Sid exchange, recorded from production on 2026-08-14.
+ * A real exchange between two deployed agents, recorded from a live run.
  *
  * Every shape in the reader was wrong at least once before this fixture
  * existed: the answer is not a string, its call id is not where the other
@@ -20,7 +20,7 @@ const here = dirname(fileURLToPath(import.meta.url));
  * key.
  */
 function fixture() {
-  return readFileSync(join(here, "fixtures/a2a-kyber-sid.jsonl"), "utf8")
+  return readFileSync(join(here, "fixtures/agent-to-agent.jsonl"), "utf8")
     .split("\n")
     .filter(Boolean)
     .map((l) => JSON.parse(l));
@@ -43,10 +43,10 @@ test("a real hop yields the question and the answer, in order", () => {
     seen.map((p) => p.direction),
     ["outbound", "inbound"],
   );
-  assert.equal(seen[0].peer, "sid");
+  assert.equal(seen[0].peer, "specialist");
   assert.equal(seen[0].text, "Identify yourself in one sentence.");
-  assert.equal(seen[1].peer, "sid");
-  assert.match(seen[1].text, /I'm Sid, Ian's personal chief of staff/);
+  assert.equal(seen[1].peer, "specialist");
+  assert.match(seen[1].text, /scheduling specialist/);
 });
 
 test("nothing is left pending after the peer answers", () => {
@@ -56,13 +56,13 @@ test("nothing is left pending after the peer answers", () => {
 });
 
 test("a local subagent finishing is not the remote peer answering", () => {
-  // The failure this prevents: Kyber has three local subagents beside two
-  // remote peers. Attributing by "the last peer we called" captions a local
-  // delegation as a message from Sid.
+  // The failure this prevents: an agent with local subagents alongside remote
+  // peers. Attributing by "the last peer we called" captions a local
+  // delegation as a message from the remote agent.
   const state = { pending: new Map(), last: null };
   readPeerEvents(
     "actions.requested",
-    { actions: [{ kind: "remote-agent-call", name: "sid", callId: "call_remote", input: { message: "hi" } }] },
+    { actions: [{ kind: "remote-agent-call", name: "specialist", callId: "call_remote", input: { message: "hi" } }] },
     state,
   );
   const stray = readPeerEvents(
@@ -81,18 +81,18 @@ test("two peers in flight each get their own answer", () => {
     "actions.requested",
     {
       actions: [
-        { kind: "remote-agent-call", name: "sid", callId: "c1", input: { message: "ask sid" } },
-        { kind: "remote-agent-call", name: "eve-gtm", callId: "c2", input: { message: "ask gtm" } },
+        { kind: "remote-agent-call", name: "specialist", callId: "c1", input: { message: "ask specialist" } },
+        { kind: "remote-agent-call", name: "research", callId: "c2", input: { message: "ask gtm" } },
       ],
     },
     state,
   );
 
   const second = readPeerEvents("action.result", { result: { callId: "c2", output: "gtm says hello" } }, state);
-  const first = readPeerEvents("action.result", { result: { callId: "c1", output: "sid says hello" } }, state);
+  const first = readPeerEvents("action.result", { result: { callId: "c1", output: "specialist says hello" } }, state);
 
-  assert.equal(second[0].peer, "eve-gtm", "answers are matched by id, not by arrival order");
-  assert.equal(first[0].peer, "sid");
+  assert.equal(second[0].peer, "research", "answers are matched by id, not by arrival order");
+  assert.equal(first[0].peer, "specialist");
 });
 
 test("ordinary tool calls are ignored entirely", () => {

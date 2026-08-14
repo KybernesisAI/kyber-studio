@@ -108,8 +108,8 @@ function ensureListeners(
     set((s) => {
       const conv = s.conversations[agentId] ?? [];
       // Peers that are also agents in this sidebar keep their own identity —
-      // same avatar and colour as the row above, so it is recognisably Sid and
-      // not a generic peer.
+      // the same avatar and colour as their row above, so the exchange names a
+      // recognisable agent rather than a generic peer.
       const known = s.agents.find((a) => a.name.toLowerCase() === event.peer.toLowerCase());
       const peer = {
         id: known?.id ?? event.peer,

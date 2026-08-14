@@ -4,7 +4,7 @@
  * Its own module with no Electron imports, so it can be exercised against a
  * recorded stream rather than by hand in a running app — the transport's
  * shapes were guessed wrong repeatedly, and a guess that typechecks is still a
- * guess. test/fixtures/a2a-kyber-sid.jsonl is a real Kyber→Sid exchange.
+ * guess. test/fixtures/agent-to-agent.jsonl is one recorded exchange.
  */
 
 /** Peer calls in flight, keyed by call id, so a result finds its asker. */
@@ -17,8 +17,8 @@ export interface PeerState {
  * Agent-to-agent traffic, read out of the event stream.
  *
  * Exported and pure so it can be replayed against a recorded stream — the
- * shapes below are not guesses, they are what a real Kyber→Sid hop emitted, and
- * the fixture in test/fixtures is that exact exchange.
+ * shapes below are not guesses, they are what a real hop between two deployed
+ * agents emitted, and the fixture in test/fixtures is that exchange.
  *
  * Two things are easy to get wrong here and both were:
  * - A remote peer is not a distinct event. eve lowers it to an ordinary tool
