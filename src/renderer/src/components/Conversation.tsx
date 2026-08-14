@@ -323,7 +323,10 @@ export function Conversation(): ReactNode {
   // Who this agent can be asked to talk to — the control plane's list, reused
   // for both the @ menu and for drawing mentions in what was sent.
   const mentionable = room
-    ? roomMembers.map((m) => ({ name: m.name, accent: m.accent }))
+    ? [
+        ...roomMembers.map((m) => ({ name: m.name, accent: m.accent })),
+        { name: "everyone", accent: "#8b91a0" },
+      ]
     : (agent?.peers ?? []).map((peer) => ({
         name: peer.name,
         accent: agents.find((a) => a.id === peer.id || a.name === peer.name)?.accent,
@@ -425,15 +428,41 @@ export function Conversation(): ReactNode {
      * stops being suggested here, and tagging someone it cannot reach is not
      * offered in the first place.
      */
-    const fromPeers: Suggestion[] = (agent?.peers ?? [])
-      .filter((peer) => match(peer.name))
-      .map((peer) => ({
-        id: `agent:${peer.id}`,
-        title: peer.name,
-        detail: peer.purpose,
-        type: "Agent" as const,
-        accent: agents.find((a) => a.id === peer.id || a.name === peer.name)?.accent,
-      }));
+    // In a room the people you can address are the members — plus everyone at
+    // once. Outside a room they are the peers this agent may CALL, from the
+    // control plane. Same gesture, two different sets, because tagging someone
+    // who is not here does nothing and tagging someone unreachable is worse.
+    const fromPeers: Suggestion[] = room
+      ? [
+          ...(match("everyone")
+            ? [
+                {
+                  id: "agent:everyone",
+                  title: "everyone",
+                  detail: "Everyone in this group",
+                  type: "Agent" as const,
+                },
+              ]
+            : []),
+          ...roomMembers
+            .filter((m) => match(m.name))
+            .map((m) => ({
+              id: `agent:${m.id}`,
+              title: m.name,
+              detail: m.title,
+              type: "Agent" as const,
+              accent: m.accent,
+            })),
+        ]
+      : (agent?.peers ?? [])
+          .filter((peer) => match(peer.name))
+          .map((peer) => ({
+            id: `agent:${peer.id}`,
+            title: peer.name,
+            detail: peer.purpose,
+            type: "Agent" as const,
+            accent: agents.find((a) => a.id === peer.id || a.name === peer.name)?.accent,
+          }));
 
     // What the agent can REACH — its real connections, tools, and schedules.
     const fromRoutines: Suggestion[] = (info?.schedules ?? [])

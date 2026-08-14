@@ -3,6 +3,7 @@ import type { AgentSummary } from "@shared/ipc";
 import { summarize } from "./agentInfo";
 import type { Agent, Block, PeerEvent, Room, Section } from "@shared/types";
 import { ROOM_PREFIX, isRoomId } from "@shared/types";
+import { recipientsFor, type RoomPolicy } from "@shared/addressing";
 
 /**
  * Renderer state.
@@ -232,12 +233,38 @@ function escapeForRegex(value: string): string {
  * anything special-cased here would drift from the path that gets exercised
  * every day.
  */
+/** A pair that addresses each other every turn has to stop somewhere. */
+const MAX_RELAY_DEPTH = 3;
+
+/**
+ * What an agent is told about the room, once per turn.
+ *
+ * Sent as text rather than as structured context because it has to work with
+ * ANY agent — one we wrote, one a customer wrote, one running a different
+ * framework. An agent that has never heard of this app still reads a line at
+ * the top of the message it was sent.
+ *
+ * It is short on purpose. This is prepended to every turn, so anything wordy
+ * here is paid for on every message in every room forever.
+ */
+function roomPreamble(room: Room, members: Agent[], me: Agent, speaker?: string): string {
+  const others = members.filter((m) => m.id !== me.id).map((m) => m.name);
+  const who = others.length ? others.join(", ") : "no one else yet";
+  return [
+    `[Group chat. You are "${me.name}". Also here: ${who}.`,
+    `Address someone by writing @TheirName — that is what delivers a message to them.`,
+    `Only reply to what was sent to you; do not repeat another agent's answer back to the room.`,
+    speaker ? `This message is from ${speaker}, not from the user.]` : `]`,
+  ].join(" ");
+}
+
 async function deliverToMember(
   get: () => State,
   set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
   room: Room,
   member: Agent,
   text: string,
+  from: { id: string; name: string; accent: string } | undefined,
   relayDepth: number,
 ): Promise<void> {
   if (!window.studio || !member.url) return;
@@ -265,9 +292,16 @@ async function deliverToMember(
   };
 
   try {
+    const members = room.memberIds
+      .map((id) => get().agents.find((a) => a.id === id))
+      .filter((a): a is Agent => Boolean(a));
+    const body = `${roomPreamble(room, members, member, from?.name)}\n\n${
+      from ? `${from.name}: ${text}` : text
+    }`;
+
     const res = await window.studio.send({
       url: member.url,
-      text,
+      text: body,
       sessionId: get().sessions[key],
       continuationToken: get().continuations[key],
       streamIndex: get().streamIndexes[key],
@@ -281,7 +315,7 @@ async function deliverToMember(
     const reply = res.reply?.trim();
     if (reply) {
       write(reply);
-      // Carry it to anyone this agent addressed by name.
+      // Carry it to anyone this agent addressed by name — and only them.
       get().sendToRoom(room.id, reply, speaker, relayDepth + 1);
     }
   } catch (error) {
@@ -666,22 +700,27 @@ export const useStore = create<State>((set, get) => ({
     const members = room.memberIds
       .map((id) => get().agents.find((a) => a.id === id))
       .filter((a): a is Agent => Boolean(a?.url));
+    if (members.length === 0) return;
 
-    // Who should answer: everyone the user spoke to, or — when relaying — only
-    // the members the speaking agent actually named.
-    const named = from
-      ? members.filter(
-          (m) => m.id !== from.id && new RegExp(`@?\\b${escapeForRegex(m.name)}\\b`, "i").test(text),
-        )
-      : members;
-    if (from && (relayDepth >= 2 || named.length === 0)) return;
+    /**
+     * An agent's message reaches another agent ONLY when it names them.
+     *
+     * A person's unaddressed message can fall back to the room's policy —
+     * they are in the room and expect to be heard. An agent's cannot: with a
+     * fallback, one reply becomes a reply from everyone, each of which is
+     * another message that could trigger another round. That is not a
+     * conversation, it is a fork bomb with a billing account.
+     */
+    const policy: RoomPolicy = from ? "silent" : (room.policy ?? "all");
+    const recipients = recipientsFor(text, members, policy).filter((id) => id !== from?.id);
 
-    const spoken = from
-      ? `${from.name} said: ${text}`
-      : text;
+    // A hand-off chain is fine; a pair addressing each other forever is not.
+    if (from && relayDepth >= MAX_RELAY_DEPTH) return;
+    if (recipients.length === 0) return;
 
-    for (const member of named) {
-      void deliverToMember(get, set, room, member, spoken, relayDepth);
+    for (const id of recipients) {
+      const member = members.find((m) => m.id === id);
+      if (member) void deliverToMember(get, set, room, member, text, from, relayDepth);
     }
   },
 

@@ -62,6 +62,8 @@ export interface Room {
   createdAt: number;
   /** Set when the user renames it; otherwise the members' names are the name. */
   name?: string;
+  /** What happens to a message that names nobody. See RoomPolicy. */
+  policy?: "all" | "lead" | "silent";
   lastMessageAt?: number;
   lastMessagePreview?: string;
   unread?: boolean;
