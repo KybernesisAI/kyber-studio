@@ -344,19 +344,25 @@ input, textarea { font: inherit; color: inherit; }
   font-weight: inherit; font-size: inherit;
   white-space: nowrap;
 }
-/* Sized in em, so the icon is exactly as tall as the type it sits in and the
-   chip is the height of a LINE rather than a block resting on one. A fixed
-   pixel avatar was the remaining reason this read as pasted on: the same 14px
-   square against 13px bubble text and 14px composer text, padded top and
-   bottom. Grok Bot's own tokens set the icon slot to the label's font size and
-   the vertical padding to zero, which is the same idea. */
+/* The icon is centred on the TEXT, not nudged toward it.
+
+   `vertical-align: middle` aligns a box's midpoint with the baseline plus half
+   the parent's x-height — which is the definition of the text's optical centre.
+   So it is exact at any font size, and measures 0.00px off in a 13px bubble and
+   a 14px composer alike.
+
+   Every offset I tried before this was a guess, and one of them was worse than
+   a guess: `-0.16em` on an element whose own font-size is 6px resolves to
+   -0.96px, so it pushed the icon DOWN — the gap above it that kept showing up
+   in every screenshot. em units resolve against the element's own font, not
+   the text beside it. */
 .mention__icon {
   display: inline-grid; place-items: center;
-  width: 1.15em; height: 1.15em;
+  width: 14px; height: 14px;
   margin-right: 4px;
   border-radius: 4px;
-  color: #fff; font-size: 0.68em; font-weight: 600;
-  vertical-align: -0.16em;
+  color: #fff; font-size: 6px; font-weight: 600;
+  vertical-align: middle;
 }
 .bubble--user .mention { background: rgba(255, 255, 255, 0.18); }
 
