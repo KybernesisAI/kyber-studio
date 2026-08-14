@@ -4,11 +4,10 @@ import type { Agent, Block, Room } from "@shared/types";
 import { useStore } from "@/lib/store";
 import { Avatar, Icon, timeLabel } from "./primitives";
 
-interface MenuState {
-  x: number;
-  y: number;
-  agent: Agent;
-}
+/** The right-click menu is about one row, and a row is an agent or a group. */
+type MenuState =
+  | { x: number; y: number; agent: Agent; room?: never }
+  | { x: number; y: number; room: Room; agent?: never };
 
 function ContextMenu({
   state,
@@ -17,8 +16,11 @@ function ContextMenu({
   state: MenuState;
   onClose(): void;
 }): ReactNode {
-  const { patchAgent, setPanel, select } = useStore();
-  const { agent } = state;
+  const { patchAgent, setPanel, select, patchRoom, deleteRoom } = useStore();
+  const { agent, room } = state;
+  // Deleting a group throws away its transcript, and a context menu is one
+  // slip of the wrist away from any item on it. Ask once.
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     const dismiss = (): void => onClose();
@@ -44,7 +46,42 @@ function ContextMenu({
   );
 
   // Keep the menu on screen when the click lands near the bottom edge.
-  const top = Math.min(state.y, window.innerHeight - 330);
+  const top = Math.min(state.y, window.innerHeight - (room ? 150 : 330));
+
+  if (room) {
+    const members = room.memberIds.length;
+    return (
+      <div className="menu" style={{ left: state.x, top }} onClick={(e) => e.stopPropagation()}>
+        {item("pin", room.pinned ? "Unpin" : "Pin", () =>
+          patchRoom(room.id, { pinned: !room.pinned }),
+        )}
+        <div className="menu__sep" />
+        {item("copy", "Copy conversation ID", () => {
+          void navigator.clipboard.writeText(room.id);
+        })}
+        <div className="menu__sep" />
+        {/* Not routed through item(): the first click must NOT close the menu,
+            because the whole point is that the second click is deliberate. */}
+        <button
+          className="menu__item menu__item--danger"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!confirmDelete) {
+              setConfirmDelete(true);
+              return;
+            }
+            deleteRoom(room.id);
+            onClose();
+          }}
+        >
+          <Icon name="trash" />
+          {confirmDelete
+            ? `Delete this group and its messages?`
+            : `Delete group${members ? ` of ${members}` : ""}`}
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="menu" style={{ left: state.x, top }} onClick={(e) => e.stopPropagation()}>
@@ -132,7 +169,7 @@ function Row({
  * put three agents in a room knows it by who is in it, and asking them to name
  * it first is a form to fill in before the useful thing.
  */
-function RoomRow({ room }: { room: Room }): ReactNode {
+function RoomRow({ room, onMenu }: { room: Room; onMenu(state: MenuState): void }): ReactNode {
   const { agents, activeAgentId, select, conversations } = useStore();
   const members = room.memberIds
     .map((id: string) => agents.find((a) => a.id === id))
@@ -144,6 +181,11 @@ function RoomRow({ room }: { room: Room }): ReactNode {
     <div
       className={`row${activeAgentId === room.id ? " row--active" : ""}`}
       onClick={() => select(room.id)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onMenu({ x: e.clientX, y: e.clientY, room });
+      }}
     >
       <span className="stack">
         {members.slice(0, 3).map((m: Agent) => (
@@ -153,6 +195,7 @@ function RoomRow({ room }: { room: Room }): ReactNode {
       <div className="row__body">
         <div className="row__line">
           <span className="row__name">{title}</span>
+          {room.pinned ? <Icon name="pin" size={12} /> : null}
           {last ? <span className="row__time">{timeLabel(last.at)}</span> : null}
         </div>
         <div className="row__preview">{last?.text ?? "No messages yet"}</div>
@@ -279,9 +322,11 @@ export function Sidebar(): ReactNode {
         {rooms.length > 0 ? (
           <>
             <div className="section-head">Groups</div>
-            {rooms.map((r) => (
-              <RoomRow key={r.id} room={r} />
-            ))}
+            {[...rooms]
+              .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
+              .map((r) => (
+                <RoomRow key={r.id} room={r} onMenu={setMenu} />
+              ))}
             <div className="section-head">Agents</div>
           </>
         ) : null}

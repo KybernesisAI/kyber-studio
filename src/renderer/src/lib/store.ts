@@ -574,6 +574,8 @@ interface State {
   /** Cancel every member still working in this room. */
   stopRoom: (roomId: string) => void;
   setRoomPolicy: (roomId: string, policy: "all" | "lead" | "silent") => void;
+  /** The user's decisions about a room — pinned, renamed, read. */
+  patchRoom: (roomId: string, patch: Partial<Room>) => void;
   sendToRoom: (
     roomId: string,
     text: string,
@@ -942,6 +944,11 @@ export const useStore = create<State>((set, get) => ({
         get().persist();
         flushQueue(get, agentId);
       });
+  },
+
+  patchRoom: (roomId, patch) => {
+    set((s) => ({ rooms: s.rooms.map((r) => (r.id === roomId ? { ...r, ...patch } : r)) }));
+    get().persist();
   },
 
   setRoomPolicy: (roomId, policy) => {

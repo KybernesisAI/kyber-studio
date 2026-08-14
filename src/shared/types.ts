@@ -67,6 +67,7 @@ export interface Room {
   lastMessageAt?: number;
   lastMessagePreview?: string;
   unread?: boolean;
+  pinned?: boolean;
 }
 
 /** Rooms and agents share the sidebar and the conversation map, so ids must not collide. */
