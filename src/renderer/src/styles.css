@@ -269,7 +269,8 @@ input, textarea { font: inherit; color: inherit; }
 }
 /* Same object as a mention, but clickable: one chip design, not two. */
 .agent-chip {
-  display: inline-block;
+  display: inline-flex; align-items: center;
+  line-height: 1; vertical-align: 0.22em;
   padding: 0 6px 0 3px;
   border: none; border-radius: 5px;
   background: var(--bubble-agent); color: var(--ink);
@@ -338,7 +339,18 @@ input, textarea { font: inherit; color: inherit; }
    The avatar is then the only thing that needs centring, and it does that
    against the text it sits next to. */
 .mention {
-  display: inline-block;
+  /* Two jobs, two mechanisms — which is what took me so long to see.
+     INSIDE: flex centring makes the box hug the icon exactly, so there is no
+     gap above it. The box was previously sized by the inherited line-height,
+     which left 4.08px above the icon and 1.42px below — the lopsided padding
+     that was visible in every screenshot.
+     OUTSIDE: vertical-align places the whole chip against the running text.
+     0.22em is not a guess; it is the value at which the chip's label sits on
+     the same baseline as the words either side (0.14px off at 13px, 0.08px at
+     14px) while the gaps above and below the icon stay exactly 0.00. */
+  display: inline-flex; align-items: center;
+  line-height: 1;
+  vertical-align: 0.22em;
   padding: 0 5px 0 3px; margin: 0 1px;
   border-radius: 5px; background: var(--hover);
   font-weight: inherit; font-size: inherit;
@@ -362,7 +374,7 @@ input, textarea { font: inherit; color: inherit; }
   margin-right: 4px;
   border-radius: 4px;
   color: #fff; font-size: 6px; font-weight: 600;
-  vertical-align: middle;
+  flex: none;
 }
 .bubble--user .mention { background: rgba(255, 255, 255, 0.18); }
 
