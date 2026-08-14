@@ -271,8 +271,8 @@ input, textarea { font: inherit; color: inherit; }
 .agent-chip {
   display: inline-flex; align-items: center;
   line-height: 1; vertical-align: 0.22em;
-  padding: 0 6px 0 3px;
-  border: none; border-radius: 5px;
+  padding: 3px 7px 3px 4px;
+  border: none; border-radius: 6px;
   background: var(--bubble-agent); color: var(--ink);
   font: inherit; font-size: var(--fs-sm);
   cursor: pointer; white-space: nowrap;
@@ -339,20 +339,19 @@ input, textarea { font: inherit; color: inherit; }
    The avatar is then the only thing that needs centring, and it does that
    against the text it sits next to. */
 .mention {
-  /* Two jobs, two mechanisms — which is what took me so long to see.
-     INSIDE: flex centring makes the box hug the icon exactly, so there is no
-     gap above it. The box was previously sized by the inherited line-height,
-     which left 4.08px above the icon and 1.42px below — the lopsided padding
-     that was visible in every screenshot.
-     OUTSIDE: vertical-align places the whole chip against the running text.
-     0.22em is not a guess; it is the value at which the chip's label sits on
-     the same baseline as the words either side (0.14px off at 13px, 0.08px at
-     14px) while the gaps above and below the icon stay exactly 0.00. */
+  /* The chip keeps its padding. The only thing wrong was that the space inside
+     it was lopsided: 4.08px above the icon and 1.42px below, because the box
+     was sized by the inherited line-height and the icon sat on the text's
+     optical centre rather than in the middle of the box.
+
+     align-items: center centres the icon in the padding box, so the space is
+     even — 3px above and 3px below — and vertical-align: 0.22em places the
+     whole chip so its label sits on the baseline of the words either side. */
   display: inline-flex; align-items: center;
   line-height: 1;
   vertical-align: 0.22em;
-  padding: 0 5px 0 3px; margin: 0 1px;
-  border-radius: 5px; background: var(--hover);
+  padding: 3px 6px 3px 4px; margin: 0 1px;
+  border-radius: 6px; background: var(--hover);
   font-weight: inherit; font-size: inherit;
   white-space: nowrap;
 }
