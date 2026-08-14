@@ -306,13 +306,27 @@ input, textarea { font: inherit; color: inherit; }
   font-size: var(--fs-sm); color: var(--ink-tertiary);
 }
 
+/* A chip sitting in running text.
+
+   `vertical-align: baseline` on an inline-flex box aligns the BOX's baseline,
+   which — with an avatar as the first item — is the bottom of that avatar. The
+   chip therefore rode high above the words next to it. `middle` centres it on
+   the text's midline, which is what "inline with the text" actually means, and
+   line-height: 1 stops it opening up the line it sits on. */
 .mention {
   display: inline-flex; align-items: center; gap: 4px;
-  padding: 1px 7px 1px 2px; margin: 0 1px;
+  padding: 1px 8px 1px 3px; margin: 0 1px;
   border-radius: 999px; background: var(--hover);
-  font-weight: 550; vertical-align: baseline;
+  font-weight: 550;
+  vertical-align: middle;
+  line-height: 1;
 }
-.bubble--user .mention { background: rgba(255, 255, 255, 0.16); }
+.mention .avatar { flex: none; }
+.bubble--user .mention { background: rgba(255, 255, 255, 0.18); }
+/* A chip is taller than a line of text, so give lines room when one is present
+   and a wrapped message will not crowd the row above it. */
+.bubble:has(.mention),
+.composer__input:has(.mention) { line-height: 1.6; }
 
 /* ── Composer ──────────────────────────────────────────────────────── */
 
@@ -323,11 +337,27 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--bubble-agent);
   border-radius: 24px; padding: 7px 8px 7px 10px;
 }
-.composer textarea {
-  flex: 1; border: 0; background: none; outline: none; resize: none;
-  max-height: 160px; padding: 6px 2px; font-size: var(--fs-lg); line-height: 1.45;
+/* A contenteditable, not a textarea: a textarea holds a string, and a string
+   cannot hold a chip. It grows on its own as content wraps, so the manual
+   height juggling the textarea needed is gone. */
+.composer__input {
+  flex: 1; border: 0; background: none; outline: none;
+  max-height: 160px; overflow-y: auto;
+  padding: 6px 2px; font-size: var(--fs-lg); line-height: 1.45;
+  white-space: pre-wrap; word-break: break-word;
 }
-.composer textarea::placeholder { color: var(--ink-tertiary); }
+.composer__input:empty::before {
+  content: attr(data-placeholder);
+  color: var(--ink-tertiary);
+  pointer-events: none;
+}
+/* Firefox/WebKit leave a stray <br> behind after the last delete; without this
+   the placeholder never comes back on an empty composer. */
+.composer__input:has(> br:only-child)::before {
+  content: attr(data-placeholder);
+  color: var(--ink-tertiary);
+  pointer-events: none;
+}
 .icon-btn {
   width: 30px; height: 30px; border-radius: 50%; flex: none;
   display: grid; place-items: center; color: var(--ink-secondary);

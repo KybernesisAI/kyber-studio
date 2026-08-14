@@ -2,6 +2,7 @@ import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import type { Block, PeerEvent } from "@shared/types";
 import { peerSummaryLabel, summarizePeerEvents } from "@shared/types";
 import { useStore } from "@/lib/store";
+import * as composerDom from "@/lib/composerDom";
 import { Autocomplete, type Suggestion } from "./Autocomplete";
 import { LocalAskCard } from "./LocalAsk";
 import { Markdown } from "./Markdown";
@@ -323,7 +324,7 @@ export function Conversation(): ReactNode {
   const [folderMenu, setFolderMenu] = useState(false);
   const threadRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<HTMLDivElement>(null);
   /**
    * Whether the view is following the tail of the conversation.
    *
@@ -376,11 +377,16 @@ export function Conversation(): ReactNode {
   const waiting = queued[activeAgentId]?.length ?? 0;
 
 
-  // A trigger only counts at the start of a word, so an email address does not
-  // open the connector menu halfway through typing it.
-  const trigger = /(?:^|\s)([/@])([\w-]*)$/.exec(draft);
-  const triggerChar = trigger?.[1] ?? null;
-  const triggerTerm = (trigger?.[2] ?? "").toLowerCase();
+  /**
+   * What the caret is sitting in, not what the message ends with.
+   *
+   * With a textarea those were the same thing. In a contenteditable the caret
+   * can be anywhere — including before an existing chip — so reading the end of
+   * the serialized text would open the menu for a word the user is not typing.
+   */
+  const [caretTrigger, setCaretTrigger] = useState<{ char: string; term: string } | null>(null);
+  const triggerChar = caretTrigger?.char ?? null;
+  const triggerTerm = caretTrigger?.term ?? "";
 
   const suggestions: Suggestion[] = (() => {
     if (!triggerChar) return [];
@@ -438,16 +444,30 @@ export function Conversation(): ReactNode {
   })();
 
   const applySuggestion = (s: Suggestion): void => {
+    const el = inputRef.current;
+    if (!el) return;
+
     if (s.type === "Action") {
-      setDraft(draft.replace(/(?:^|\s)[/@][\w-]*$/, "").trimEnd());
+      composerDom.removeTrigger(el);
+      setDraft(composerDom.serialize(el));
+      setCaretTrigger(null);
       if (s.id === "act:plugins") setPluginsOpen(true);
       else if (s.id === "act:channels") setPanel("channels");
       else setPanel("settings");
       return;
     }
-    const token = `${triggerChar ?? ""}${s.title} `;
-    setDraft(draft.replace(/([/@])[\w-]*$/, "") .replace(/([/@])$/, "") + token);
+
+    // An agent becomes a chip; everything else stays text, because a skill or a
+    // tool is not someone you are addressing.
+    if (s.type === "Agent") {
+      composerDom.replaceTriggerWithChip(el, { name: s.title, accent: s.accent });
+    } else {
+      composerDom.replaceTriggerWithText(el, `${triggerChar ?? ""}${s.title} `);
+    }
+    setDraft(composerDom.serialize(el));
+    setCaretTrigger(null);
     setAcCursor(0);
+    el.focus();
   };
 
   if (!agent) return <div className="main" />;
@@ -457,7 +477,7 @@ export function Conversation(): ReactNode {
     if (!text) return;
     send(agent.id, text);
     setDraft("");
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    if (inputRef.current) composerDom.clear(inputRef.current);
   };
 
   return (
@@ -602,16 +622,34 @@ export function Conversation(): ReactNode {
           <button className="icon-btn" title="Attach">
             <Icon name="plus" />
           </button>
-          <textarea
-            ref={textareaRef}
-            rows={1}
-            value={draft}
-            placeholder={`Message ${agent.name}`}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              const el = e.target;
-              el.style.height = "auto";
-              el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+          <div
+            ref={inputRef}
+            className="composer__input"
+            contentEditable
+            role="textbox"
+            aria-multiline="true"
+            suppressContentEditableWarning
+            data-placeholder={`Message ${agent.name}`}
+            onInput={() => {
+              const el = inputRef.current;
+              if (!el) return;
+              setDraft(composerDom.serialize(el));
+              setCaretTrigger(composerDom.triggerBeforeCaret(el));
+            }}
+            onKeyUp={() => {
+              const el = inputRef.current;
+              if (el) setCaretTrigger(composerDom.triggerBeforeCaret(el));
+            }}
+            onMouseUp={() => {
+              const el = inputRef.current;
+              if (el) setCaretTrigger(composerDom.triggerBeforeCaret(el));
+            }}
+            onPaste={(e) => {
+              // Plain text only. Pasted markup would bring styles, and worse,
+              // spans that serialize into the message as invisible junk.
+              e.preventDefault();
+              const text = e.clipboardData.getData("text/plain");
+              document.execCommand("insertText", false, text);
             }}
             onKeyDown={(e) => {
               if (suggestions.length > 0) {
@@ -635,7 +673,12 @@ export function Conversation(): ReactNode {
                 }
                 if (e.key === "Escape") {
                   e.preventDefault();
-                  setDraft(draft.replace(/([/@])[\w-]*$/, ""));
+                  const el = inputRef.current;
+                  if (el) {
+                    composerDom.removeTrigger(el);
+                    setDraft(composerDom.serialize(el));
+                  }
+                  setCaretTrigger(null);
                   return;
                 }
               }
