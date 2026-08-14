@@ -316,6 +316,9 @@ export function Conversation(): ReactNode {
   const agent = agents.find((a) => a.id === activeAgentId);
   const rooms = useStore((s) => s.rooms);
   const sendToRoom = useStore((s) => s.sendToRoom);
+  const stopRoom = useStore((s) => s.stopRoom);
+  const roomQueue = useStore((s) => s.roomQueue);
+  const setRoomPolicy = useStore((s) => s.setRoomPolicy);
   const room = rooms.find((r) => r.id === activeAgentId);
   const roomMembers = (room?.memberIds ?? [])
     .map((id) => agents.find((a) => a.id === id))
@@ -386,8 +389,19 @@ export function Conversation(): ReactNode {
   const model = models[activeAgentId];
   // A turn in flight, which is a stronger fact than an activity label: the
   // label goes quiet between steps, but the session is still not accepting.
-  const running = Boolean(inflight[activeAgentId]);
-  const waiting = queued[activeAgentId]?.length ?? 0;
+  /**
+   * A room is busy while ANY member is still working.
+   *
+   * Flight is tracked per member (`<roomId>::<agentId>`), so asking about the
+   * room id alone always says "idle" — and the stop button never appears while
+   * four agents are mid-hand-off, which is exactly when it is wanted.
+   */
+  const roomFlightKeys = (room?.memberIds ?? []).map((id) => `${room?.id}::${id}`);
+  const busyMembers = roomFlightKeys.filter((k) => inflight[k]);
+  const running = room ? busyMembers.length > 0 : Boolean(inflight[activeAgentId]);
+  const waiting = room
+    ? roomFlightKeys.reduce((n, k) => n + (roomQueue[k]?.length ?? 0), 0)
+    : (queued[activeAgentId]?.length ?? 0);
 
 
   /**
@@ -534,6 +548,19 @@ export function Conversation(): ReactNode {
             <span className="topbar__title">
               {room.name ?? roomMembers.map((m) => m.name).join(", ")}
             </span>
+            {/* Who answers when you tag nobody. The default is the first
+                member, which is how a team works — you talk to whoever runs
+                it, and they bring the others in. */}
+            <select
+              className="policy"
+              value={room.policy ?? "lead"}
+              title="Who replies when you do not tag anyone"
+              onChange={(e) => setRoomPolicy(room.id, e.target.value as "all" | "lead" | "silent")}
+            >
+              <option value="lead">{roomMembers[0]?.name ?? "Lead"} answers</option>
+              <option value="all">Everyone answers</option>
+              <option value="silent">Only who I tag</option>
+            </select>
           </>
         ) : (
           <>
@@ -769,7 +796,10 @@ export function Conversation(): ReactNode {
               // While a turn runs, this is a stop button. A user watching a turn
               // that has gone nowhere for two minutes needs a way out that does
               // not involve quitting the app.
-              if (running) stopTurn(activeAgentId);
+              if (running) {
+                if (room) stopRoom(room.id);
+                else stopTurn(activeAgentId);
+              }
               else if (draft.trim()) submit();
             }}
           >

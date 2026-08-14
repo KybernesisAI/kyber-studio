@@ -219,10 +219,21 @@ function ensureListeners(
   });
 }
 
-/** Append the agent's reply block, or update it as more text arrives. */
-/** A name is user data; it can contain anything a regex would read as syntax. */
-function escapeForRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\function upsertBlock(");
+/** Send the next message that was waiting on this member. */
+function flushRoomQueue(
+  get: () => State,
+  set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
+  room: Room,
+  member: Agent,
+): void {
+  const key = `${room.id}::${member.id}`;
+  const pending = get().roomQueue[key];
+  if (!pending?.length) return;
+  const [next, ...rest] = pending;
+  set((s) => ({ roomQueue: { ...s.roomQueue, [key]: rest } }));
+  if (next) {
+    setTimeout(() => void deliverToMember(get, set, room, member, next.text, next.from, next.relayDepth), 0);
+  }
 }
 
 /**
@@ -233,6 +244,8 @@ function escapeForRegex(value: string): string {
  * anything special-cased here would drift from the path that gets exercised
  * every day.
  */
+type Speaker = { id: string; name: string; accent: string };
+
 /** A pair that addresses each other every turn has to stop somewhere. */
 const MAX_RELAY_DEPTH = 3;
 
@@ -258,6 +271,32 @@ function roomPreamble(room: Room, members: Agent[], me: Agent, speaker?: string)
   ].join(" ");
 }
 
+/**
+ * What was said in the room while this member was not being spoken to.
+ *
+ * Without it a hand-off is incoherent: the engineer is tagged with "can you
+ * build this?" and has never seen what "this" is, so it asks the room for
+ * context the room already has. With it, being brought into a conversation
+ * works the way it does for a person who has been listening.
+ *
+ * Bounded on purpose. This is prepended to a turn, so an unbounded transcript
+ * is an unbounded bill; the last dozen messages is what a person would skim.
+ */
+function catchUp(blocks: Block[] | undefined, since: number, upToId: string): string | null {
+  const missed = (blocks ?? [])
+    .filter((b) => b.kind === "text" && b.at > since && b.id !== upToId)
+    .slice(-12)
+    .map((b) => {
+      if (b.kind !== "text") return "";
+      const who = b.role === "user" ? "User" : (b.speaker?.name ?? "Agent");
+      const text = b.text.length > 400 ? `${b.text.slice(0, 400)}…` : b.text;
+      return `${who}: ${text}`;
+    })
+    .filter(Boolean);
+  if (missed.length === 0) return null;
+  return `[Since you last spoke:\n${missed.join("\n")}]`;
+}
+
 async function deliverToMember(
   get: () => State,
   set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
@@ -269,6 +308,18 @@ async function deliverToMember(
 ): Promise<void> {
   if (!window.studio || !member.url) return;
   const key = `${room.id}::${member.id}`;
+
+  // One turn at a time per member. A second message arriving mid-turn waits
+  // rather than being posted into a session that has not parked.
+  if (get().inflight[key]) {
+    set((s) => ({
+      roomQueue: {
+        ...s.roomQueue,
+        [key]: [...(s.roomQueue[key] ?? []), { text, from, relayDepth }],
+      },
+    }));
+    return;
+  }
   const at = Date.now();
   const streamId = `s${at}-${member.id}`;
   const bubbleId = `a${at}-${member.id}`;
@@ -277,6 +328,7 @@ async function deliverToMember(
   ensureListeners(get, set);
   streamOwners.set(streamId, room.id);
   streamSpeakers.set(streamId, speaker);
+  armDeadMan(get, set, key, room.id, speaker);
   set((s) => ({
     inflight: { ...s.inflight, [key]: { streamId } },
     streaming: { ...s.streaming, [streamId]: "" },
@@ -295,9 +347,14 @@ async function deliverToMember(
     const members = room.memberIds
       .map((id) => get().agents.find((a) => a.id === id))
       .filter((a): a is Agent => Boolean(a));
-    const body = `${roomPreamble(room, members, member, from?.name)}\n\n${
-      from ? `${from.name}: ${text}` : text
-    }`;
+    const missed = catchUp(get().conversations[room.id], get().roomSeen[key] ?? 0, bubbleId);
+    const body = [
+      roomPreamble(room, members, member, from?.name),
+      missed,
+      from ? `${from.name}: ${text}` : text,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
 
     const res = await window.studio.send({
       url: member.url,
@@ -321,16 +378,24 @@ async function deliverToMember(
   } catch (error) {
     write(`(${member.name} could not be reached: ${(error as Error).message})`);
   } finally {
+    disarmDeadMan(key);
     set((s) => {
       const inflight = { ...s.inflight };
       delete inflight[key];
       const streaming = { ...s.streaming };
       delete streaming[streamId];
-      return { inflight, streaming };
+      return {
+        inflight,
+        streaming,
+        // Everything up to now has been put in front of this member.
+        roomSeen: { ...s.roomSeen, [key]: Date.now() },
+        activity: { ...s.activity, [room.id]: null },
+      };
     });
     streamOwners.delete(streamId);
     streamSpeakers.delete(streamId);
     get().persist();
+    flushRoomQueue(get, set, room, member);
   }
 }
 
@@ -403,26 +468,33 @@ const deadMan = new Map<string, ReturnType<typeof setTimeout>>();
 function armDeadMan(
   get: () => State,
   set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
-  agentId: string,
+  flightKey: string,
+  // Where to write the notice, when that is not the same as the flight key: a
+  // room's flight keys are per MEMBER, and the message belongs in the room.
+  chatId: string = flightKey,
+  speaker?: Speaker,
 ): void {
-  clearTimeout(deadMan.get(agentId));
+  clearTimeout(deadMan.get(flightKey));
   deadMan.set(
-    agentId,
+    flightKey,
     setTimeout(() => {
-      if (!get().inflight[agentId]) return;
+      if (!get().inflight[flightKey]) return;
       set((s) => {
         const flight = { ...s.inflight };
-        delete flight[agentId];
-        return { inflight: flight, activity: { ...s.activity, [agentId]: null } };
+        delete flight[flightKey];
+        return { inflight: flight, activity: { ...s.activity, [chatId]: null } };
       });
       upsertBlock(
         get,
         set,
-        agentId,
+        chatId,
         `a${Date.now()}`,
-        "That turn stopped responding, so I let it go. Nothing was lost — send it again.",
+        speaker
+          ? `${speaker.name} stopped responding, so I let that turn go. Nothing was lost — send it again.`
+          : "That turn stopped responding, so I let it go. Nothing was lost — send it again.",
+        speaker,
       );
-      flushQueue(get, agentId);
+      if (chatId === flightKey) flushQueue(get, flightKey);
     }, DEAD_MAN_MS),
   );
 }
@@ -488,6 +560,20 @@ interface State {
    * this app is what puts a message in front of all of them.
    */
   rooms: Room[];
+  /**
+   * Deliveries waiting on a member that is mid-turn.
+   *
+   * Keyed by `<roomId>::<agentId>` like everything else per-member. A room
+   * without this drops messages on the floor: a hand-off arriving while that
+   * agent is still answering someone else simply never happens, and nothing
+   * anywhere says so.
+   */
+  roomQueue: Record<string, { text: string; from?: Speaker; relayDepth: number }[]>;
+  /** The last moment each member was shown the room, so catch-up has a floor. */
+  roomSeen: Record<string, number>;
+  /** Cancel every member still working in this room. */
+  stopRoom: (roomId: string) => void;
+  setRoomPolicy: (roomId: string, policy: "all" | "lead" | "silent") => void;
   sendToRoom: (
     roomId: string,
     text: string,
@@ -608,6 +694,8 @@ export const useStore = create<State>((set, get) => ({
   continuations: {},
   streamIndexes: {},
   rooms: [],
+  roomQueue: {},
+  roomSeen: {},
   exchange: null,
   prefs: {},
   activity: {},
@@ -634,7 +722,7 @@ export const useStore = create<State>((set, get) => ({
   createRoom: (memberIds) => {
     const id = `${ROOM_PREFIX}${Date.now().toString(36)}`;
     set((s) => ({
-      rooms: [...s.rooms, { id, memberIds, createdAt: Date.now() }],
+      rooms: [...s.rooms, { id, memberIds, createdAt: Date.now(), policy: "lead" }],
       activeAgentId: id,
     }));
     get().persist();
@@ -711,7 +799,7 @@ export const useStore = create<State>((set, get) => ({
      * another message that could trigger another round. That is not a
      * conversation, it is a fork bomb with a billing account.
      */
-    const policy: RoomPolicy = from ? "silent" : (room.policy ?? "all");
+    const policy: RoomPolicy = from ? "silent" : (room.policy ?? "lead");
     const recipients = recipientsFor(text, members, policy).filter((id) => id !== from?.id);
 
     // A hand-off chain is fine; a pair addressing each other forever is not.
@@ -854,6 +942,37 @@ export const useStore = create<State>((set, get) => ({
         get().persist();
         flushQueue(get, agentId);
       });
+  },
+
+  setRoomPolicy: (roomId, policy) => {
+    set((s) => ({ rooms: s.rooms.map((r) => (r.id === roomId ? { ...r, policy } : r)) }));
+    get().persist();
+  },
+
+  stopRoom: (roomId) => {
+    const room = get().rooms.find((r) => r.id === roomId);
+    if (!room) return;
+    for (const memberId of room.memberIds) {
+      const key = `${roomId}::${memberId}`;
+      const live = get().inflight[key];
+      const agent = get().agents.find((a) => a.id === memberId);
+      if (live?.sessionId && agent?.url && window.studio) {
+        void window.studio
+          .cancelTurn({ url: agent.url, sessionId: live.sessionId, turnId: live.turnId })
+          .catch(() => undefined);
+      }
+      disarmDeadMan(key);
+      set((s) => {
+        const flight = { ...s.inflight };
+        delete flight[key];
+        // Anything still waiting on this member is dropped too: stop means
+        // stop, not "stop this one and start the next".
+        const queue = { ...s.roomQueue };
+        delete queue[key];
+        return { inflight: flight, roomQueue: queue };
+      });
+    }
+    set((s) => ({ activity: { ...s.activity, [roomId]: null } }));
   },
 
   stopTurn: (agentId) => {

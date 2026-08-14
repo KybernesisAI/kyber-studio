@@ -888,3 +888,12 @@ input, textarea { font: inherit; color: inherit; }
 .newroom__opt span { flex: 1; }
 .newroom__foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
 .newroom__foot .btn[disabled] { opacity: 0.45; cursor: default; }
+
+/* Who answers an untagged message. A select rather than a menu: three fixed
+   choices, and the current one has to be readable at a glance. */
+.policy {
+  -webkit-app-region: no-drag;
+  border: 0; background: var(--hover); color: var(--ink-secondary);
+  font: inherit; font-size: var(--fs-sm);
+  border-radius: 6px; padding: 3px 6px; margin-left: 8px;
+}
