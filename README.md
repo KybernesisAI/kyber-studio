@@ -31,8 +31,17 @@ same agent, the same memory, the same tools; a different surface.
   commands locally through Studio. You approve each kind of action once.
 - **Write routines from chat.** "Every weekday at 8, brief me" becomes a real
   schedule on the agent's deployment — no repository access required.
-- **See agents talk to each other.** Agent-to-agent traffic collapses into one
-  openable line instead of drowning your conversation.
+- **Put several agents in one room.** A group conversation where each agent
+  answers under its own name. Tag one and only they reply; tag `@everyone` and
+  they all do; tag nobody and the room's lead answers and brings the others in.
+  Agents hand work to each other by naming each other, and whoever is brought in
+  is caught up on what they missed.
+- **See agents talk to each other.** When an agent consults another deployment,
+  the exchange collapses into one line naming who was asked — click it to read
+  the whole thing as its own conversation, instead of it drowning yours.
+- **Address anyone with `@`.** The menu offers the agents you can actually
+  reach: in a room, its members; elsewhere, the peers the control plane says
+  this agent may call.
 
 ## Running it
 
@@ -74,6 +83,32 @@ you asked for, not by a mode.
 See [docs/local-execution.md](docs/local-execution.md) for the design and its
 current gaps.
 
+## Group conversations
+
+A room lives entirely in this app. Each member keeps its own session with its
+own deployment — they are separate services, and sharing a session between them
+would leak one agent's context into another's — and Studio is what puts a
+message in front of all of them. No agent needs to know the feature exists,
+which is what makes it work with any agent you have.
+
+**Addressing is the routing.** Naming a member sends it to them alone;
+`@everyone` sends it to the room; naming nobody follows the room's setting
+(the lead answers, by default). Matching is literal and needs the `@`, so an
+agent called Design is not summoned by the word design in a sentence.
+
+**An agent's reply reaches another agent only when it names them** — no
+fallback, and a depth cap behind that. With a fallback, one reply becomes a
+reply from everyone, each of which can trigger another round; that is a fork
+bomb with a billing account.
+
+**A hand-off carries what the receiving agent missed**, bounded to the recent
+messages. Without it, an agent brought into a conversation asks the room for
+context the room already has.
+
+Each member takes one turn at a time, with the rest queued; a member that stops
+responding is released by a watchdog and says so in the room; and Stop cancels
+every member still working, dropping what was queued behind them.
+
 ## Known gaps
 
 - **Two consent systems that cannot revoke each other.** The control plane holds
@@ -87,6 +122,14 @@ current gaps.
   nothing in the UI says which machine a server is on.
 - **Tool volume is unmanaged.** Two connected services can be fifty tool
   definitions in every prompt. Connect what you need.
+- **A room's hand-off convention is a prompt, not a protocol.** Each turn tells
+  the agent it is in a room and that naming someone hands off to them. A
+  well-behaved agent follows it; nothing enforces it. A misbehaving one is
+  ignored rather than able to start a cascade, which is why relay has no
+  fallback.
+- **A relayed message runs under YOUR identity.** When one agent hands to
+  another, the second acts with your authority on the first one's say-so. Fine
+  among your own agents; worth deciding deliberately anywhere else.
 
 ## Built with
 
