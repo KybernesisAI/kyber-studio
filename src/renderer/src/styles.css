@@ -861,11 +861,12 @@ input, textarea { font: inherit; color: inherit; }
 
 /* An attributed turn. The name sits above the bubble rather than inside it, so
    the bubble stays the same object it is in a one-to-one conversation. */
-.said { display: flex; flex-direction: column; gap: 3px; align-self: flex-start; max-width: 92%; }
-.said__who {
-  display: flex; align-items: center; gap: 6px;
-  font-size: var(--fs-sm); color: var(--ink-secondary);
-}
+.said { display: flex; flex-direction: column; gap: 2px; align-self: flex-start; max-width: 92%; }
+.said__who { font-size: var(--fs-sm); color: var(--ink-secondary); padding-left: 32px; }
+/* Avatar beside the bubble, both sitting on the bubble's bottom edge, so a run
+   of turns from one agent reads as a column under its own mark. */
+.said__row { display: flex; align-items: flex-end; gap: 8px; }
+.said__row .bubble { max-width: 100%; }
 
 .newroom {
   margin: 0 12px 8px; padding: 10px;

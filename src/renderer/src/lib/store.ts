@@ -27,6 +27,17 @@ import { ROOM_PREFIX, isRoomId } from "@shared/types";
  * by that. Nothing is torn down mid-flight because nothing is scoped to a turn.
  */
 const streamOwners = new Map<string, string>();
+
+/**
+ * Which agent is behind a stream, when the conversation has more than one.
+ *
+ * The reply bubble is created by the first delta, before the turn returns — so
+ * attributing it only when the turn finishes leaves the bubble anonymous for
+ * the whole time it is being written, which in a room is exactly when you need
+ * to know who is talking. Registered with the stream, read when the bubble is
+ * created.
+ */
+const streamSpeakers = new Map<string, { id: string; name: string; accent: string }>();
 let listenersReady = false;
 
 function ensureListeners(
@@ -41,7 +52,7 @@ function ensureListeners(
     if (!agentId) return;
     const next = (get().streaming[streamId] ?? "") + text;
     set((s) => ({ streaming: { ...s.streaming, [streamId]: next } }));
-    upsertBlock(get, set, agentId, `a${streamId.slice(1)}`, next);
+    upsertBlock(get, set, agentId, `a${streamId.slice(1)}`, next, streamSpeakers.get(streamId));
   });
 
   window.studio.onTurn(({ streamId, sessionId, turnId }) => {
@@ -238,27 +249,19 @@ async function deliverToMember(
 
   ensureListeners(get, set);
   streamOwners.set(streamId, room.id);
+  streamSpeakers.set(streamId, speaker);
   set((s) => ({
     inflight: { ...s.inflight, [key]: { streamId } },
     streaming: { ...s.streaming, [streamId]: "" },
   }));
 
   const write = (body: string): void => {
-    set((s) => {
-      const conv = s.conversations[room.id] ?? [];
-      const exists = conv.some((b) => b.id === bubbleId);
-      return {
-        conversations: {
-          ...s.conversations,
-          [room.id]: exists
-            ? conv.map((b) => (b.id === bubbleId && b.kind === "text" ? { ...b, text: body } : b))
-            : [...conv, { kind: "text", id: bubbleId, role: "agent", at: Date.now(), text: body, speaker }],
-        },
-        rooms: s.rooms.map((r) =>
-          r.id === room.id ? { ...r, lastMessageAt: Date.now(), lastMessagePreview: body } : r,
-        ),
-      };
-    });
+    upsertBlock(get, set, room.id, bubbleId, body, speaker);
+    set((s) => ({
+      rooms: s.rooms.map((r) =>
+        r.id === room.id ? { ...r, lastMessageAt: Date.now(), lastMessagePreview: body } : r,
+      ),
+    }));
   };
 
   try {
@@ -292,6 +295,7 @@ async function deliverToMember(
       return { inflight, streaming };
     });
     streamOwners.delete(streamId);
+    streamSpeakers.delete(streamId);
     get().persist();
   }
 }
@@ -302,6 +306,7 @@ function upsertBlock(
   agentId: string,
   id: string,
   body: string,
+  speaker?: { id: string; name: string; accent: string },
 ): void {
   set((s) => {
     const conv = s.conversations[agentId] ?? [];
@@ -311,7 +316,10 @@ function upsertBlock(
         ...s.conversations,
         [agentId]: exists
           ? conv.map((b) => (b.id === id && b.kind === "text" ? { ...b, text: body } : b))
-          : [...conv, { kind: "text", id, role: "agent", at: Date.now(), text: body }],
+          : [
+              ...conv,
+              { kind: "text", id, role: "agent", at: Date.now(), text: body, ...(speaker ? { speaker } : {}) },
+            ],
       },
       agents: s.agents.map((a) =>
         a.id === agentId ? { ...a, lastMessageAt: Date.now(), lastMessagePreview: body } : a,

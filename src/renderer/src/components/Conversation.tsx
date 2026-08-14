@@ -600,14 +600,17 @@ export function Conversation(): ReactNode {
               );
               // In a room, every agent turn says who is speaking. Without it a
               // run of replies from three agents is one anonymous wall.
+              // Who said it, above what they said, with their avatar beside the
+              // bubble. In a room this is not decoration: two grey bubbles in a
+              // row are unreadable when three agents can produce them.
               return b.speaker ? (
                 <div key={b.id} className="said">
-                  <div className="said__who">
-                    <Avatar name={b.speaker.name} accent={b.speaker.accent} size={18} />
-                    <span>{b.speaker.name}</span>
-                  </div>
-                  <div className="bubble bubble--agent">
-                    <Markdown text={b.text} />
+                  <div className="said__who">{b.speaker.name}</div>
+                  <div className="said__row">
+                    <Avatar name={b.speaker.name} accent={b.speaker.accent} size={22} />
+                    <div className="bubble bubble--agent">
+                      <Markdown text={b.text} />
+                    </div>
                   </div>
                 </div>
               ) : (
