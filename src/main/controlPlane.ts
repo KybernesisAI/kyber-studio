@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, safeStorage, shell } from "electron";
 import type { RemoteAgent, Session } from "@shared/ipc";
+import { readPeerEvents, type PeerState } from "./peerEvents";
 
 /**
  * Control-plane identity for KYBER Studio.
@@ -412,35 +413,6 @@ async function describeFailure(res: Response, base: string): Promise<Error> {
  *
  * Returns null for events that say nothing about activity.
  */
-/**
- * The peer's answer, out of whatever shape the result arrived in.
- *
- * A remote agent returns free text, but the harness may wrap it: a string, a
- * { text } object, or the content-array shape tools use. Reading only the first
- * of those showed an empty exchange for a peer that had answered perfectly.
- */
-function peerReplyText(result: unknown): string {
-  if (typeof result === "string") return result.trim();
-  if (!result || typeof result !== "object") return "";
-  const r = result as Record<string, unknown>;
-  for (const key of ["text", "message", "output", "reply"]) {
-    if (typeof r[key] === "string") return (r[key] as string).trim();
-  }
-  const content = r.content;
-  if (Array.isArray(content)) {
-    const text = content
-      .map((part) => {
-        const p = part as Record<string, unknown>;
-        return typeof p?.text === "string" ? p.text : "";
-      })
-      .filter(Boolean)
-      .join("\n")
-      .trim();
-    if (text) return text;
-  }
-  return "";
-}
-
 function activityLabel(
   type: string,
   data: Record<string, unknown>,
@@ -798,9 +770,7 @@ export async function sendTurn(input: {
   let askedQuestion = false;
   let turnId: string | undefined;
   const memo = { lastTool: null as string | null };
-  /** Peer calls in flight, keyed by call id, so a result finds its asker. */
-  const pendingPeers = new Map<string, string>();
-  let lastPeerCall: string | null = null;
+  const peerState: PeerState = { pending: new Map(), last: null };
   let sawSpecific = false;
 
   /**
@@ -944,51 +914,8 @@ export async function sendTurn(input: {
         }
       }
 
-      /**
-       * A remote peer lowers to an ordinary tool call — the file name under
-       * agent/subagents/ becomes the tool name, and its single argument is the
-       * message. That is why this reads actions rather than looking for a
-       * dedicated event: eve models "ask another agent" as "call a tool", and
-       * the only thing marking it as a conversation is `kind`.
-       */
-      if (type === "actions.requested") {
-        for (const raw of Array.isArray(data.actions) ? data.actions : []) {
-          const action = raw as Record<string, unknown>;
-          if (action.kind !== "remote-agent-call") continue;
-          const peer = typeof action.name === "string" ? action.name : null;
-          if (!peer) continue;
-          const callId =
-            (typeof action.callId === "string" && action.callId) ||
-            (typeof action.id === "string" && action.id) ||
-            null;
-          const args = (action.input ?? {}) as Record<string, unknown>;
-          const asked =
-            (typeof args.message === "string" && args.message) ||
-            (typeof args.text === "string" && args.text) ||
-            (typeof args.prompt === "string" && args.prompt) ||
-            "";
-          // Remember the call so its result can be attributed to the right
-          // peer: action.result does not always name who answered.
-          pendingPeers.set(callId ?? peer, peer);
-          lastPeerCall = callId ?? peer;
-          if (asked) input.onPeer?.({ direction: "outbound", peer, text: asked });
-        }
-      }
-
-      if (type === "action.result" && (pendingPeers.size > 0)) {
-        const callId =
-          (typeof data.callId === "string" && data.callId) ||
-          (typeof data.actionId === "string" && data.actionId) ||
-          null;
-        const key: string | null =
-          callId && pendingPeers.has(callId) ? callId : lastPeerCall;
-        const peer = key ? pendingPeers.get(key) : undefined;
-        if (key && peer) {
-          pendingPeers.delete(key);
-          if (key === lastPeerCall) lastPeerCall = null;
-          const answered = peerReplyText(data.result);
-          if (answered) input.onPeer?.({ direction: "inbound", peer, text: answered });
-        }
+      for (const peerEvent of readPeerEvents(type, data, peerState)) {
+        input.onPeer?.(peerEvent);
       }
 
       if (type === "authorization.required" || type === "authorization.completed") {

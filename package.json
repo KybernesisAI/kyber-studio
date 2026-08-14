@@ -9,14 +9,15 @@
   "scripts": {
     "dev": "bash scripts/dev.sh",
     "start": "electron-vite preview",
-    "build": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && electron-vite build",
+    "build": "npm run typecheck && npm run test && electron-vite build",
     "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
     "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "package": "npm run build && electron-builder",
     "release:mac": "npm run build && electron-builder --mac --publish always",
     "release": "npm version patch -m \"release: v%s\" && git push --follow-tags",
-    "release:minor": "npm version minor -m \"release: v%s\" && git push --follow-tags"
+    "release:minor": "npm version minor -m \"release: v%s\" && git push --follow-tags",
+    "test": "node --experimental-strip-types --test \"test/**/*.test.mjs\""
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.1",

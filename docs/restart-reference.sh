@@ -30,6 +30,38 @@ STORE=$APP/.eve/.workflow-data
 
 cd "$APP" || exit 1
 
+SERVER_MATCH=".output/server/index.mjs"
+
+# Count ONLY real server processes.
+#
+# `pgrep -f <path>` matches any process whose command line contains that path —
+# including the shell of whoever is watching the restart from another terminal.
+# That is not hypothetical: a monitoring command containing the path failed this
+# assertion and reported "2 server processes against one durable store" while
+# exactly one server was running. The check meant to protect the store became
+# the thing that broke the deploy.
+#
+# So: match the path, then keep only processes whose executable is actually node.
+count_servers() {
+  local n=0 pid exe
+  for pid in $(pgrep -f "$SERVER_MATCH" 2>/dev/null); do
+    # argv[0], not /proc/comm: node sets comm to "MainThread", so a comm check
+    # counted zero servers while one was plainly running and failed the restart.
+    exe=$(tr "\0" "\n" < "/proc/$pid/cmdline" 2>/dev/null | head -1)
+    case "$exe" in *node) n=$((n + 1)) ;; esac
+  done
+  echo "$n"
+}
+
+list_servers() {
+  local pid exe
+  for pid in $(pgrep -f "$SERVER_MATCH" 2>/dev/null); do
+    exe=$(tr "\0" "\n" < "/proc/$pid/cmdline" 2>/dev/null | head -1)
+    case "$exe" in *node) echo "  $pid $(tr '\0' ' ' < /proc/$pid/cmdline)" ;; esac
+  done
+}
+
+
 # ── Serialize. Everything below assumes it is the only restart running ──────
 exec 9>/tmp/sid-restart.lock
 if ! flock -w 300 9; then
@@ -46,8 +78,18 @@ fi
 # It matters most for the path nobody watches: @kybernesis/manage writes files
 # and then calls this script. Without a build here, an install through KYBER
 # Studio reports success and changes nothing.
-newest_source=$(find agent evals package.json -newer .output/server/index.mjs \
-  -not -path '*/node_modules/*' -print -quit 2>/dev/null || true)
+# node_modules counts as source: eve BUNDLES dependencies into .output at
+# build time, so patching an installed package changes nothing until a
+# rebuild. Learned by patching a package on this host, restarting, and
+# watching the old code keep serving while every timestamp said the restart
+# was fine — the build was current with respect to everything it checked.
+newest_source=$(find agent evals package.json node_modules/.package-lock.json \
+  -newer .output/server/index.mjs -not -path '*/node_modules/*' -print -quit \
+  2>/dev/null || true)
+if [ -z "$newest_source" ] && [ -d node_modules/@kybernesis ]; then
+  newest_source=$(find node_modules/@kybernesis -name '*.js' \
+    -newer .output/server/index.mjs -print -quit 2>/dev/null || true)
+fi
 if [ ! -f .output/server/index.mjs ] || [ -n "$newest_source" ]; then
   echo "SOURCE IS NEWER THAN THE BUILD (${newest_source:-no build yet}) — building"
   if ! npx eve build >> "$LOG" 2>&1; then
@@ -86,7 +128,7 @@ sleep 6
 
 # pgrep -c exits nonzero when the count is zero, so `|| echo 0` appended a
 # SECOND zero and the comparison below could never match. Normalize instead.
-still=$(pgrep -fc 'eve start|server/index.mjs' 2>/dev/null); still=${still:-0}
+still=$(count_servers)
 if [ "$still" != "0" ]; then
   echo "WARNING: $still eve process(es) survived; forcing"
   pkill -9 -f 'eve start' 2>/dev/null || true
@@ -113,10 +155,10 @@ if [ -z "$pid" ]; then
 fi
 
 # ── Exactly one server, or the store has two writers ───────────────────────
-servers=$(pgrep -fc 'server/index.mjs' 2>/dev/null); servers=${servers:-0}
+servers=$(count_servers)
 if [ "$servers" != "1" ]; then
   echo "FAILED: $servers server processes are running against one durable store"
-  pgrep -af 'server/index.mjs'
+  list_servers
   exit 1
 fi
 
