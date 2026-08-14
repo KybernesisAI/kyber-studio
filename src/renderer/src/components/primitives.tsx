@@ -86,8 +86,37 @@ export function Toggle({ on, onChange }: { on: boolean; onChange(next: boolean):
 }
 
 /** Minimal inline markdown: `code` and bare URLs. Deliberately not a parser. */
-export function RichText({ text }: { text: string }): ReactNode {
-  const parts = text.split(/(`[^`]+`|https?:\/\/\S+)/g);
+/**
+ * Someone the message is addressed to, drawn as a chip.
+ *
+ * Only names that are actually reachable become chips: an @ in front of a word
+ * is not a mention, and styling one that goes nowhere promises an addressing
+ * feature that will not happen. Longest names first, so "@Chief of Staff" is
+ * not matched as "@Chief".
+ */
+export function Mention({ name, accent }: { name: string; accent?: string }): ReactNode {
+  return (
+    <span className="mention">
+      <Avatar name={name} accent={accent ?? "#7c6cf0"} size={14} />
+      {name}
+    </span>
+  );
+}
+
+export function RichText({
+  text,
+  mentions = [],
+}: {
+  text: string;
+  mentions?: { name: string; accent?: string }[];
+}): ReactNode {
+  // Longest first, so "@Chief of Staff" is not matched as "@Chief".
+  const names = [...mentions].sort((a, b) => b.name.length - a.name.length);
+  const escaped = names.map((m) => m.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = escaped.length
+    ? new RegExp("(`[^`]+`|https?://\\S+|@(?:" + escaped.join("|") + "))", "g")
+    : /(`[^`]+`|https?:\/\/\S+)/g;
+  const parts = text.split(pattern);
   return (
     <>
       {parts.map((part, i) => {
@@ -100,6 +129,10 @@ export function RichText({ text }: { text: string }): ReactNode {
               {part}
             </a>
           );
+        }
+        if (part.startsWith("@")) {
+          const hit = names.find((m) => part.slice(1) === m.name);
+          if (hit) return <Mention key={i} name={hit.name} accent={hit.accent} />;
         }
         return <span key={i}>{part}</span>;
       })}

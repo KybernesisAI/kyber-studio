@@ -258,29 +258,61 @@ input, textarea { font: inherit; color: inherit; }
 .chip--ghost { background: none; border: 0; color: var(--ink-tertiary); margin-left: auto; }
 
 /* Peer activity — collapsed agent-to-agent traffic. */
-.peer { align-self: stretch; }
-.peer__summary {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 4px; color: var(--ink-secondary); font-size: var(--fs-sm);
-  border-radius: var(--radius-sm); width: 100%; text-align: left;
+/* A system line, not a message: centred, quiet, and the same weight as a
+   timestamp. What happened between two agents is context for the conversation,
+   not a turn in it. */
+.sysline {
+  align-self: center;
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--fs-sm); color: var(--ink-tertiary);
+  padding: 2px 0;
 }
-.peer__summary:hover { background: var(--hover); }
-.peer__stack { display: flex; }
-.peer__stack .avatar { box-shadow: 0 0 0 2px var(--surface); }
-.peer__stack .avatar + .avatar { margin-left: -6px; }
-.peer__chev { transition: transform 0.12s ease; color: var(--ink-tertiary); }
-.peer__chev--open { transform: rotate(90deg); }
-.peer__events {
-  margin: 4px 0 4px 10px; padding-left: 14px;
-  border-left: 1.5px solid var(--stroke);
-  display: flex; flex-direction: column; gap: 9px;
+.agent-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px 2px 3px;
+  border: none; border-radius: 999px;
+  background: var(--bubble-agent); color: var(--ink);
+  font: inherit; font-size: var(--fs-sm); font-weight: 550;
+  cursor: pointer;
 }
-.peer__event { display: flex; gap: 9px; align-items: flex-start; }
-.peer__event-body { min-width: 0; }
-.peer__event-head { display: flex; align-items: baseline; gap: 7px; font-size: var(--fs-sm); }
-.peer__event-name { font-weight: 590; }
-.peer__event-dir { color: var(--ink-tertiary); }
-.peer__event-text { font-size: var(--fs-sm); color: var(--ink-secondary); }
+.agent-chip:hover { background: var(--hover); }
+
+/* The exchange, read as its own thing over the conversation it came from. */
+.exchange {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; flex-direction: column;
+  background: var(--surface);
+}
+.exchange__head {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 0 16px; height: 46px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 590;
+}
+.exchange__arrow { color: var(--ink-tertiary); }
+.exchange__body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 18px 20px; display: flex; flex-direction: column; gap: var(--sp-4);
+}
+.exchange__turn { display: flex; gap: 9px; align-items: flex-start; max-width: 780px; }
+.exchange__who { font-size: var(--fs-sm); color: var(--ink-tertiary); margin-bottom: 3px; }
+.exchange__bubble {
+  background: var(--bubble-agent); border-radius: 14px;
+  padding: 8px 12px; font-size: var(--fs-base); white-space: pre-wrap;
+}
+.exchange__foot {
+  flex: none; display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 12px; border-top: 1px solid var(--line);
+  font-size: var(--fs-sm); color: var(--ink-tertiary);
+}
+
+.mention {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 7px 1px 2px; margin: 0 1px;
+  border-radius: 999px; background: var(--hover);
+  font-weight: 550; vertical-align: baseline;
+}
+.bubble--user .mention { background: rgba(255, 255, 255, 0.16); }
 
 /* ── Composer ──────────────────────────────────────────────────────── */
 

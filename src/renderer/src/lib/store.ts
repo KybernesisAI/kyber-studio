@@ -353,6 +353,17 @@ interface State {
     string,
     { name?: string; pinned?: boolean; hidden?: boolean; notifications?: boolean; accent?: string }
   >;
+  /**
+   * The agent-to-agent exchange being read, if any.
+   *
+   * Its own view rather than an accordion in the transcript: the exchange is a
+   * conversation between two agents, and inlining it makes the user's own
+   * thread the container for someone else's. Opened from the summary line,
+   * closed back to where you were.
+   */
+  exchange: { agentId: string; blockId: string } | null;
+  openExchange: (agentId: string, blockId: string) => void;
+  closeExchange: () => void;
   /** Per-agent eve session id, so a conversation keeps its thread across turns. */
   sessions: Record<string, string | undefined>;
   continuations: Record<string, string | undefined>;
@@ -452,6 +463,7 @@ export const useStore = create<State>((set, get) => ({
   sessions: {},
   continuations: {},
   streamIndexes: {},
+  exchange: null,
   prefs: {},
   activity: {},
   inflight: {},
@@ -474,6 +486,8 @@ export const useStore = create<State>((set, get) => ({
   openRoutine: (id) => set({ panel: "routine", activeRoutineId: id }),
   setPluginsOpen: (pluginsOpen) => set({ pluginsOpen }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
+  openExchange: (agentId, blockId) => set({ exchange: { agentId, blockId } }),
+  closeExchange: () => set({ exchange: null }),
 
   send: (agentId, text, fromQueue) => {
     const at = Date.now();

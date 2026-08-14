@@ -126,22 +126,23 @@ export function summarizePeerEvents(events: PeerEvent[]): PeerSummary | null {
   return { kind: "thread", messageCount: events.length, peers: unique };
 }
 
-export function peerSummaryLabel(s: PeerSummary, self?: string): string {
-  // Named on both sides where possible — "Kyber asked Sid" reads as a fact
-  // about the conversation, where "2 messages with 1 agents" reads as a
-  // debug counter that also happens to be ungrammatical.
-  const asker = self ? `${self} asked` : "Asked";
+export function peerSummaryLabel(
+  s: PeerSummary,
+): { text: string; peers: PeerEvent["peer"][] } {
+  // Text and chips, not one string. The agents in a summary are things you can
+  // click — naming them inside a sentence makes them read like prose and look
+  // unclickable, which is the difference between "2 messages with 1 agents" and
+  // a line you can actually follow into the exchange.
   switch (s.kind) {
     case "single":
-      return s.direction === "inbound"
-        ? `Message from ${s.peer.name}`
-        : `${asker} ${s.peer.name}`;
+      return {
+        text: s.direction === "inbound" ? "Message from" : "Messaged",
+        peers: [s.peer],
+      };
     case "fanout":
-      return `${asker} ${s.peers.length} agents`;
-    case "thread": {
-      const who = s.peers.length === 1 && s.peers[0] ? s.peers[0].name : `${s.peers.length} agents`;
-      return `${asker} ${who} · ${s.messageCount} messages`;
-    }
+      return { text: "Messaged", peers: s.peers };
+    case "thread":
+      return { text: `${s.messageCount} messages with`, peers: s.peers };
   }
 }
 

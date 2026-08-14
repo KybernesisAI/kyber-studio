@@ -45,46 +45,102 @@ function whenLabel(at: number, previous?: number): string | null {
   return `${day} ${time}`;
 }
 
-function PeerActivity({ events, self }: { events: PeerEvent[]; self?: string }): ReactNode {
-  const [open, setOpen] = useState(false);
+/**
+ * One line saying two agents talked, with the other agent as a chip you can
+ * follow into the exchange.
+ *
+ * Deliberately not an accordion. The exchange is a conversation between two
+ * agents; unfolding it inside this thread makes the user's own conversation the
+ * container for someone else's, and the two read as one jumbled transcript.
+ * Grok Bot solved this the same way and it is the right call.
+ */
+function PeerActivity({
+  events,
+  agentId,
+  blockId,
+}: {
+  events: PeerEvent[];
+  agentId: string;
+  blockId: string;
+}): ReactNode {
+  const openExchange = useStore((s) => s.openExchange);
   const summary = summarizePeerEvents(events);
   if (!summary) return null;
-
-  const peers =
-    summary.kind === "single" ? [summary.peer] : summary.peers;
+  const { text, peers } = peerSummaryLabel(summary);
 
   return (
-    <div className="peer">
-      <button className="peer__summary" onClick={() => setOpen(!open)}>
-        <span className={`peer__chev${open ? " peer__chev--open" : ""}`}>
-          <Icon name="chevronRight" size={13} />
-        </span>
-        <span className="peer__stack">
-          {peers.slice(0, 3).map((p) => (
-            <Avatar key={p.id} name={p.name} accent={p.accent} size={17} />
-          ))}
-        </span>
-        {peerSummaryLabel(summary, self)}
-      </button>
+    <div className="sysline">
+      <span>{text}</span>
+      {peers.slice(0, 3).map((peer) => (
+        <button
+          key={peer.id}
+          className="agent-chip"
+          title={`Open the exchange with ${peer.name}`}
+          onClick={() => openExchange(agentId, blockId)}
+        >
+          <Avatar name={peer.name} accent={peer.accent} size={16} />
+          {peer.name}
+        </button>
+      ))}
+    </div>
+  );
+}
 
-      {open ? (
-        <div className="peer__events">
-          {events.map((e) => (
-            <div className="peer__event" key={e.id}>
-              <Avatar name={e.peer.name} accent={e.peer.accent} size={20} />
-              <div className="peer__event-body">
-                <div className="peer__event-head">
-                  <span className="peer__event-name">{e.peer.name}</span>
-                  <span className="peer__event-dir">
-                    {e.direction === "inbound" ? "replied" : "asked"} · {timeLabel(e.at)}
-                  </span>
+/**
+ * The exchange itself, read as its own conversation.
+ *
+ * Attribution is by DIRECTION, which is the bug this replaces: every row used
+ * to be captioned with the peer's name, so a thread where Kyber asked and Sid
+ * answered read as Sid asking itself. Outbound is this agent speaking; inbound
+ * is the peer.
+ */
+function ExchangeView(): ReactNode {
+  const exchange = useStore((s) => s.exchange);
+  const closeExchange = useStore((s) => s.closeExchange);
+  const conversations = useStore((s) => s.conversations);
+  const agents = useStore((s) => s.agents);
+  if (!exchange) return null;
+
+  const self = agents.find((a) => a.id === exchange.agentId);
+  const block = (conversations[exchange.agentId] ?? []).find((b) => b.id === exchange.blockId);
+  if (!self || !block || block.kind !== "peer-activity") return null;
+
+  const peer = block.events[0]?.peer;
+
+  return (
+    <div className="exchange">
+      <div className="exchange__head">
+        <Avatar name={self.name} accent={self.accent} size={20} />
+        <span>{self.name}</span>
+        <span className="exchange__arrow">⇄</span>
+        {peer ? <Avatar name={peer.name} accent={peer.accent} size={20} /> : null}
+        <span>{peer?.name}</span>
+      </div>
+
+      <div className="exchange__body">
+        {block.events.map((e) => {
+          const speaker = e.direction === "outbound" ? self : e.peer;
+          return (
+            <div className="exchange__turn" key={e.id}>
+              <Avatar name={speaker.name} accent={speaker.accent} size={22} />
+              <div style={{ minWidth: 0 }}>
+                <div className="exchange__who">
+                  {speaker.name} · {timeLabel(e.at)}
                 </div>
-                <div className="peer__event-text">{e.text}</div>
+                <div className="exchange__bubble">{e.text}</div>
               </div>
             </div>
-          ))}
-        </div>
-      ) : null}
+          );
+        })}
+      </div>
+
+      <div className="exchange__foot">
+        <Icon name="lock" size={12} />
+        <span>This exchange is view-only</span>
+        <button className="btn" onClick={closeExchange}>
+          Close
+        </button>
+      </div>
     </div>
   );
 }
@@ -255,6 +311,12 @@ export function Conversation(): ReactNode {
     setWorkspace,
   } = useStore();
   const agent = agents.find((a) => a.id === activeAgentId);
+  // Who this agent can be asked to talk to — the control plane's list, reused
+  // for both the @ menu and for drawing mentions in what was sent.
+  const mentionable = (agent?.peers ?? []).map((peer) => ({
+    name: peer.name,
+    accent: agents.find((a) => a.id === peer.id || a.name === peer.name)?.accent,
+  }));
   const blocks = conversations[activeAgentId] ?? [];
   const [draft, setDraft] = useState("");
   const [acCursor, setAcCursor] = useState(0);
@@ -339,6 +401,24 @@ export function Conversation(): ReactNode {
       return [...fromSkills, ...actions].slice(0, 8);
     }
 
+    /**
+     * Agents first, because @ is for addressing someone.
+     *
+     * These are the peers the CONTROL PLANE says this agent may call, not a
+     * list the agent asserts about itself — so an edge revoked in the admin
+     * stops being suggested here, and tagging someone it cannot reach is not
+     * offered in the first place.
+     */
+    const fromPeers: Suggestion[] = (agent?.peers ?? [])
+      .filter((peer) => match(peer.name))
+      .map((peer) => ({
+        id: `agent:${peer.id}`,
+        title: peer.name,
+        detail: peer.purpose,
+        type: "Agent" as const,
+        accent: agents.find((a) => a.id === peer.id || a.name === peer.name)?.accent,
+      }));
+
     // What the agent can REACH — its real connections, tools, and schedules.
     const fromRoutines: Suggestion[] = (info?.schedules ?? [])
       .filter((r) => match(r.name))
@@ -354,7 +434,7 @@ export function Conversation(): ReactNode {
     const fromTools: Suggestion[] = (info?.tools ?? [])
       .filter((t) => match(t.name))
       .map((t) => ({ id: `tool:${t.name}`, title: t.name, detail: t.description, type: "Plugin" }));
-    return [...fromRoutines, ...fromConnections, ...fromTools].slice(0, 8);
+    return [...fromPeers, ...fromRoutines, ...fromConnections, ...fromTools].slice(0, 8);
   })();
 
   const applySuggestion = (s: Suggestion): void => {
@@ -381,7 +461,8 @@ export function Conversation(): ReactNode {
   };
 
   return (
-    <div className="main">
+    <div className="main" style={{ position: "relative" }}>
+      <ExchangeView />
       <div className="topbar">
         <Avatar name={agent.name} accent={agent.accent} size={22} />
         <span className="topbar__title">{agent.name}</span>
@@ -458,7 +539,9 @@ export function Conversation(): ReactNode {
             ) : null;
             const body = ((): ReactNode => {
             if (b.kind === "peer-activity")
-              return <PeerActivity key={b.id} events={b.events} self={agent?.name} />;
+              return (
+                <PeerActivity key={b.id} events={b.events} agentId={agent.id} blockId={b.id} />
+              );
             if (b.kind === "connection") return <ConnectionCard key={b.id} block={b} />;
             if (b.kind === "authorization") return <AuthorizationCard key={b.id} block={b} />;
             if (b.kind === "question")
@@ -471,7 +554,11 @@ export function Conversation(): ReactNode {
               );
               return (
                 <div key={b.id} className={`bubble bubble--${b.role}`}>
-                  {b.role === "agent" ? <Markdown text={b.text} /> : <RichText text={b.text} />}
+                  {b.role === "agent" ? (
+                    <Markdown text={b.text} />
+                  ) : (
+                    <RichText text={b.text} mentions={mentionable} />
+                  )}
                 </div>
               );
             })();
