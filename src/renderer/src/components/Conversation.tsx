@@ -314,12 +314,20 @@ export function Conversation(): ReactNode {
     setWorkspace,
   } = useStore();
   const agent = agents.find((a) => a.id === activeAgentId);
+  const rooms = useStore((s) => s.rooms);
+  const sendToRoom = useStore((s) => s.sendToRoom);
+  const room = rooms.find((r) => r.id === activeAgentId);
+  const roomMembers = (room?.memberIds ?? [])
+    .map((id) => agents.find((a) => a.id === id))
+    .filter((a): a is NonNullable<typeof a> => Boolean(a));
   // Who this agent can be asked to talk to — the control plane's list, reused
   // for both the @ menu and for drawing mentions in what was sent.
-  const mentionable = (agent?.peers ?? []).map((peer) => ({
-    name: peer.name,
-    accent: agents.find((a) => a.id === peer.id || a.name === peer.name)?.accent,
-  }));
+  const mentionable = room
+    ? roomMembers.map((m) => ({ name: m.name, accent: m.accent }))
+    : (agent?.peers ?? []).map((peer) => ({
+        name: peer.name,
+        accent: agents.find((a) => a.id === peer.id || a.name === peer.name)?.accent,
+      }));
   const blocks = conversations[activeAgentId] ?? [];
   const [draft, setDraft] = useState("");
   const [acCursor, setAcCursor] = useState(0);
@@ -472,12 +480,13 @@ export function Conversation(): ReactNode {
     el.focus();
   };
 
-  if (!agent) return <div className="main" />;
+  if (!agent && !room) return <div className="main" />;
 
   const submit = (): void => {
     const text = draft.trim();
     if (!text) return;
-    send(agent.id, text);
+    if (room) sendToRoom(room.id, text);
+    else if (agent) send(agent.id, text);
     setDraft("");
     if (inputRef.current) composerDom.clear(inputRef.current);
   };
@@ -486,8 +495,23 @@ export function Conversation(): ReactNode {
     <div className="main" style={{ position: "relative" }}>
       <ExchangeView />
       <div className="topbar">
-        <Avatar name={agent.name} accent={agent.accent} size={22} />
-        <span className="topbar__title">{agent.name}</span>
+        {room ? (
+          <>
+            <span className="stack">
+              {roomMembers.map((m) => (
+                <Avatar key={m.id} name={m.name} accent={m.accent} size={22} />
+              ))}
+            </span>
+            <span className="topbar__title">
+              {room.name ?? roomMembers.map((m) => m.name).join(", ")}
+            </span>
+          </>
+        ) : (
+          <>
+            <Avatar name={agent!.name} accent={agent!.accent} size={22} />
+            <span className="topbar__title">{agent!.name}</span>
+          </>
+        )}
         <div className="topbar__spacer" />
         {workspaces[activeAgentId] ? (
           <div className="workspace-wrap">
@@ -562,7 +586,7 @@ export function Conversation(): ReactNode {
             const body = ((): ReactNode => {
             if (b.kind === "peer-activity")
               return (
-                <PeerActivity key={b.id} events={b.events} agentId={agent.id} blockId={b.id} />
+                <PeerActivity key={b.id} events={b.events} agentId={activeAgentId} blockId={b.id} />
               );
             if (b.kind === "connection") return <ConnectionCard key={b.id} block={b} />;
             if (b.kind === "authorization") return <AuthorizationCard key={b.id} block={b} />;
@@ -574,7 +598,19 @@ export function Conversation(): ReactNode {
                   onAnswer={(answer) => answerQuestion(activeAgentId, b.id, answer)}
                 />
               );
-              return (
+              // In a room, every agent turn says who is speaking. Without it a
+              // run of replies from three agents is one anonymous wall.
+              return b.speaker ? (
+                <div key={b.id} className="said">
+                  <div className="said__who">
+                    <Avatar name={b.speaker.name} accent={b.speaker.accent} size={18} />
+                    <span>{b.speaker.name}</span>
+                  </div>
+                  <div className="bubble bubble--agent">
+                    <Markdown text={b.text} />
+                  </div>
+                </div>
+              ) : (
                 <div key={b.id} className={`bubble bubble--${b.role}`}>
                   {b.role === "agent" ? (
                     <Markdown text={b.text} />
@@ -597,7 +633,11 @@ export function Conversation(): ReactNode {
             );
           })}
           {blocks.length === 0 ? (
-            <div className="empty">No messages yet. Say hello to {agent.name}.</div>
+            <div className="empty">
+              {room
+                ? `No messages yet. Say something to ${roomMembers.map((m) => m.name).join(" and ")}.`
+                : `No messages yet. Say hello to ${agent?.name}.`}
+            </div>
           ) : null}
           {busy ? (
             <div className="activity">
@@ -631,7 +671,7 @@ export function Conversation(): ReactNode {
             role="textbox"
             aria-multiline="true"
             suppressContentEditableWarning
-            data-placeholder={`Message ${agent.name}`}
+            data-placeholder={room ? "Message the group" : `Message ${agent?.name}`}
             onInput={() => {
               const el = inputRef.current;
               if (!el) return;

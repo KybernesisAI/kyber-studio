@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { UpdateRow } from "./UpdateRow";
-import type { Agent, Block } from "@shared/types";
+import type { Agent, Block, Room } from "@shared/types";
 import { useStore } from "@/lib/store";
 import { Avatar, Icon, timeLabel } from "./primitives";
 
@@ -125,11 +125,121 @@ function Row({
   );
 }
 
+/**
+ * A room in the list: every member's avatar, and their names as the title.
+ *
+ * Rooms are not given names by default and should not be — a customer who has
+ * put three agents in a room knows it by who is in it, and asking them to name
+ * it first is a form to fill in before the useful thing.
+ */
+function RoomRow({ room }: { room: Room }): ReactNode {
+  const { agents, activeAgentId, select, conversations } = useStore();
+  const members = room.memberIds
+    .map((id: string) => agents.find((a) => a.id === id))
+    .filter((a): a is Agent => Boolean(a));
+  const last = lastOf(conversations[room.id]);
+  const title = room.name ?? members.map((m: Agent) => m.name).join(", ");
+
+  return (
+    <div
+      className={`row${activeAgentId === room.id ? " row--active" : ""}`}
+      onClick={() => select(room.id)}
+    >
+      <span className="stack">
+        {members.slice(0, 3).map((m: Agent) => (
+          <Avatar key={m.id} name={m.name} accent={m.accent} size={34} />
+        ))}
+      </span>
+      <div className="row__body">
+        <div className="row__line">
+          <span className="row__name">{title}</span>
+          {last ? <span className="row__time">{timeLabel(last.at)}</span> : null}
+        </div>
+        <div className="row__preview">{last?.text ?? "No messages yet"}</div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Choosing who is in a new room.
+ *
+ * Opens with nobody selected and creates nothing until at least two agents are
+ * chosen: a "room" with one member is just a conversation, and making one by
+ * accident leaves a duplicate of a chat the user already has.
+ */
+function NewRoom({ onClose }: { onClose: () => void }): ReactNode {
+  const { agents, createRoom } = useStore();
+  const [picked, setPicked] = useState<string[]>([]);
+  const available = agents.filter((a) => !a.hidden);
+
+  const toggle = (id: string): void =>
+    setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+
+  return (
+    <div className="newroom">
+      <div className="newroom__head">
+        <span className="newroom__label">To:</span>
+        <div className="newroom__picked">
+          {picked.length === 0 ? (
+            <span className="muted">Choose two or more agents</span>
+          ) : (
+            picked.map((id) => {
+              const a = agents.find((x) => x.id === id);
+              if (!a) return null;
+              return (
+                <button key={id} className="agent-chip" onClick={() => toggle(id)} title="Remove">
+                  <span className="mention__icon" style={{ background: a.accent }}>
+                    {a.name.trim().charAt(0).toUpperCase()}
+                  </span>
+                  {a.name}
+                </button>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      <div className="newroom__list">
+        {available.map((a) => (
+          <button
+            key={a.id}
+            className={`newroom__opt${picked.includes(a.id) ? " newroom__opt--on" : ""}`}
+            onClick={() => toggle(a.id)}
+          >
+            <Avatar name={a.name} accent={a.accent} size={20} />
+            <span>{a.name}</span>
+            {picked.includes(a.id) ? <Icon name="check" size={14} /> : null}
+          </button>
+        ))}
+      </div>
+
+      <div className="newroom__foot">
+        <button className="btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          className="btn btn--primary"
+          disabled={picked.length < 2}
+          onClick={() => {
+            createRoom(picked);
+            onClose();
+          }}
+        >
+          Start
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function Sidebar(): ReactNode {
   const { agents, query, setPluginsOpen, setPaletteOpen, account, signOut, refreshAgents, issuer } =
     useStore();
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [accountMenu, setAccountMenu] = useState(false);
+  const [newRoom, setNewRoom] = useState(false);
+  const rooms = useStore((s) => s.rooms);
 
   const q = query.trim().toLowerCase();
   const visible = agents
@@ -145,7 +255,12 @@ export function Sidebar(): ReactNode {
   return (
     <aside className="sidebar">
       <div className="sidebar__top">
-        <button className="topbar__btn" title="New conversation" style={{ WebkitAppRegion: "no-drag" } as never}>
+        <button
+          className="topbar__btn"
+          title="New group conversation"
+          style={{ WebkitAppRegion: "no-drag" } as never}
+          onClick={() => setNewRoom((v) => !v)}
+        >
           <Icon name="plus" />
         </button>
       </div>
@@ -158,7 +273,18 @@ export function Sidebar(): ReactNode {
         </button>
       </div>
 
+      {newRoom ? <NewRoom onClose={() => setNewRoom(false)} /> : null}
+
       <div className="sidebar__list">
+        {rooms.length > 0 ? (
+          <>
+            <div className="section-head">Groups</div>
+            {rooms.map((r) => (
+              <RoomRow key={r.id} room={r} />
+            ))}
+            <div className="section-head">Agents</div>
+          </>
+        ) : null}
         {pinned.length > 0 ? (
           <>
             <div className="section-head">Pinned</div>

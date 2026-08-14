@@ -1,12 +1,8 @@
 import { create } from "zustand";
 import type { AgentSummary } from "@shared/ipc";
 import { summarize } from "./agentInfo";
-import type {
-  Agent,
-  Block,
-  PeerEvent,
-  Section,
-} from "@shared/types";
+import type { Agent, Block, PeerEvent, Room, Section } from "@shared/types";
+import { ROOM_PREFIX, isRoomId } from "@shared/types";
 
 /**
  * Renderer state.
@@ -212,6 +208,94 @@ function ensureListeners(
 }
 
 /** Append the agent's reply block, or update it as more text arrives. */
+/** A name is user data; it can contain anything a regex would read as syntax. */
+function escapeForRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\function upsertBlock(");
+}
+
+/**
+ * One member's turn inside a room.
+ *
+ * Deliberately a thin wrapper over the same transport a one-to-one chat uses:
+ * a room is a routing decision, not a second way of talking to an agent, and
+ * anything special-cased here would drift from the path that gets exercised
+ * every day.
+ */
+async function deliverToMember(
+  get: () => State,
+  set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
+  room: Room,
+  member: Agent,
+  text: string,
+  relayDepth: number,
+): Promise<void> {
+  if (!window.studio || !member.url) return;
+  const key = `${room.id}::${member.id}`;
+  const at = Date.now();
+  const streamId = `s${at}-${member.id}`;
+  const bubbleId = `a${at}-${member.id}`;
+  const speaker = { id: member.id, name: member.name, accent: member.accent };
+
+  ensureListeners(get, set);
+  streamOwners.set(streamId, room.id);
+  set((s) => ({
+    inflight: { ...s.inflight, [key]: { streamId } },
+    streaming: { ...s.streaming, [streamId]: "" },
+  }));
+
+  const write = (body: string): void => {
+    set((s) => {
+      const conv = s.conversations[room.id] ?? [];
+      const exists = conv.some((b) => b.id === bubbleId);
+      return {
+        conversations: {
+          ...s.conversations,
+          [room.id]: exists
+            ? conv.map((b) => (b.id === bubbleId && b.kind === "text" ? { ...b, text: body } : b))
+            : [...conv, { kind: "text", id: bubbleId, role: "agent", at: Date.now(), text: body, speaker }],
+        },
+        rooms: s.rooms.map((r) =>
+          r.id === room.id ? { ...r, lastMessageAt: Date.now(), lastMessagePreview: body } : r,
+        ),
+      };
+    });
+  };
+
+  try {
+    const res = await window.studio.send({
+      url: member.url,
+      text,
+      sessionId: get().sessions[key],
+      continuationToken: get().continuations[key],
+      streamIndex: get().streamIndexes[key],
+      streamId,
+    });
+    set((s) => ({
+      sessions: { ...s.sessions, [key]: res.sessionId },
+      continuations: { ...s.continuations, [key]: res.continuationToken },
+      streamIndexes: { ...s.streamIndexes, [key]: res.streamIndex },
+    }));
+    const reply = res.reply?.trim();
+    if (reply) {
+      write(reply);
+      // Carry it to anyone this agent addressed by name.
+      get().sendToRoom(room.id, reply, speaker, relayDepth + 1);
+    }
+  } catch (error) {
+    write(`(${member.name} could not be reached: ${(error as Error).message})`);
+  } finally {
+    set((s) => {
+      const inflight = { ...s.inflight };
+      delete inflight[key];
+      const streaming = { ...s.streaming };
+      delete streaming[streamId];
+      return { inflight, streaming };
+    });
+    streamOwners.delete(streamId);
+    get().persist();
+  }
+}
+
 function upsertBlock(
   get: () => State,
   set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
@@ -354,6 +438,24 @@ interface State {
     { name?: string; pinned?: boolean; hidden?: boolean; notifications?: boolean; accent?: string }
   >;
   /**
+   * Conversations with more than one agent in them.
+   *
+   * A room lives entirely in this app. Each member keeps its OWN session with
+   * its own deployment — they are separate services and sharing a session
+   * between them would mean one agent's context leaking into another's — and
+   * this app is what puts a message in front of all of them.
+   */
+  rooms: Room[];
+  sendToRoom: (
+    roomId: string,
+    text: string,
+    from?: { id: string; name: string; accent: string },
+    relayDepth?: number,
+  ) => void;
+  createRoom: (memberIds: string[]) => string;
+  setRoomMembers: (roomId: string, memberIds: string[]) => void;
+  deleteRoom: (roomId: string) => void;
+  /**
    * The agent-to-agent exchange being read, if any.
    *
    * Its own view rather than an accordion in the transcript: the exchange is a
@@ -463,6 +565,7 @@ export const useStore = create<State>((set, get) => ({
   sessions: {},
   continuations: {},
   streamIndexes: {},
+  rooms: [],
   exchange: null,
   prefs: {},
   activity: {},
@@ -486,8 +589,93 @@ export const useStore = create<State>((set, get) => ({
   openRoutine: (id) => set({ panel: "routine", activeRoutineId: id }),
   setPluginsOpen: (pluginsOpen) => set({ pluginsOpen }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
+  createRoom: (memberIds) => {
+    const id = `${ROOM_PREFIX}${Date.now().toString(36)}`;
+    set((s) => ({
+      rooms: [...s.rooms, { id, memberIds, createdAt: Date.now() }],
+      activeAgentId: id,
+    }));
+    get().persist();
+    return id;
+  },
+  setRoomMembers: (roomId, memberIds) => {
+    set((s) => ({
+      rooms: s.rooms.map((r) => (r.id === roomId ? { ...r, memberIds } : r)),
+    }));
+    get().persist();
+  },
+  deleteRoom: (roomId) => {
+    set((s) => {
+      const conversations = { ...s.conversations };
+      delete conversations[roomId];
+      return {
+        rooms: s.rooms.filter((r) => r.id !== roomId),
+        conversations,
+        activeAgentId: s.activeAgentId === roomId ? (s.agents[0]?.id ?? "") : s.activeAgentId,
+      };
+    });
+    get().persist();
+  },
   openExchange: (agentId, blockId) => set({ exchange: { agentId, blockId } }),
   closeExchange: () => set({ exchange: null }),
+
+  /**
+   * Put a message in front of every member of a room, and carry what they say
+   * back to each other.
+   *
+   * The app is the router. Each member is a separate deployment with its own
+   * session — `<roomId>::<agentId>` — so a room never contaminates the
+   * one-to-one conversation with the same agent, and two agents in a room never
+   * share a context.
+   *
+   * Relay is driven by ADDRESSING, not by chatter. When an agent's reply names
+   * another member, that member hears it; when it does not, the round ends.
+   * Without that rule two agents politely acknowledging each other is an
+   * infinite loop, billed per turn. `relayDepth` is the backstop for a pair
+   * that addresses each other every time.
+   */
+  sendToRoom: (roomId, text, from, relayDepth = 0) => {
+    const room = get().rooms.find((r) => r.id === roomId);
+    if (!room) return;
+    const at = Date.now();
+
+    if (!from) {
+      set((s) => ({
+        conversations: {
+          ...s.conversations,
+          [roomId]: [
+            ...(s.conversations[roomId] ?? []),
+            { kind: "text", id: `u${at}`, role: "user", text, at },
+          ],
+        },
+        rooms: s.rooms.map((r) =>
+          r.id === roomId ? { ...r, lastMessageAt: at, lastMessagePreview: text } : r,
+        ),
+      }));
+      get().persist();
+    }
+
+    const members = room.memberIds
+      .map((id) => get().agents.find((a) => a.id === id))
+      .filter((a): a is Agent => Boolean(a?.url));
+
+    // Who should answer: everyone the user spoke to, or — when relaying — only
+    // the members the speaking agent actually named.
+    const named = from
+      ? members.filter(
+          (m) => m.id !== from.id && new RegExp(`@?\\b${escapeForRegex(m.name)}\\b`, "i").test(text),
+        )
+      : members;
+    if (from && (relayDepth >= 2 || named.length === 0)) return;
+
+    const spoken = from
+      ? `${from.name} said: ${text}`
+      : text;
+
+    for (const member of named) {
+      void deliverToMember(get, set, room, member, spoken, relayDepth);
+    }
+  },
 
   send: (agentId, text, fromQueue) => {
     const at = Date.now();
@@ -887,7 +1075,9 @@ export const useStore = create<State>((set, get) => ({
       continuations: Record<string, string | undefined>;
       streamIndexes: Record<string, number | undefined>;
       prefs: State["prefs"];
+      rooms: Room[];
     }>("conversations.json");
+    if (saved?.rooms) set({ rooms: saved.rooms });
     if (saved?.prefs && !saved?.conversations) set({ prefs: saved.prefs });
     if (saved?.conversations) {
       set({
@@ -896,6 +1086,7 @@ export const useStore = create<State>((set, get) => ({
         continuations: saved.continuations ?? {},
         streamIndexes: saved.streamIndexes ?? {},
         prefs: saved.prefs ?? {},
+        rooms: saved.rooms ?? [],
       });
     }
     const ws = await window.studio.loadState<Record<string, string>>("workspaces.json");
@@ -912,6 +1103,7 @@ export const useStore = create<State>((set, get) => ({
         continuations: get().continuations,
         streamIndexes: get().streamIndexes,
         prefs: get().prefs,
+        rooms: get().rooms,
       },
     });
   },

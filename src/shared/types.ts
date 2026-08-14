@@ -22,7 +22,7 @@ export interface Agent {
   /** One-line role, shown under the name in Settings. */
   title?: string;
   description?: string;
-  /** Base URL of the agent's eve deployment, e.g. https://sid-agent.exe.xyz */
+  /** Base URL of the agent's eve deployment. */
   url: string;
   /** Hex color for the generated avatar mark. */
   accent: string;
@@ -46,9 +46,51 @@ export interface Section {
 
 export type MessageRole = "user" | "agent";
 
+/**
+ * A conversation with more than one agent in it.
+ *
+ * The desktop app is the room: each member keeps its own session with its own
+ * deployment — they are separate services and must not share one — and this
+ * app puts what is said in front of all of them. Nothing about a room exists
+ * on any agent, which is what makes it work with any agent a customer has,
+ * governed or not, ours or theirs.
+ */
+export interface Room {
+  id: string;
+  /** Agent ids, in the order they were added. */
+  memberIds: string[];
+  createdAt: number;
+  /** Set when the user renames it; otherwise the members' names are the name. */
+  name?: string;
+  lastMessageAt?: number;
+  lastMessagePreview?: string;
+  unread?: boolean;
+}
+
+/** Rooms and agents share the sidebar and the conversation map, so ids must not collide. */
+export const ROOM_PREFIX = `room:`;
+export function isRoomId(id: string): boolean {
+  return id.startsWith(ROOM_PREFIX);
+}
+
 /** One rendered block in a conversation. */
 export type Block =
-  | { kind: "text"; id: string; role: MessageRole; text: string; at: number }
+  | {
+      kind: "text";
+      id: string;
+      role: MessageRole;
+      text: string;
+      at: number;
+      /**
+       * Who said it, when that is not obvious.
+       *
+       * A one-to-one conversation has exactly one agent, so the role says
+       * everything. A room has several, and an unattributed run of replies is
+       * unreadable — you cannot tell which agent answered, or that two of them
+       * disagreed with each other.
+       */
+      speaker?: { id: string; name: string; accent: string };
+    }
   | {
       kind: "connection";
       id: string;

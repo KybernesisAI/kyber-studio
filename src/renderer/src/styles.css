@@ -849,3 +849,41 @@ input, textarea { font: inherit; color: inherit; }
 
 .foot-row__note { font-size: var(--fs-xs); color: var(--ink-tertiary); font-family: var(--font-mono); }
 .foot-row--accent { color: var(--accent-deep); font-weight: 560; }
+
+/* ── Rooms: more than one agent in a conversation ──────────────────────── */
+
+/* Overlapping avatars, the way a group is shown everywhere else on a desktop:
+   one glance says how many are in it and who. */
+.stack { display: flex; flex: none; }
+.stack .avatar { box-shadow: 0 0 0 2px var(--surface); }
+.stack .avatar + .avatar { margin-left: -10px; }
+.sidebar .stack .avatar { box-shadow: 0 0 0 2px var(--surface-sidebar); }
+
+/* An attributed turn. The name sits above the bubble rather than inside it, so
+   the bubble stays the same object it is in a one-to-one conversation. */
+.said { display: flex; flex-direction: column; gap: 3px; align-self: flex-start; max-width: 92%; }
+.said__who {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--fs-sm); color: var(--ink-secondary);
+}
+
+.newroom {
+  margin: 0 12px 8px; padding: 10px;
+  background: var(--surface-raised); border: 0.5px solid var(--stroke);
+  border-radius: var(--radius); box-shadow: var(--shadow-menu);
+  -webkit-app-region: no-drag;
+}
+.newroom__head { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px; }
+.newroom__label { font-size: var(--fs-sm); color: var(--ink-tertiary); padding-top: 3px; }
+.newroom__picked { display: flex; flex-wrap: wrap; gap: 4px; font-size: var(--fs-sm); }
+.newroom__list { max-height: 210px; overflow-y: auto; display: flex; flex-direction: column; }
+.newroom__opt {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 6px 7px; border-radius: var(--radius-sm);
+  font-size: var(--fs-base); text-align: left;
+}
+.newroom__opt:hover { background: var(--hover); }
+.newroom__opt--on { background: var(--selected); }
+.newroom__opt span { flex: 1; }
+.newroom__foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.newroom__foot .btn[disabled] { opacity: 0.45; cursor: default; }
