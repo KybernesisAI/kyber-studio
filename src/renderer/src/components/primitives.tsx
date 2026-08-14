@@ -97,7 +97,14 @@ export function Toggle({ on, onChange }: { on: boolean; onChange(next: boolean):
 export function Mention({ name, accent }: { name: string; accent?: string }): ReactNode {
   return (
     <span className="mention">
-      <Avatar name={name} accent={accent ?? "#7c6cf0"} size={14} />
+      {/* Not <Avatar>: that takes a pixel size and writes it as an inline
+          style, which pins the icon while the text around it changes size —
+          a 14px square against 13px text in a bubble and 14px text in the
+          composer. The icon here is sized in `em`, so it is always exactly as
+          tall as the type it sits in and the chip stays the height of a line. */}
+      <span className="mention__icon" style={{ background: accent ?? "#7c6cf0" }}>
+        {name.trim().charAt(0).toUpperCase() || "?"}
+      </span>
       {name}
     </span>
   );

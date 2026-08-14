@@ -56,15 +56,12 @@ export function chipElement(mention: MentionRef): HTMLElement {
   chip.contentEditable = "false";
   chip.dataset.mention = mention.name;
 
-  // Built by hand rather than rendered, but identical to <Avatar size={14} />:
-  // same class, same shape, same initial, so a chip in the composer and a chip
-  // in the sent message are the same object to the eye.
+  // The same markup <Mention> renders, so a chip in the composer and the chip
+  // in the sent message are one object to the eye. Sized in em by CSS — nothing
+  // here pins a pixel height.
   const avatar = document.createElement("span");
-  avatar.className = "avatar";
-  avatar.style.width = "14px";
-  avatar.style.height = "14px";
+  avatar.className = "mention__icon";
   avatar.style.background = mention.accent ?? "#7c6cf0";
-  avatar.style.fontSize = `${14 * 0.42}px`;
   avatar.textContent = mention.name.trim().charAt(0).toUpperCase() || "?";
 
   chip.append(avatar, document.createTextNode(mention.name));

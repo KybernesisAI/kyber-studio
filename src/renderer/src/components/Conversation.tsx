@@ -79,7 +79,10 @@ function PeerActivity({
           title={`Open the exchange with ${peer.name}`}
           onClick={() => openExchange(agentId, blockId)}
         >
-          <Avatar name={peer.name} accent={peer.accent} size={16} />
+          {/* Same markup as a mention chip, so both read as one design. */}
+          <span className="mention__icon" style={{ background: peer.accent }}>
+            {peer.name.trim().charAt(0).toUpperCase()}
+          </span>
           {peer.name}
         </button>
       ))}

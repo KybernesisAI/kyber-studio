@@ -267,15 +267,15 @@ input, textarea { font: inherit; color: inherit; }
   font-size: var(--fs-sm); color: var(--ink-tertiary);
   padding: 2px 0;
 }
+/* Same object as a mention, but clickable: one chip design, not two. */
 .agent-chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 2px 7px 2px 3px;
-  border: none; border-radius: 6px;
+  display: inline-block;
+  padding: 0 6px 0 3px;
+  border: none; border-radius: 5px;
   background: var(--bubble-agent); color: var(--ink);
   font: inherit; font-size: var(--fs-sm);
-  cursor: pointer;
+  cursor: pointer; white-space: nowrap;
 }
-.agent-chip .avatar { border-radius: 30%; }
 .agent-chip:hover { background: var(--hover); }
 
 /* The exchange, read as its own thing over the conversation it came from. */
@@ -339,21 +339,26 @@ input, textarea { font: inherit; color: inherit; }
    against the text it sits next to. */
 .mention {
   display: inline-block;
-  padding: 1px 6px 1px 4px; margin: 0 1px;
-  border-radius: 6px; background: var(--hover);
+  padding: 0 5px 0 3px; margin: 0 1px;
+  border-radius: 5px; background: var(--hover);
   font-weight: inherit; font-size: inherit;
   white-space: nowrap;
 }
-.mention .avatar {
-  display: inline-grid;
-  vertical-align: -0.09em;
-  margin-right: 5px;
+/* Sized in em, so the icon is exactly as tall as the type it sits in and the
+   chip is the height of a LINE rather than a block resting on one. A fixed
+   pixel avatar was the remaining reason this read as pasted on: the same 14px
+   square against 13px bubble text and 14px composer text, padded top and
+   bottom. Grok Bot's own tokens set the icon slot to the label's font size and
+   the vertical padding to zero, which is the same idea. */
+.mention__icon {
+  display: inline-grid; place-items: center;
+  width: 1.15em; height: 1.15em;
+  margin-right: 4px;
+  border-radius: 4px;
+  color: #fff; font-size: 0.68em; font-weight: 600;
+  vertical-align: -0.16em;
 }
 .bubble--user .mention { background: rgba(255, 255, 255, 0.18); }
-/* A chip is taller than a line of text; give the line room so a wrapped
-   message does not crowd the row above it. */
-.bubble:has(.mention),
-.composer__input:has(.mention) { line-height: 1.55; }
 
 /* ── Composer ──────────────────────────────────────────────────────── */
 
