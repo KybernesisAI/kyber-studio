@@ -269,12 +269,13 @@ input, textarea { font: inherit; color: inherit; }
 }
 .agent-chip {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 2px 8px 2px 3px;
-  border: none; border-radius: 999px;
+  padding: 2px 7px 2px 3px;
+  border: none; border-radius: 7px;
   background: var(--bubble-agent); color: var(--ink);
-  font: inherit; font-size: var(--fs-sm); font-weight: 550;
+  font: inherit; font-size: var(--fs-sm);
   cursor: pointer;
 }
+.agent-chip .avatar { border-radius: 5px; }
 .agent-chip:hover { background: var(--hover); }
 
 /* The exchange, read as its own thing over the conversation it came from. */
@@ -313,20 +314,31 @@ input, textarea { font: inherit; color: inherit; }
    chip therefore rode high above the words next to it. `middle` centres it on
    the text's midline, which is what "inline with the text" actually means, and
    line-height: 1 stops it opening up the line it sits on. */
+/* A name, marked — not a badge shouting for attention.
+
+   Three things were wrong and all three were mine: bold made it read as a
+   different, larger typeface than the words around it; a 999px pill fought the
+   squircle avatars everywhere else in the app; and `vertical-align: baseline`
+   on an inline-flex box aligns the BOX's baseline, which with an avatar first
+   is the bottom of that avatar, so the chip rode high.
+
+   Now it inherits its type completely — the avatar and the tinted background
+   are the whole signal — takes the same corner radius family as the icons, and
+   is nudged onto the text's optical centre. */
 .mention {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 1px 8px 1px 3px; margin: 0 1px;
-  border-radius: 999px; background: var(--hover);
-  font-weight: 550;
-  vertical-align: middle;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 1px 6px 1px 2px; margin: 0 1px;
+  border-radius: 7px; background: var(--hover);
+  font-weight: inherit; font-size: inherit;
   line-height: 1;
+  vertical-align: -0.22em;
 }
-.mention .avatar { flex: none; }
+.mention .avatar { flex: none; border-radius: 5px; }
 .bubble--user .mention { background: rgba(255, 255, 255, 0.18); }
-/* A chip is taller than a line of text, so give lines room when one is present
-   and a wrapped message will not crowd the row above it. */
+/* A chip is taller than a line of text; give the line room so a wrapped
+   message does not crowd the row above it. */
 .bubble:has(.mention),
-.composer__input:has(.mention) { line-height: 1.6; }
+.composer__input:has(.mention) { line-height: 1.65; }
 
 /* ── Composer ──────────────────────────────────────────────────────── */
 
