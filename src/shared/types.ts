@@ -14,6 +14,8 @@
 
 /** A remote agent the user has a control-plane grant for. */
 export interface Agent {
+  /** Agents this one may call, as granted in the control plane. */
+  peers?: { id: string; name: string; purpose?: string }[];
   id: string;
   /** Display name in the sidebar and header. */
   name: string;
@@ -124,14 +126,22 @@ export function summarizePeerEvents(events: PeerEvent[]): PeerSummary | null {
   return { kind: "thread", messageCount: events.length, peers: unique };
 }
 
-export function peerSummaryLabel(s: PeerSummary): string {
+export function peerSummaryLabel(s: PeerSummary, self?: string): string {
+  // Named on both sides where possible — "Kyber asked Sid" reads as a fact
+  // about the conversation, where "2 messages with 1 agents" reads as a
+  // debug counter that also happens to be ungrammatical.
+  const asker = self ? `${self} asked` : "Asked";
   switch (s.kind) {
     case "single":
-      return s.direction === "inbound" ? `Message from ${s.peer.name}` : `Messaged ${s.peer.name}`;
+      return s.direction === "inbound"
+        ? `Message from ${s.peer.name}`
+        : `${asker} ${s.peer.name}`;
     case "fanout":
-      return `Messaged ${s.peers.length} agents`;
-    case "thread":
-      return `${s.messageCount} messages with ${s.peers.length} agents`;
+      return `${asker} ${s.peers.length} agents`;
+    case "thread": {
+      const who = s.peers.length === 1 && s.peers[0] ? s.peers[0].name : `${s.peers.length} agents`;
+      return `${asker} ${who} · ${s.messageCount} messages`;
+    }
   }
 }
 

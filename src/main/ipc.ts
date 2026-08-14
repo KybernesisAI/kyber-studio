@@ -184,6 +184,11 @@ export function registerIpc(): void {
             sender.send("studio:turn", { streamId: input.streamId, ...turn });
           }
         },
+        onPeer: (event) => {
+          if (!sender.isDestroyed()) {
+            sender.send('studio:peer', { streamId: input.streamId, event });
+          }
+        },
         onAuthorization: (event) => {
           if (!sender.isDestroyed()) {
             sender.send("studio:authorization", { streamId: input.streamId, event });

@@ -47,6 +47,13 @@ export interface RemoteAgent {
   audience: string | null;
   reachable: boolean;
   daemonLabel: string | null;
+  /**
+   * The agents this one is allowed to call, from the control plane.
+   *
+   * Governance state, not a claim by the agent about itself: these are the same
+   * rows the admin edits, so revoking an edge there empties this here.
+   */
+  peers?: { id: string; name: string; purpose?: string }[];
 }
 
 export type LocalAction = "run-command" | "read-file" | "write-file" | "list-directory";
@@ -158,6 +165,13 @@ export interface StudioApi {
         expiresAt?: string;
         outcome?: string;
       };
+    }) => void,
+  ): () => void;
+  /** One side of an agent-to-agent hop, as it happens. */
+  onPeer(
+    handler: (payload: {
+      streamId: string;
+      event: { direction: 'inbound' | 'outbound'; peer: string; text: string };
     }) => void,
   ): () => void;
   onQuestion(

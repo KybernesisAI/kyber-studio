@@ -320,6 +320,9 @@ function Overview(): ReactNode {
   const schedules = info?.schedules ?? [];
   const channels = info?.channels ?? [];
   const subagents = info?.subagents ?? [];
+  // From the control plane, not from the agent's own /info: an agent listing
+  // its own permissions would be the agent grading its own homework.
+  const peers = agent.peers ?? [];
 
   return (
     <>
@@ -369,6 +372,32 @@ function Overview(): ReactNode {
             ))
           )}
         </Section>
+
+        {/*
+          Who this agent may call, straight from the control plane.
+
+          Read-only on purpose. Granting an edge is a governance decision and it
+          belongs in the admin, next to who may talk to the agent at all — a
+          desktop app that could quietly widen an agent's reach would make the
+          admin a place you consult rather than the place that decides. Showing
+          it here still matters: when a delegation fails, the first question is
+          whether the edge exists, and the answer should not require a browser.
+        */}
+        {peers.length > 0 ? (
+          <Section title="Peers" count={peers.length}>
+            {peers.map((p) => {
+              const known = agents.find((a) => a.id === p.id || a.name === p.name);
+              return (
+                <Row
+                  key={p.id}
+                  icon={<Avatar name={p.name} accent={known?.accent ?? "#7c6cf0"} size={16} />}
+                  title={p.name}
+                  detail={p.purpose ?? "granted"}
+                />
+              );
+            })}
+          </Section>
+        ) : null}
 
         {subagents.length > 0 ? (
           <Section title="Subagents" count={subagents.length}>

@@ -37,6 +37,27 @@ if ! flock -w 300 9; then
   exit 1
 fi
 
+# ── Build, if the source moved since the last one ──────────────────────────
+# Restarting is not deploying. This script proved the PROCESS started after the
+# BUILD, which says nothing about whether the build reflects the source — so a
+# file edited ten minutes ago and a restart that reports "OK" left the agent
+# serving yesterday's code, and every test after that measured the wrong agent.
+#
+# It matters most for the path nobody watches: @kybernesis/manage writes files
+# and then calls this script. Without a build here, an install through KYBER
+# Studio reports success and changes nothing.
+newest_source=$(find agent evals package.json -newer .output/server/index.mjs \
+  -not -path '*/node_modules/*' -print -quit 2>/dev/null || true)
+if [ ! -f .output/server/index.mjs ] || [ -n "$newest_source" ]; then
+  echo "SOURCE IS NEWER THAN THE BUILD (${newest_source:-no build yet}) — building"
+  if ! npx eve build >> "$LOG" 2>&1; then
+    echo "FAILED: the build did not succeed; refusing to restart into a stale build"
+    tail -20 "$LOG"
+    exit 1
+  fi
+  echo "built"
+fi
+
 # ── Wait for in-flight turns to settle ─────────────────────────────────────
 # A turnWorkflow run in `running` state is a turn someone is waiting on right
 # now. Killing it strands the session. Wait, but not forever: a turn that is

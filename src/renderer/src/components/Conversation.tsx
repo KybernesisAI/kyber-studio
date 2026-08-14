@@ -45,7 +45,7 @@ function whenLabel(at: number, previous?: number): string | null {
   return `${day} ${time}`;
 }
 
-function PeerActivity({ events }: { events: PeerEvent[] }): ReactNode {
+function PeerActivity({ events, self }: { events: PeerEvent[]; self?: string }): ReactNode {
   const [open, setOpen] = useState(false);
   const summary = summarizePeerEvents(events);
   if (!summary) return null;
@@ -64,7 +64,7 @@ function PeerActivity({ events }: { events: PeerEvent[] }): ReactNode {
             <Avatar key={p.id} name={p.name} accent={p.accent} size={17} />
           ))}
         </span>
-        {peerSummaryLabel(summary)}
+        {peerSummaryLabel(summary, self)}
       </button>
 
       {open ? (
@@ -457,7 +457,8 @@ export function Conversation(): ReactNode {
               </div>
             ) : null;
             const body = ((): ReactNode => {
-            if (b.kind === "peer-activity") return <PeerActivity key={b.id} events={b.events} />;
+            if (b.kind === "peer-activity")
+              return <PeerActivity key={b.id} events={b.events} self={agent?.name} />;
             if (b.kind === "connection") return <ConnectionCard key={b.id} block={b} />;
             if (b.kind === "authorization") return <AuthorizationCard key={b.id} block={b} />;
             if (b.kind === "question")

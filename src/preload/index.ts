@@ -70,6 +70,11 @@ const studio: StudioApi = {
     ipcRenderer.on("studio:authorization", listener);
     return () => ipcRenderer.off("studio:authorization", listener);
   },
+  onPeer: (handler) => {
+    const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);
+    ipcRenderer.on('studio:peer', listener);
+    return () => ipcRenderer.off('studio:peer', listener);
+  },
   onQuestion: (handler) => {
     const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);
     ipcRenderer.on("studio:question", listener);

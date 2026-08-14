@@ -4,6 +4,7 @@ import { summarize } from "./agentInfo";
 import type {
   Agent,
   Block,
+  PeerEvent,
   Section,
 } from "@shared/types";
 
@@ -84,6 +85,70 @@ function ensureListeners(
     // Saved continuously, not just on success: a stale cursor makes the next
     // turn replay old questions.
     set((s) => ({ streamIndexes: { ...s.streamIndexes, [agentId]: index } }));
+  });
+
+  /**
+   * Agent-to-agent traffic, collapsed into one openable line per turn.
+   *
+   * The alternative — letting each hop through as ordinary tool activity — is
+   * what happened before, and it reads as the agent using a tool called "sid"
+   * rather than as two agents talking. Grouping them keeps the transcript about
+   * the conversation the user is having, with the exchange one click away when
+   * they want to see who said what.
+   *
+   * Merged into the block only while it is still the LAST thing in the
+   * transcript. Once the agent has said something else, a later exchange is a
+   * new event in the conversation, not more of the old one — folding it back in
+   * would put it above a reply that came first.
+   */
+  window.studio.onPeer(({ streamId, event }) => {
+    const agentId = streamOwners.get(streamId);
+    if (!agentId) return;
+
+    set((s) => {
+      const conv = s.conversations[agentId] ?? [];
+      // Peers that are also agents in this sidebar keep their own identity —
+      // same avatar and colour as the row above, so it is recognisably Sid and
+      // not a generic peer.
+      const known = s.agents.find((a) => a.name.toLowerCase() === event.peer.toLowerCase());
+      const peer = {
+        id: known?.id ?? event.peer,
+        name: known?.name ?? event.peer,
+        accent: known?.accent ?? "#7c6cf0",
+      };
+      const entry: PeerEvent = {
+        id: `pe${Date.now()}-${conv.length}`,
+        direction: event.direction,
+        peer,
+        text: event.text,
+        at: Date.now(),
+      };
+
+      const last = conv[conv.length - 1];
+      if (last?.kind === "peer-activity" && last.id === `peer-${streamId}`) {
+        return {
+          conversations: {
+            ...s.conversations,
+            [agentId]: conv.map((b) =>
+              b.id === last.id && b.kind === "peer-activity"
+                ? { ...b, events: [...b.events, entry] }
+                : b,
+            ),
+          },
+        };
+      }
+
+      return {
+        conversations: {
+          ...s.conversations,
+          [agentId]: [
+            ...conv,
+            { kind: "peer-activity", id: `peer-${streamId}`, at: Date.now(), events: [entry] },
+          ],
+        },
+      };
+    });
+    get().persist();
   });
 
   window.studio.onAuthorization(({ streamId, event }) => {
@@ -898,6 +963,7 @@ export const useStore = create<State>((set, get) => ({
             // name is the default, not the authority.
             name: chosen.name ?? r.name,
             url: r.url ?? "",
+            peers: r.peers ?? [],
             accent: chosen.accent ?? prior?.accent ?? palette[i % palette.length] ?? "#2ec4a6",
             pinned: chosen.pinned ?? prior?.pinned,
             hidden: chosen.hidden ?? prior?.hidden,
