@@ -46,23 +46,62 @@ export function addressedIn(
   members: { id: string; name: string }[],
 ): Addressed {
   const byLongestName = [...members].sort((a, b) => b.name.length - a.name.length);
-  const ids: string[] = [];
 
+  /** Every mention with where it starts, so position can decide who is addressed. */
+  const found: { id: string; at: number }[] = [];
   let rest = text;
   for (const member of byLongestName) {
-    const pattern = new RegExp(`@${escapeForRegex(member.name)}\\b`, "i");
-    if (pattern.test(rest)) {
-      ids.push(member.id);
-      // Remove it so a shorter name inside a longer one cannot match twice.
-      rest = rest.replace(new RegExp(`@${escapeForRegex(member.name)}\\b`, "gi"), " ");
+    const hit = new RegExp(`@${escapeForRegex(member.name)}\\b`, "i").exec(rest);
+    if (hit) {
+      found.push({ id: member.id, at: hit.index });
+      // Blank it out so a shorter name inside a longer one cannot match twice.
+      // Same LENGTH, so every remaining offset still points at the real text.
+      rest = rest.replace(new RegExp(`@${escapeForRegex(member.name)}\\b`, "gi"), (m) =>
+        " ".repeat(m.length),
+      );
     }
   }
+  found.sort((a, b) => a.at - b.at);
 
   const everyone = EVERYONE_ALIASES.some((alias) =>
     new RegExp(`@${alias}\\b`, "i").test(text),
   );
 
-  return { ids, everyone, explicit: everyone || ids.length > 0 };
+  return { ids: addressees(text, found), everyone, explicit: everyone || found.length > 0 };
+}
+
+/**
+ * Of the members mentioned, the ones actually being SPOKEN TO.
+ *
+ * "@sid ask @ava what she is working on" names two people and addresses one.
+ * Delivering to both is not a near miss: Ava answers the instruction as if it
+ * were hers ("@Sid, ask away"), that reply names Sid, Sid asks again, and the
+ * transcript ends with a stale answer arriving after the summary that already
+ * superseded it. One message became four, and two of them were noise.
+ *
+ * The rule stays literal, because a router that guesses is wrong in ways the
+ * user can neither see nor correct. Mentions in the OPENING RUN are the
+ * addressees; a mention later in the sentence is a reference to someone, the
+ * way it is in ordinary writing. Only separators may sit between opening
+ * mentions — whitespace, commas, "and", "&".
+ *
+ * When a message opens with prose instead, every mention counts. That is the
+ * older behaviour and the safer reading of "can @design and @marketing look".
+ */
+function addressees(text: string, found: { id: string; at: number }[]): string[] {
+  if (found.length <= 1) return found.map((f) => f.id);
+
+  const opening: string[] = [];
+  let cursor = 0;
+  for (const mention of found) {
+    const between = text.slice(cursor, mention.at);
+    if (!/^[\s,]*(?:and|&)?[\s,]*$/i.test(between)) break;
+    opening.push(mention.id);
+    const name = /^@[^\s,.:;!?]+/.exec(text.slice(mention.at));
+    cursor = mention.at + (name ? name[0].length : 1);
+  }
+
+  return opening.length > 0 ? opening : found.map((f) => f.id);
 }
 
 /**

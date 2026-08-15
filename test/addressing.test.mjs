@@ -63,3 +63,29 @@ test("naming the same member twice addresses them once", () => {
   const { ids } = addressedIn("@Engineer ping @Engineer again", members);
   assert.deepEqual(ids, ["a3"]);
 });
+
+/**
+ * The case that produced a four-message pile-up in a real room: an instruction
+ * that TELLS one agent to ask another names both, and used to be delivered to
+ * both. The second agent then answered the instruction as if it were its own.
+ */
+test("an instruction to relay addresses only the agent told to relay it", () => {
+  const { ids } = addressedIn("@Planner ask @Designer what she is working on", members);
+  assert.deepEqual(ids, ["a1"], "the named object of the instruction is a reference, not an addressee");
+});
+
+test("several agents addressed together all answer", () => {
+  assert.deepEqual(addressedIn("@Planner @Designer look at this", members).ids, ["a1", "a2"]);
+  assert.deepEqual(addressedIn("@Planner and @Designer look at this", members).ids, ["a1", "a2"]);
+  assert.deepEqual(addressedIn("@Planner, @Designer: thoughts?", members).ids, ["a1", "a2"]);
+});
+
+test("a message that opens with prose still reaches everyone it names", () => {
+  // No opening run to trust, so fall back to naming — the safer reading.
+  const { ids } = addressedIn("can @Designer and @Engineer take a look", members);
+  assert.deepEqual(ids.sort(), ["a2", "a3"]);
+});
+
+test("a single mention anywhere still addresses that member", () => {
+  assert.deepEqual(addressedIn("please ask @Engineer about it", members).ids, ["a3"]);
+});
