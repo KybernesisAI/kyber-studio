@@ -1213,7 +1213,8 @@ export async function provisionLocalAccess(input: {
       ok: false,
       error:
         installed.status === 404
-          ? `${input.agent} is not running a recent enough @kybernesis/manage to accept this.`
+          ? `${input.agent} has no management routes — @kybernesis/manage is not installed ` +
+            `or not deployed. On the agent: npx eve add @kybernesis/manage, then redeploy.`
           : `${input.agent} refused the credential (${installed.status}). ${detail.slice(0, 160)}`,
     };
   }
