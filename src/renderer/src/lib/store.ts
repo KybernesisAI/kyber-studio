@@ -860,22 +860,46 @@ export const useStore = create<State>((set, get) => ({
      */
     const existing = get().conversations[agentId] ?? [];
     const seen = new Set(existing.map((b) => b.id));
-    const fresh = replayed.blocks
-      .filter((b) => !seen.has(b.eventId))
-      .map((b): Block => ({ kind: "text", id: b.eventId, role: b.role, text: b.text, at: b.at }));
+
+    // Peers keep their own identity here for the same reason they do live: the
+    // exchange should name a recognisable colleague, in that colleague's own
+    // colour, rather than a generic peer.
+    const key = (name: string): string => name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const identify = (name: string): { id: string; name: string; accent: string } => {
+      const known = get().agents.find((a) => key(a.name) === key(name));
+      return {
+        id: known?.id ?? name,
+        name: known?.name ?? name,
+        accent: known?.accent ?? "#7c6cf0",
+      };
+    };
+
+    const fresh: Block[] = [
+      ...replayed.blocks
+        .filter((b) => !seen.has(b.eventId))
+        .map((b): Block => ({ kind: "text", id: b.eventId, role: b.role, text: b.text, at: b.at })),
+      ...(replayed.peerBlocks ?? [])
+        .map((p): Block => ({
+          kind: "peer-activity",
+          // Keyed on the TURN, so re-reading the same exchange cannot add it
+          // twice — the stream ids differ per event, the turn does not.
+          id: `peer-${sessionId}-${p.turnId}`,
+          at: p.at,
+          events: p.events.map((e, i) => ({
+            id: `pe-${p.turnId}-${i}`,
+            direction: e.direction,
+            peer: identify(e.peer),
+            text: e.text,
+            at: p.at,
+          })),
+        }))
+        .filter((b) => !seen.has(b.id)),
+    ];
 
     if (mode === "merge" && fresh.length === 0) return;
 
     const next =
-      mode === "merge"
-        ? [...existing, ...fresh].sort((a, b) => a.at - b.at)
-        : replayed.blocks.map((b): Block => ({
-            kind: "text",
-            id: b.eventId,
-            role: b.role,
-            text: b.text,
-            at: b.at,
-          }));
+      mode === "merge" ? [...existing, ...fresh].sort((a, b) => a.at - b.at) : [...fresh].sort((a, b) => a.at - b.at);
 
     set((s) => ({
       conversations: { ...s.conversations, [agentId]: next },

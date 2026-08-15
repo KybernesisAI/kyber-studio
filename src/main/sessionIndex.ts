@@ -1,8 +1,14 @@
 import { activeSession, ISSUER } from "./controlPlane";
-import { blocksFromEvents, type Replayed, type ReplayedBlock } from "../shared/sessionReplay";
+import {
+  blocksFromEvents,
+  type Replayed,
+  type ReplayedBlock,
+  type ReplayedPeerBlock,
+} from "../shared/sessionReplay";
+import { readPeerEvents } from "./peerEvents";
 
 export { blocksFromEvents };
-export type { Replayed, ReplayedBlock };
+export type { Replayed, ReplayedBlock, ReplayedPeerBlock };
 
 /**
  * The same conversations on every machine you sign in from.
@@ -189,8 +195,35 @@ export async function replaySession(input: {
 
     const { blocks, continuationToken } = blocksFromEvents(lines);
 
+    /**
+     * Rebuild the agent-to-agent exchanges too, with the same reader the live
+     * stream uses.
+     *
+     * Reusing it rather than writing a second parser is the point: peer traffic
+     * has already been misread twice, and two implementations of the same rule
+     * drift the moment one of them is fixed.
+     */
+    const peerBlocks: ReplayedPeerBlock[] = [];
+    const peerState = { pending: new Map<string, string>(), last: null as string | null };
+    for (const line of lines) {
+      let event: { type?: string; data?: Record<string, unknown>; meta?: { at?: string } };
+      try {
+        event = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const found = readPeerEvents(event.type ?? "", event.data ?? {}, peerState);
+      if (found.length === 0) continue;
+      const turnId = String((event.data as { turnId?: unknown })?.turnId ?? "turn");
+      const at = event.meta?.at ? Date.parse(String(event.meta.at)) : Date.now();
+      const open = peerBlocks.find((b) => b.turnId === turnId);
+      if (open) open.events.push(...found);
+      else peerBlocks.push({ turnId, at: Number.isNaN(at) ? Date.now() : at, events: [...found] });
+    }
+
     return {
       blocks,
+      peerBlocks,
       continuationToken,
       streamIndex: tail >= 0 ? tail + 1 : lines.length,
       truncated: tail >= 0 && tail + 1 > limit,

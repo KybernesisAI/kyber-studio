@@ -165,3 +165,26 @@ test("an ordinary tool call is still ignored entirely", () => {
   );
   assert.equal(events.length, 0, "only ask_-prefixed tools are peers");
 });
+
+/**
+ * The same reader runs when REBUILDING a conversation on another device.
+ * Without it a synced thread shows the answer an agent gave after consulting a
+ * colleague, with no sign the consultation happened — so the same turn reads
+ * differently depending which machine you open it on.
+ */
+test("a replayed stream still yields the exchange, grouped by turn", () => {
+  const state = { pending: new Map(), last: null };
+  const byTurn = new Map();
+  for (const e of governed) {
+    const found = readPeerEvents(e.type, e.data ?? {}, state);
+    if (!found.length) continue;
+    const turn = String(e.data?.turnId ?? "turn");
+    byTurn.set(turn, [...(byTurn.get(turn) ?? []), ...found]);
+  }
+  assert.equal(byTurn.size, 1, "one exchange in this capture, so one block");
+  const [events] = [...byTurn.values()];
+  assert.deepEqual(
+    events.map((e) => e.direction),
+    ["outbound", "inbound"],
+  );
+});

@@ -15,8 +15,25 @@ export interface ReplayedBlock {
   eventId: string;
 }
 
+/**
+ * One turn's worth of agent-to-agent traffic, rebuilt from the stream.
+ *
+ * Without it a synced conversation shows the answer an agent gave after
+ * consulting a colleague with no sign the consultation ever happened — so the
+ * same turn reads as two different events depending which machine you open it
+ * on, and the one that syncs is the one missing the evidence.
+ */
+export interface ReplayedPeerBlock {
+  /** The turn it belongs to, which is also what keeps one block per exchange. */
+  turnId: string;
+  at: number;
+  events: { direction: "inbound" | "outbound"; peer: string; text: string }[];
+}
+
 export interface Replayed {
   blocks: ReplayedBlock[];
+  /** Agent-to-agent exchanges, one entry per turn that had any. */
+  peerBlocks: ReplayedPeerBlock[];
   /** The live continuation token, read off the stream rather than stored. */
   continuationToken?: string;
   /** How many events were consumed, so streaming can resume after them. */
