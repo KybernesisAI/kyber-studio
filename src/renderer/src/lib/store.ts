@@ -4,6 +4,7 @@ import { summarize } from "./agentInfo";
 import type { Agent, Block, PeerEvent, Room, Section } from "@shared/types";
 import { ROOM_PREFIX, isRoomId } from "@shared/types";
 import { recipientsFor, type RoomPolicy } from "@shared/addressing";
+import { reconcile } from "@shared/sessionReplay";
 
 /**
  * Renderer state.
@@ -859,47 +860,49 @@ export const useStore = create<State>((set, get) => ({
      * twice.
      */
     const existing = get().conversations[agentId] ?? [];
-    const seen = new Set(existing.map((b) => b.id));
 
-    // Peers keep their own identity here for the same reason they do live: the
+    // Peers keep their own identity for the same reason they do live: the
     // exchange should name a recognisable colleague, in that colleague's own
     // colour, rather than a generic peer.
     const key = (name: string): string => name.toLowerCase().replace(/[^a-z0-9]+/g, "");
     const identify = (name: string): { id: string; name: string; accent: string } => {
       const known = get().agents.find((a) => key(a.name) === key(name));
-      return {
-        id: known?.id ?? name,
-        name: known?.name ?? name,
-        accent: known?.accent ?? "#7c6cf0",
-      };
+      return { id: known?.id ?? name, name: known?.name ?? name, accent: known?.accent ?? "#7c6cf0" };
     };
 
-    const fresh: Block[] = [
-      ...replayed.blocks
-        .filter((b) => !seen.has(b.eventId))
-        .map((b): Block => ({ kind: "text", id: b.eventId, role: b.role, text: b.text, at: b.at })),
-      ...(replayed.peerBlocks ?? [])
-        .map((p): Block => ({
+    const fromAgent: Block[] = [
+      ...replayed.blocks.map(
+        (b): Block => ({ kind: "text", id: b.eventId, role: b.role, text: b.text, at: b.at }),
+      ),
+      ...(replayed.peerBlocks ?? []).map(
+        (p): Block => ({
           kind: "peer-activity",
-          // Keyed on the TURN, so re-reading the same exchange cannot add it
-          // twice — the stream ids differ per event, the turn does not.
+          // Keyed on the TURN: event ids differ per read, the turn does not.
           id: `peer-${sessionId}-${p.turnId}`,
           at: p.at,
-          events: p.events.map((e, i) => ({
-            id: `pe-${p.turnId}-${i}`,
+          events: p.events.map((e, n) => ({
+            id: `pe-${p.turnId}-${n}`,
             direction: e.direction,
             peer: identify(e.peer),
             text: e.text,
             at: p.at,
           })),
-        }))
-        .filter((b) => !seen.has(b.id)),
+        }),
+      ),
     ];
 
-    if (mode === "merge" && fresh.length === 0) return;
+    /**
+     * Reconciled by CONTENT, not by id.
+     *
+     * The same message carries two names — the client's when this device wrote
+     * it, the durable event's when the agent hands it back — so an id
+     * comparison matches nothing and re-adds the whole conversation on every
+     * refresh. With both devices refreshing, that compounds until a greeting
+     * appears four times.
+     */
+    const next = reconcile(existing, fromAgent);
+    if (mode === "merge" && next.length === existing.length) return;
 
-    const next =
-      mode === "merge" ? [...existing, ...fresh].sort((a, b) => a.at - b.at) : [...fresh].sort((a, b) => a.at - b.at);
 
     set((s) => ({
       conversations: { ...s.conversations, [agentId]: next },

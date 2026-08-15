@@ -75,3 +75,70 @@ export function blocksFromEvents(lines: string[], limit = Number.POSITIVE_INFINI
   return { blocks, continuationToken, consumed };
 }
 
+
+/** The subset of a transcript block this reconciliation needs to reason about. */
+export interface ReconcilableBlock {
+  kind: string;
+  id: string;
+  at: number;
+  role?: string;
+  text?: string;
+  events?: { text: string }[];
+}
+
+/**
+ * Merge what the agent remembers with what this device has, without saying
+ * anything twice.
+ *
+ * The trap is that the same message carries two different identities. A block
+ * written locally is named by the client (`u1786…`), while the same message
+ * read back from the agent is named by the durable event (`evt_01M0…`). Dedupe
+ * by id alone and NOTHING ever matches, so every refresh appends the entire
+ * conversation again — and because both devices refresh, it compounds until a
+ * greeting appears four times.
+ *
+ * So identity falls back to content. The agent's copy wins where both exist:
+ * it carries the durable id, which is what makes the NEXT reconciliation
+ * cheap and exact. Local blocks with no counterpart are kept, because they are
+ * the things the event stream never described — a failed send, a question
+ * card, a turn that has not reached the replay window yet.
+ *
+ * Matching is one-to-one and in order, so someone who genuinely says "hi"
+ * twice keeps both.
+ */
+export function reconcile<T extends ReconcilableBlock>(local: T[], replayed: T[]): T[] {
+  const replayedIds = new Set(replayed.map((b) => b.id));
+  const unconsumed = replayed.filter((b) => b.kind === "text");
+  const taken = new Set<number>();
+
+  const signature = (b: ReconcilableBlock): string =>
+    b.kind === "text"
+      ? `t|${b.role}|${(b.text ?? "").trim()}`
+      : `p|${(b.events ?? []).map((e) => e.text.trim()).join("¶")}`;
+
+  const keep = local.filter((block) => {
+    // Already the agent's own copy — this device read it back earlier.
+    if (replayedIds.has(block.id)) return false;
+
+    if (block.kind === "text") {
+      const want = signature(block);
+      const at = unconsumed.findIndex((r, i) => !taken.has(i) && signature(r) === want);
+      if (at >= 0) {
+        taken.add(at);
+        return false;
+      }
+      return true;
+    }
+
+    if (block.kind === "peer-activity") {
+      const want = signature(block);
+      return !replayed.some((r) => r.kind === "peer-activity" && signature(r) === want);
+    }
+
+    // Cards, prompts, anything else this device drew: the stream never
+    // described them, so nothing can stand in for them.
+    return true;
+  });
+
+  return [...replayed, ...keep].sort((a, b) => a.at - b.at);
+}
