@@ -128,10 +128,10 @@ test("a discovered peer's exchange is recognised", () => {
   const back = events.find((e) => e.direction === "inbound");
   assert.ok(out, "the question to the peer must appear");
   assert.ok(back, "and so must the answer");
-  assert.equal(out.peer, "sid");
-  assert.equal(back.peer, "sid");
+  assert.equal(out.peer, "planner");
+  assert.equal(back.peer, "planner");
   assert.match(out.text, /job/i);
-  assert.match(back.text, /chief of staff/i);
+  assert.match(back.text, /operations lead/i);
 });
 
 test("nothing is left pending once a discovered peer answers", () => {

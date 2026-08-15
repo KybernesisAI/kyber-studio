@@ -99,8 +99,8 @@ function ensureListeners(
    * Agent-to-agent traffic, collapsed into one openable line per turn.
    *
    * The alternative — letting each hop through as ordinary tool activity — is
-   * what happened before, and it reads as the agent using a tool called "sid"
-   * rather than as two agents talking. Grouping them keeps the transcript about
+   * what happened before, and it reads as the agent using a tool named after a
+   * colleague rather than as two agents talking. Grouping them keeps it about
    * the conversation the user is having, with the exchange one click away when
    * they want to see who said what.
    *
@@ -118,11 +118,11 @@ function ensureListeners(
       // Peers that are also agents in this sidebar keep their own identity —
       // the same avatar and colour as their row above, so the exchange names a
       // recognisable agent rather than a generic peer.
-      // Compared loosely on purpose. A discovered peer's name reaches us via a
-      // tool name, where punctuation cannot survive — "ava-sales" arrives as
-      // "ava_sales". An exact match would leave that agent unrecognised and
-      // paint the exchange in a stranger's colour, next to its own row in the
-      // sidebar.
+      // Compared loosely on purpose. A discovered peer's name reaches us through
+      // a TOOL NAME, where punctuation cannot survive — a hyphenated agent name
+      // arrives with underscores. An exact match would leave that agent
+      // unrecognised and paint the exchange in a stranger's colour, directly
+      // beside its own row in the sidebar.
       const key = (name: string): string => name.toLowerCase().replace(/[^a-z0-9]+/g, "");
       const known = s.agents.find((a) => key(a.name) === key(event.peer));
       const peer = {

@@ -73,9 +73,10 @@ export function addressedIn(
 /**
  * Of the members mentioned, the ones actually being SPOKEN TO.
  *
- * "@sid ask @ava what she is working on" names two people and addresses one.
- * Delivering to both is not a near miss: Ava answers the instruction as if it
- * were hers ("@Sid, ask away"), that reply names Sid, Sid asks again, and the
+ * "@planner ask @designer what she is working on" names two people and
+ * addresses one. Delivering to both is not a near miss: the designer answers
+ * the instruction as if it were hers ("@planner, ask away"), that reply names
+ * the planner, the planner asks again, and the
  * transcript ends with a stale answer arriving after the summary that already
  * superseded it. One message became four, and two of them were noise.
  *

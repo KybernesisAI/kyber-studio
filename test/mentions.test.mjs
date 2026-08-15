@@ -17,11 +17,11 @@ function split(text, mentions) {
   return text.split(pattern);
 }
 
-const peers = [{ name: "sid" }, { name: "eve-gtm" }, { name: "Chief" }, { name: "Chief of Staff" }];
+const peers = [{ name: "planner" }, { name: "field-ops" }, { name: "Chief" }, { name: "Chief of Staff" }];
 
 test("a reachable agent becomes its own part", () => {
-  const parts = split("ask @sid about tomorrow", peers);
-  assert.ok(parts.includes("@sid"));
+  const parts = split("ask @planner about tomorrow", peers);
+  assert.ok(parts.includes("@planner"));
 });
 
 test("a longer name wins over a prefix of it", () => {
@@ -38,8 +38,8 @@ test("an @ in front of something unreachable is left as text", () => {
 });
 
 test("hyphens and dots in a name are matched literally", () => {
-  const parts = split("try @eve-gtm", peers);
-  assert.ok(parts.includes("@eve-gtm"));
+  const parts = split("try @field-ops", peers);
+  assert.ok(parts.includes("@field-ops"));
   // A dot in a name must not become "any character".
   const dotted = split("hi @a.b", [{ name: "a.b" }]);
   assert.ok(dotted.includes("@a.b"));
@@ -47,12 +47,12 @@ test("hyphens and dots in a name are matched literally", () => {
 });
 
 test("code spans and links still win", () => {
-  const parts = split("see `@sid` and https://x.ai/@sid", peers);
-  assert.ok(parts.includes("`@sid`"));
-  assert.ok(parts.includes("https://x.ai/@sid"));
+  const parts = split("see `@planner` and https://x.ai/@planner", peers);
+  assert.ok(parts.includes("`@planner`"));
+  assert.ok(parts.includes("https://x.ai/@planner"));
 });
 
 test("no reachable agents means no mention matching at all", () => {
-  const parts = split("hello @sid", []);
+  const parts = split("hello @planner", []);
   assert.ok(!parts.some((p) => p?.startsWith("@")));
 });

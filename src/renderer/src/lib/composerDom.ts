@@ -3,7 +3,7 @@
  * its DOM.
  *
  * A textarea cannot hold a chip — it holds a string — so addressing an agent
- * could only ever look like the literal text "@sid". Going contenteditable buys
+ * could only ever look like the literal text "@planner". Going contenteditable buys
  * the chip and costs caret management, which is why every operation lives here
  * as a plain function over an element: they are the parts that break, and they
  * break silently in ways typechecking never catches.

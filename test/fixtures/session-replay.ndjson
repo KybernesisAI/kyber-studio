@@ -1,5 +1,5 @@
 
-{"data":{"runtime":{"agentId":"ava","agentName":"ava","eveVersion":"0.30.8","modelId":"openai/openai/gpt-5.6-sol"}},"type":"session.started","meta":{"at":"2026-08-15T17:18:55.141Z","id":"evt_01M036Y2556NGTXFPGMETM1F5J"}}
+{"data":{"runtime":{"agentId":"assistant","agentName":"assistant","eveVersion":"0.30.8","modelId":"example/model-1"}},"type":"session.started","meta":{"at":"2026-08-15T17:18:55.141Z","id":"evt_01M036Y2556NGTXFPGMETM1F5J"}}
 {"data":{"sequence":0,"turnId":"turn_0"},"type":"turn.started","meta":{"at":"2026-08-15T17:18:55.141Z","id":"evt_01M036Y2556NGTXFPGMETM1F5K"}}
 {"data":{"message":"say ok","parts":[{"text":"say ok","type":"text"}],"sequence":0,"turnId":"turn_0"},"type":"message.received","meta":{"at":"2026-08-15T17:18:55.442Z","id":"evt_01M036Y2EJBNFKQRRDQ9WXNY00"}}
 {"data":{"sequence":0,"stepIndex":0,"turnId":"turn_0"},"type":"step.started","meta":{"at":"2026-08-15T17:18:55.443Z","id":"evt_01M036Y2EKKP6YTPVDCQ6Q0956"}}

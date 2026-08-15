@@ -62,13 +62,13 @@ test("a chip becomes the @name the agent expects", () => {
   const root = el("div", {
     children: [
       text("ask "),
-      el("span", { mention: "sid", children: [el("span"), text("sid")] }),
-      text(" what he knows about me"),
+      el("span", { mention: "planner", children: [el("span"), text("planner")] }),
+      text(" what they know about this"),
     ],
   });
   // Critically NOT "ask sidsid what..." — the chip's visible text must not be
   // serialized alongside its data-mention.
-  assert.equal(serialize(root), "ask @sid what he knows about me");
+  assert.equal(serialize(root), "ask @planner what they know about this");
 });
 
 test("the chip's own contents never leak into the message", () => {
@@ -97,11 +97,11 @@ test("an empty composer is an empty string, not whitespace", () => {
 test("two chips in one message both come through", () => {
   const root = el("div", {
     children: [
-      el("span", { mention: "sid", children: [text("sid")] }),
+      el("span", { mention: "planner", children: [text("planner")] }),
       text(" and "),
       el("span", { mention: "eve-gtm", children: [text("eve-gtm")] }),
       text(" both"),
     ],
   });
-  assert.equal(serialize(root), "@sid and @eve-gtm both");
+  assert.equal(serialize(root), "@planner and @eve-gtm both");
 });
