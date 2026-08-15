@@ -1,3 +1,21 @@
+import type { Replayed } from "./sessionReplay";
+
+/**
+ * One of this person's threads, as the control-plane directory knows it.
+ *
+ * A pointer, not a conversation: the transcript stays on the agent, and this
+ * carries only enough to list a thread and open it on a device that has never
+ * seen it.
+ */
+export interface IndexedSession {
+  agent: string;
+  sessionId: string;
+  label?: string | null;
+  title?: string | null;
+  lastMessageAt?: string | null;
+  lastMessagePreview?: string | null;
+}
+
 export interface UpdateState {
   status: "idle" | "checking" | "available" | "downloading" | "downloaded" | "error";
   version: string | null;
@@ -194,6 +212,20 @@ export interface StudioApi {
   localAnswer(input: { id: string; allow: boolean; remember: boolean }): Promise<void>;
   localPermissions(): Promise<Record<LocalAction, LocalPermission>>;
 
+  /** This person's threads from the control-plane directory, newest first. */
+  listSessions(agent?: string): Promise<IndexedSession[]>;
+  /** Record or update one thread so the account's other devices can find it. */
+  recordSession(entry: {
+    agent: string;
+    sessionId: string;
+    label?: string;
+    title?: string;
+    lastMessageAt?: number;
+    lastMessagePreview?: string;
+    archived?: boolean;
+  }): Promise<void>;
+  /** Rebuild a conversation this device has never seen from the agent's stream. */
+  replaySession(input: { url: string; sessionId: string; limit?: number }): Promise<Replayed | null>;
   loadState<T>(name: string): Promise<T | null>;
   saveState(input: { name: string; value: unknown }): Promise<void>;
   /** Native folder picker; null when cancelled. */

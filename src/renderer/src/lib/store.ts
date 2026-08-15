@@ -641,6 +641,10 @@ interface State {
   streaming: Record<string, string>;
 
   select(id: string): void;
+  /** Fetch a thread this device has never seen from the agent that holds it. */
+  hydrate(agentId: string): Promise<void>;
+  /** Learn which threads this account has, from the control-plane directory. */
+  syncSessions(): Promise<void>;
   setQuery(q: string): void;
   setPanel(v: PanelView): void;
   openRoutine(id: string): void;
@@ -711,11 +715,83 @@ export const useStore = create<State>((set, get) => ({
   workspaces: {},
   streaming: {},
 
-  select: (id) =>
+  select: (id) => {
     set((s) => ({
       activeAgentId: id,
       agents: s.agents.map((a) => (a.id === id ? { ...a, unread: false } : a)),
-    })),
+    }));
+    // Opening is when a conversation is worth fetching, not launch: a person
+    // with thirty agents would otherwise pay for thirty replays to read one.
+    void get().hydrate(id);
+  },
+  /**
+   * Learn which conversations this account has, wherever they were started.
+   *
+   * Only fills in what this device is missing. A local transcript is the richer
+   * copy — it holds the cards, the questions, the local-execution blocks that
+   * the agent's own stream does not describe — so the directory is treated as
+   * news about threads this machine has never met, never as a correction of
+   * one it has.
+   */
+  syncSessions: async () => {
+    if (!window.studio) return;
+    const indexed = await window.studio.listSessions();
+    if (indexed.length === 0) return;
+    set((s) => {
+      const sessions = { ...s.sessions };
+      for (const entry of indexed) {
+        if (!sessions[entry.agent]) sessions[entry.agent] = entry.sessionId;
+      }
+      return { sessions };
+    });
+    get().persist();
+  },
+
+  /**
+   * Rebuild a conversation from the agent that has been holding it.
+   *
+   * Runs only when this device has a session id and no transcript for it —
+   * the case that used to look like a brand-new chat with an agent you have
+   * been talking to for a month. Anything already here is left alone, because
+   * replacing a live transcript with a reconstruction can only lose detail.
+   */
+  hydrate: async (agentId) => {
+    if (!window.studio) return;
+    const sessionId = get().sessions[agentId];
+    if (!sessionId) return;
+    if ((get().conversations[agentId] ?? []).length > 0) return;
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (!agent?.url) return;
+
+    const replayed = await window.studio.replaySession({ url: agent.url, sessionId });
+    if (!replayed || replayed.blocks.length === 0) return;
+    // Between the check above and now, a turn may have written the first block.
+    if ((get().conversations[agentId] ?? []).length > 0) return;
+
+    set((s) => ({
+      conversations: {
+        ...s.conversations,
+        [agentId]: replayed.blocks.map((b): Block => ({
+          kind: "text",
+          id: b.eventId,
+          role: b.role,
+          text: b.text,
+          at: b.at,
+        })),
+      },
+      // Taken from the stream rather than stored anywhere: the token is a live
+      // handle to the session, and the agent is the one that knows the current
+      // one.
+      continuations: replayed.continuationToken
+        ? { ...s.continuations, [agentId]: replayed.continuationToken }
+        : s.continuations,
+      // Resume streaming after what was just read, so the next turn does not
+      // replay the history it already has.
+      streamIndexes: { ...s.streamIndexes, [agentId]: replayed.streamIndex },
+    }));
+    get().persist();
+  },
+
   setQuery: (query) => set({ query }),
   setPanel: (panel) => set({ panel, activeRoutineId: null }),
   openRoutine: (id) => set({ panel: "routine", activeRoutineId: id }),
@@ -918,6 +994,21 @@ export const useStore = create<State>((set, get) => ({
           continuations: { ...s.continuations, [agentId]: res.continuationToken },
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
         }));
+        /**
+         * Tell the account where this conversation lives.
+         *
+         * Fire and forget, never awaited: this machine already has the thread,
+         * and the only thing at stake is whether the person's OTHER devices can
+         * find it. A directory that is briefly stale is a much smaller problem
+         * than a reply that waits on a call to a third service.
+         */
+        void window.studio?.recordSession({
+          agent: agentId,
+          sessionId: res.sessionId ?? "",
+          label: agentId,
+          lastMessageAt: Date.now(),
+          lastMessagePreview: (res.reply ?? "").slice(0, 200),
+        });
         if (res.reply) {
           if (!res.askedQuestion) retireStaleQuestions(get, set, agentId);
           upsertBlock(get, set, agentId, bubbleId, res.reply);
@@ -1264,6 +1355,11 @@ export const useStore = create<State>((set, get) => ({
     }
     const ws = await window.studio.loadState<Record<string, string>>("workspaces.json");
     if (ws) set({ workspaces: ws });
+
+    // After the local state, so the directory can only add threads this device
+    // does not have. Not awaited by the caller: a slow control plane must not
+    // hold up an app whose conversations are already on disk.
+    void get().syncSessions();
   },
 
   /** Write the transcript now. Cheap, and called at every point worth surviving. */

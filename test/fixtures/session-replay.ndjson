@@ -1,0 +1,10 @@
+
+{"data":{"runtime":{"agentId":"ava","agentName":"ava","eveVersion":"0.30.8","modelId":"openai/openai/gpt-5.6-sol"}},"type":"session.started","meta":{"at":"2026-08-15T17:18:55.141Z","id":"evt_01M036Y2556NGTXFPGMETM1F5J"}}
+{"data":{"sequence":0,"turnId":"turn_0"},"type":"turn.started","meta":{"at":"2026-08-15T17:18:55.141Z","id":"evt_01M036Y2556NGTXFPGMETM1F5K"}}
+{"data":{"message":"say ok","parts":[{"text":"say ok","type":"text"}],"sequence":0,"turnId":"turn_0"},"type":"message.received","meta":{"at":"2026-08-15T17:18:55.442Z","id":"evt_01M036Y2EJBNFKQRRDQ9WXNY00"}}
+{"data":{"sequence":0,"stepIndex":0,"turnId":"turn_0"},"type":"step.started","meta":{"at":"2026-08-15T17:18:55.443Z","id":"evt_01M036Y2EKKP6YTPVDCQ6Q0956"}}
+{"data":{"messageDelta":"ok","messageSoFar":"ok","sequence":0,"stepIndex":0,"turnId":"turn_0"},"type":"message.appended","meta":{"at":"2026-08-15T17:18:58.692Z","id":"evt_01M036Y5M40GPC9K7A4AYBKD0B"}}
+{"data":{"finishReason":"stop","message":"ok","sequence":0,"stepIndex":0,"turnId":"turn_0"},"type":"message.completed","meta":{"at":"2026-08-15T17:18:58.891Z","id":"evt_01M036Y5TB6AV1T2THZ7P2JK1X"}}
+{"data":{"finishReason":"stop","sequence":0,"stepIndex":0,"turnId":"turn_0","usage":{"inputTokens":13359,"outputTokens":5,"cacheReadTokens":3456,"cacheWriteTokens":0}},"type":"step.completed","meta":{"at":"2026-08-15T17:18:58.892Z","id":"evt_01M036Y5TCEEB831AT81JWASZS"}}
+{"data":{"sequence":0,"turnId":"turn_0"},"type":"turn.completed","meta":{"at":"2026-08-15T17:18:58.899Z","id":"evt_01M036Y5TKCP8ZSR8XY8JHZ8N3"}}
+{"data":{"continuationToken":"eve:d4214086-0eb4-477a-bcb8-2f7409d790e5","wait":"next-user-message"},"type":"session.waiting","meta":{"at":"2026-08-15T17:18:58.899Z","id":"evt_01M036Y5TKCP8ZSR8XY8JHZ8N4"}}

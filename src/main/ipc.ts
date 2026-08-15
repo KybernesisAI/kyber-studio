@@ -1,5 +1,6 @@
 import { ipcMain, shell, type WebContents } from "electron";
 import { loadState, pickFolder, saveState } from "./store";
+import { listSessions, recordSession, replaySession } from "./sessionIndex";
 import { type LocalMcpServer, authenticate, listServers, saveServers, testServer } from "./localMcp";
 import {
   type LocalAction,
@@ -71,6 +72,16 @@ export function registerIpc(): void {
     },
   );
   ipcMain.handle("studio:localPermissions", () => readPermissions());
+
+  ipcMain.handle("studio:listSessions", (_e, agent?: string) => listSessions(agent));
+  ipcMain.handle(
+    "studio:recordSession",
+    (_e, entry: Parameters<typeof recordSession>[0]) => recordSession(entry),
+  );
+  ipcMain.handle(
+    "studio:replaySession",
+    (_e, input: { url: string; sessionId: string; limit?: number }) => replaySession(input),
+  );
 
   ipcMain.handle("studio:loadState", (_e, name: string) => loadState(name, null));
   ipcMain.handle("studio:saveState", (_e, input: { name: string; value: unknown }) => {
