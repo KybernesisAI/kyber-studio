@@ -27,6 +27,31 @@ export interface PeerState {
  *   produces, with the call id nested inside `result`. Matching on anything
  *   looser captions a local delegation as a message from a remote agent.
  */
+/**
+ * A peer call that arrived as an ordinary tool call.
+ *
+ * When peers are DECLARED as files, eve lowers them to `remote-agent-call` and
+ * the kind is the marker. When they are DISCOVERED from a control-plane grant
+ * there is no declaration to lower, so the same conversation arrives as
+ * `kind: "tool-call"` with `toolName: "ask_<peer>"` — and the exchange panel,
+ * which keyed only on the old kind, stopped appearing the moment agents moved
+ * to discovery. The traffic was still happening; the transcript just stopped
+ * saying so, which is the worst kind of regression to notice.
+ *
+ * Deliberately narrow. The name prefix alone would caption any authored tool
+ * called `ask_anything`, so the argument shape has to match too: a peer call
+ * carries exactly one field, `message`.
+ */
+function governedPeerName(action: Record<string, unknown>): string | null {
+  if (action.kind !== "tool-call") return null;
+  const tool = typeof action.toolName === "string" ? action.toolName : "";
+  if (!tool.startsWith("ask_") || tool.length <= 4) return null;
+  const input = (action.input ?? {}) as Record<string, unknown>;
+  const keys = Object.keys(input);
+  if (keys.length !== 1 || keys[0] !== "message") return null;
+  return tool.slice(4);
+}
+
 export function readPeerEvents(
   type: string,
   data: Record<string, unknown>,
@@ -37,11 +62,12 @@ export function readPeerEvents(
   if (type === "actions.requested") {
     for (const raw of Array.isArray(data.actions) ? data.actions : []) {
       const action = raw as Record<string, unknown>;
-      if (action.kind !== "remote-agent-call") continue;
       const peer =
-        (typeof action.name === "string" && action.name) ||
-        (typeof action.remoteAgentName === "string" && action.remoteAgentName) ||
-        null;
+        action.kind === "remote-agent-call"
+          ? (typeof action.name === "string" && action.name) ||
+            (typeof action.remoteAgentName === "string" && action.remoteAgentName) ||
+            null
+          : governedPeerName(action);
       if (!peer) continue;
       const callId =
         (typeof action.callId === "string" && action.callId) ||

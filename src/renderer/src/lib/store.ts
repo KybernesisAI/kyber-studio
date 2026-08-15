@@ -118,7 +118,13 @@ function ensureListeners(
       // Peers that are also agents in this sidebar keep their own identity —
       // the same avatar and colour as their row above, so the exchange names a
       // recognisable agent rather than a generic peer.
-      const known = s.agents.find((a) => a.name.toLowerCase() === event.peer.toLowerCase());
+      // Compared loosely on purpose. A discovered peer's name reaches us via a
+      // tool name, where punctuation cannot survive — "ava-sales" arrives as
+      // "ava_sales". An exact match would leave that agent unrecognised and
+      // paint the exchange in a stranger's colour, next to its own row in the
+      // sidebar.
+      const key = (name: string): string => name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+      const known = s.agents.find((a) => key(a.name) === key(event.peer));
       const peer = {
         id: known?.id ?? event.peer,
         name: known?.name ?? event.peer,

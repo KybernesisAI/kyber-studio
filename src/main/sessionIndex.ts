@@ -39,7 +39,14 @@ export interface IndexedSession {
 /** This person's threads, newest first. Empty on any failure — never fatal. */
 export async function listSessions(agent?: string): Promise<IndexedSession[]> {
   const s = await activeSession();
-  if (!s) return [];
+  // Logged at both ends: "asked and got nothing" and "never asked" are
+  // different faults with the same symptom, and guessing between them is how
+  // an afternoon goes.
+  if (!s) {
+    console.log("[index] list skipped — no active control-plane session");
+    return [];
+  }
+  console.log(`[index] listing threads${agent ? ` for ${agent}` : ""} …`);
   try {
     const url = new URL(`${ISSUER}/api/sessions`);
     if (agent) url.searchParams.set("agent", agent);
@@ -47,12 +54,18 @@ export async function listSessions(agent?: string): Promise<IndexedSession[]> {
       headers: { authorization: `Bearer ${s.token}` },
       signal: AbortSignal.timeout(15_000),
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      console.log(`[index] list failed ${res.status}`);
+      return [];
+    }
     const body = (await res.json()) as { sessions?: IndexedSession[] };
-    return body.sessions ?? [];
-  } catch {
+    const rows = body.sessions ?? [];
+    console.log(`[index] ${rows.length} thread(s) known to this account`);
+    return rows;
+  } catch (error) {
     // A directory that cannot be reached must not stop someone using the app
     // on the machine they are already sitting at.
+    console.log(`[index] list error: ${(error as Error)?.message ?? String(error)}`);
     return [];
   }
 }
@@ -68,16 +81,34 @@ export async function recordSession(entry: {
   archived?: boolean;
 }): Promise<void> {
   const s = await activeSession();
-  if (!s) return;
+  if (!s) {
+    console.log("[index] not signed in — thread not recorded");
+    return;
+  }
   try {
-    await fetch(`${ISSUER}/api/sessions`, {
+    const res = await fetch(`${ISSUER}/api/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${s.token}` },
       body: JSON.stringify(entry),
       signal: AbortSignal.timeout(15_000),
     });
-  } catch {
-    /* the thread still works here; it just will not show up elsewhere yet */
+    /**
+     * Say when this fails.
+     *
+     * Recording is non-blocking on purpose, and the first version swallowed the
+     * outcome entirely — so a rejected call looked exactly like a working one
+     * until someone opened their other machine and found nothing there. A sync
+     * that fails quietly is worse than one that fails loudly: it costs you the
+     * trust you had in it retroactively, for every thread you assumed was safe.
+     */
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      console.log(`[index] record failed ${res.status}: ${detail.slice(0, 200)}`);
+      return;
+    }
+    console.log(`[index] recorded ${entry.agent} ${entry.sessionId.slice(0, 20)}`);
+  } catch (error) {
+    console.log(`[index] record error: ${(error as Error)?.message ?? String(error)}`);
   }
 }
 

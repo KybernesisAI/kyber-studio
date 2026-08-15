@@ -105,3 +105,63 @@ test("ordinary tool calls are ignored entirely", () => {
   assert.deepEqual(out, []);
   assert.equal(state.pending.size, 0);
 });
+
+/**
+ * A DISCOVERED peer — granted in the control plane, with no file declaring it —
+ * arrives as an ordinary tool call rather than a `remote-agent-call`. Keying
+ * only on the old kind made the exchange panel vanish the moment agents moved
+ * to discovery: the traffic still happened, the transcript stopped saying so.
+ *
+ * This fixture is a real hop between two deployed agents, captured from the
+ * stream, not hand-written.
+ */
+const governed = readFileSync(join(here, "fixtures/governed-peer.jsonl"), "utf8")
+  .split("\n")
+  .filter((l) => l.trim())
+  .map((l) => JSON.parse(l));
+
+test("a discovered peer's exchange is recognised", () => {
+  const state = { pending: new Map(), last: null };
+  const events = governed.flatMap((e) => readPeerEvents(e.type, e.data ?? {}, state));
+
+  const out = events.find((e) => e.direction === "outbound");
+  const back = events.find((e) => e.direction === "inbound");
+  assert.ok(out, "the question to the peer must appear");
+  assert.ok(back, "and so must the answer");
+  assert.equal(out.peer, "sid");
+  assert.equal(back.peer, "sid");
+  assert.match(out.text, /job/i);
+  assert.match(back.text, /chief of staff/i);
+});
+
+test("nothing is left pending once a discovered peer answers", () => {
+  const state = { pending: new Map(), last: null };
+  for (const e of governed) readPeerEvents(e.type, e.data ?? {}, state);
+  assert.equal(state.pending.size, 0);
+});
+
+test("an authored tool named ask_* is not mistaken for a peer", () => {
+  const state = { pending: new Map(), last: null };
+  // Same prefix, different argument shape — a peer call carries only `message`.
+  const events = readPeerEvents(
+    "actions.requested",
+    {
+      actions: [
+        { kind: "tool-call", toolName: "ask_question", callId: "c1", input: { prompt: "pick one", options: [] } },
+      ],
+    },
+    state,
+  );
+  assert.equal(events.length, 0);
+  assert.equal(state.pending.size, 0, "and it must not wait for an answer that is not coming");
+});
+
+test("an ordinary tool call is still ignored entirely", () => {
+  const state = { pending: new Map(), last: null };
+  const events = readPeerEvents(
+    "actions.requested",
+    { actions: [{ kind: "tool-call", toolName: "arcana_recall", callId: "c2", input: { message: "x" } }] },
+    state,
+  );
+  assert.equal(events.length, 0, "only ask_-prefixed tools are peers");
+});
