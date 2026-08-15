@@ -40,6 +40,37 @@ const streamOwners = new Map<string, string>();
  */
 const streamSpeakers = new Map<string, { id: string; name: string; accent: string }>();
 let listenersReady = false;
+let crossDeviceReady = false;
+
+/**
+ * Notice what was said on this account's other machines.
+ *
+ * Driven by ATTENTION rather than by a clock: the moment someone looks at this
+ * window is the moment a stale transcript starts being wrong, and it is also
+ * the only moment the freshness is worth anything. A window nobody is watching
+ * can be as stale as it likes for free.
+ *
+ * The slow tick behind it exists for the case attention never changes — two
+ * machines side by side, both focused-ish, one being typed into. Half a minute
+ * is far below the threshold where a conversation feels broken and far above
+ * the rate at which polling costs anything.
+ */
+function startCrossDeviceRefresh(get: () => State): void {
+  if (crossDeviceReady) return;
+  crossDeviceReady = true;
+
+  const refresh = (): void => void get().refreshFromOthers();
+
+  window.addEventListener("focus", refresh);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") refresh();
+  });
+  setInterval(() => {
+    if (document.visibilityState === "visible") refresh();
+  }, 30_000);
+
+  refresh();
+}
 
 function ensureListeners(
   get: () => State,
@@ -647,10 +678,17 @@ interface State {
   streaming: Record<string, string>;
 
   select(id: string): void;
-  /** Fetch a thread this device has never seen from the agent that holds it. */
-  hydrate(agentId: string): Promise<void>;
+  /**
+   * Read a thread from the agent that holds it.
+   *
+   * "fill" builds a conversation this device has never seen; "merge" adds only
+   * the turns that happened somewhere else.
+   */
+  hydrate(agentId: string, mode?: "fill" | "merge"): Promise<void>;
   /** Learn which threads this account has, from the control-plane directory. */
   syncSessions(): Promise<void>;
+  /** Pick up turns that happened on another device. Cheap; safe to call often. */
+  refreshFromOthers(): Promise<void>;
   setQuery(q: string): void;
   setPanel(v: PanelView): void;
   openRoutine(id: string): void;
@@ -798,30 +836,49 @@ export const useStore = create<State>((set, get) => ({
    * been talking to for a month. Anything already here is left alone, because
    * replacing a live transcript with a reconstruction can only lose detail.
    */
-  hydrate: async (agentId) => {
+  hydrate: async (agentId, mode = "fill") => {
     if (!window.studio) return;
     const sessionId = get().sessions[agentId];
     if (!sessionId) return;
-    if ((get().conversations[agentId] ?? []).length > 0) return;
+    if (mode === "fill" && (get().conversations[agentId] ?? []).length > 0) return;
     const agent = get().agents.find((a) => a.id === agentId);
     if (!agent?.url) return;
 
     const replayed = await window.studio.replaySession({ url: agent.url, sessionId });
     if (!replayed || replayed.blocks.length === 0) return;
-    // Between the check above and now, a turn may have written the first block.
-    if ((get().conversations[agentId] ?? []).length > 0) return;
+    if (mode === "fill" && (get().conversations[agentId] ?? []).length > 0) return;
+
+    /**
+     * "merge" adds what this device has not seen; "fill" builds from nothing.
+     *
+     * The difference matters because a local transcript holds things the
+     * agent's stream never described — the question cards, the connection
+     * prompts, the peer exchanges. Replacing it on every refresh would quietly
+     * strip those out, so a refresh only ever APPENDS turns that happened
+     * elsewhere, keyed on the durable event id so the same turn cannot arrive
+     * twice.
+     */
+    const existing = get().conversations[agentId] ?? [];
+    const seen = new Set(existing.map((b) => b.id));
+    const fresh = replayed.blocks
+      .filter((b) => !seen.has(b.eventId))
+      .map((b): Block => ({ kind: "text", id: b.eventId, role: b.role, text: b.text, at: b.at }));
+
+    if (mode === "merge" && fresh.length === 0) return;
+
+    const next =
+      mode === "merge"
+        ? [...existing, ...fresh].sort((a, b) => a.at - b.at)
+        : replayed.blocks.map((b): Block => ({
+            kind: "text",
+            id: b.eventId,
+            role: b.role,
+            text: b.text,
+            at: b.at,
+          }));
 
     set((s) => ({
-      conversations: {
-        ...s.conversations,
-        [agentId]: replayed.blocks.map((b): Block => ({
-          kind: "text",
-          id: b.eventId,
-          role: b.role,
-          text: b.text,
-          at: b.at,
-        })),
-      },
+      conversations: { ...s.conversations, [agentId]: next },
       // Taken from the stream rather than stored anywhere: the token is a live
       // handle to the session, and the agent is the one that knows the current
       // one.
@@ -833,6 +890,34 @@ export const useStore = create<State>((set, get) => ({
       streamIndexes: { ...s.streamIndexes, [agentId]: replayed.streamIndex },
     }));
     get().persist();
+  },
+
+  /**
+   * Pick up what was said on another device.
+   *
+   * Launch-only sync meant a machine sitting open all evening showed a stale
+   * conversation until it was quit and reopened, which is not synchronised in
+   * any sense a person would recognise.
+   *
+   * Two layers, and neither needs a push service. The AGENT already holds the
+   * conversation and streams it, and since both devices now share one session,
+   * re-reading the open thread is the whole of "live". The control plane is
+   * only asked about threads that are NEW to this device, which is rare — so
+   * it is checked on the same beat rather than on its own.
+   *
+   * Only while the window is focused. A background window polling every half
+   * minute is a battery cost paid for nothing: nobody is reading it, and the
+   * moment they look, focus fires.
+   */
+  refreshFromOthers: async () => {
+    if (!window.studio) return;
+    await get().syncSessions();
+    const active = get().activeAgentId;
+    // The open conversation only. Refreshing every thread would multiply the
+    // cost by the size of the sidebar to update something nobody is looking at.
+    if (active && !isRoomId(active) && !get().inflight[active]) {
+      await get().hydrate(active, "merge");
+    }
   },
 
   setQuery: (query) => set({ query }),
@@ -1448,6 +1533,7 @@ export const useStore = create<State>((set, get) => ({
       await get().restore();
 
       await get().refreshAgents();
+      startCrossDeviceRefresh(get);
     } catch (e) {
       set({ authState: "signed-out", authError: e instanceof Error ? e.message : String(e) });
     }

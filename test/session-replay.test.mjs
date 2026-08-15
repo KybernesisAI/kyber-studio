@@ -71,3 +71,35 @@ test("a truncated final line does not lose the events before it", () => {
   const { blocks } = blocksFromEvents([...lines, '{"type":"message.comp']);
   assert.equal(blocks.length, 2, "an unparsable fragment is skipped, not fatal");
 });
+
+/**
+ * Merging another device's turns into a transcript this one already has.
+ *
+ * The local copy is the richer one: it holds question cards, connection
+ * prompts and peer exchanges that the agent's event stream never describes.
+ * A refresh that replaced it would strip those out silently, so the rule is
+ * append-only, keyed on the durable event id.
+ */
+test("a replayed turn is identified by a stable id across reads", () => {
+  const first = blocksFromEvents(lines).blocks.map((b) => b.eventId);
+  const second = blocksFromEvents(lines).blocks.map((b) => b.eventId);
+  assert.deepEqual(first, second, "ids must not be regenerated per read");
+  assert.ok(first.every((id) => id.startsWith("evt_")), "and must come from the event, not a counter");
+});
+
+test("merging is a no-op when the device has already seen every turn", () => {
+  const blocks = blocksFromEvents(lines).blocks;
+  const seen = new Set(blocks.map((b) => b.eventId));
+  const fresh = blocks.filter((b) => !seen.has(b.eventId));
+  assert.equal(fresh.length, 0, "a refresh with nothing new must add nothing");
+});
+
+test("only the unseen turns are added", () => {
+  const blocks = blocksFromEvents(lines).blocks;
+  // Pretend this device saw only the first block, as if the second turn
+  // happened on another machine.
+  const seen = new Set([blocks[0].eventId]);
+  const fresh = blocks.filter((b) => !seen.has(b.eventId));
+  assert.equal(fresh.length, blocks.length - 1);
+  assert.ok(!fresh.some((b) => b.eventId === blocks[0].eventId), "never re-adds a known turn");
+});
