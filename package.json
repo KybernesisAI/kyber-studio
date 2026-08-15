@@ -1,6 +1,6 @@
 {
   "name": "kyber-studio",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "KYBER Studio — the desktop door to your Kybernesis agents.",
   "main": "./out/main/index.js",
   "author": "Kybernesis",
