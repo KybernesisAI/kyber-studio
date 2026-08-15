@@ -38,6 +38,9 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
     }[];
   } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  /** Which service is having a second account named, and what it is called. */
+  const [naming, setNaming] = useState<string | null>(null);
+  const [label, setLabel] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const refresh = async (): Promise<void> => {
@@ -81,17 +84,17 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
   /**
    * Connect a second account of a service already connected.
    *
-   * The name is asked for BEFORE the sign-in redirect rather than after,
-   * because afterwards the person is in a browser tab and the app has no
-   * moment to ask — and an account that arrives unnamed shows up as
-   * "account 2", which is exactly the ambiguity this exists to remove.
+   * The name is collected BEFORE the sign-in redirect, because afterwards the
+   * person is in a browser tab and the app has no moment to ask — and an
+   * account that arrives unnamed shows up as "account 2", which is exactly the
+   * ambiguity this exists to remove.
+   *
+   * Asked with a real input rather than `window.prompt`, which Electron does
+   * not implement: it returns nothing, the handler reads that as "cancelled",
+   * and the button becomes a no-op that looks like a dead feature rather than
+   * a missing dialog.
    */
-  const addAnother = async (slug: string, name: string): Promise<void> => {
-    const label = window.prompt(
-      `Name this ${name} account so its tools can be told apart — "work", "personal", the address:`,
-      "",
-    );
-    if (label === null) return;
+  const addAnother = async (slug: string, label: string): Promise<void> => {
     const trimmed = label.trim();
     if (!trimmed) {
       setError("A second account needs a name, or nothing can tell the two apart.");
@@ -102,6 +105,8 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
     try {
       const res = await window.studio!.connectService({ agent, slug, label: trimmed });
       if (!res.ok) setError(res.error ?? "That did not work.");
+      setNaming(null);
+      setLabel("");
       await refresh();
     } finally {
       setBusy(null);
@@ -138,6 +143,35 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
               <span className="pl__added">
                 <Spinner /> Working
               </span>
+            ) : c.connected && naming === c.slug ? (
+              <div className="pl__actions">
+                <input
+                  className="input"
+                  value={label}
+                  autoFocus
+                  placeholder="work, personal, an address…"
+                  onChange={(e) => setLabel(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void addAnother(c.slug, label);
+                    if (e.key === "Escape") {
+                      setNaming(null);
+                      setLabel("");
+                    }
+                  }}
+                />
+                <button className="btn btn--primary" onClick={() => void addAnother(c.slug, label)}>
+                  Connect
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    setNaming(null);
+                    setLabel("");
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
             ) : c.connected ? (
               <div className="pl__actions">
                 {/*
@@ -150,7 +184,10 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
                 <button
                   className="btn"
                   title="Connect another account of this service"
-                  onClick={() => void addAnother(c.slug, c.name)}
+                  onClick={() => {
+                    setNaming(c.slug);
+                    setLabel("");
+                  }}
                 >
                   Add another
                 </button>
