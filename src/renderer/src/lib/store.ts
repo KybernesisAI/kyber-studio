@@ -743,13 +743,50 @@ export const useStore = create<State>((set, get) => ({
     if (!window.studio) return;
     const indexed = await window.studio.listSessions();
     if (indexed.length === 0) return;
-    set((s) => {
-      const sessions = { ...s.sessions };
-      for (const entry of indexed) {
-        if (!sessions[entry.agent]) sessions[entry.agent] = entry.sessionId;
-      }
-      return { sessions };
-    });
+
+    for (const entry of indexed) {
+      const localSession = get().sessions[entry.agent];
+      if (localSession === entry.sessionId) continue;
+
+      /**
+       * Adopt the account's thread when it is the more recent one.
+       *
+       * The first version only filled in agents this device had never used —
+       * which sounds conservative and is useless: every device that has ever
+       * talked to an agent already has a session for it, so the directory was
+       * fetched, read, and ignored. Sync appeared to do nothing at all unless
+       * you were on a fresh install, which was the only case ever tested.
+       *
+       * Worse, each device MINTED ITS OWN session on first message, so two
+       * machines held two threads with the same agent and neither would ever
+       * converge. Continuing the same conversation somewhere else — the whole
+       * point — requires actually taking the other session over.
+       *
+       * The trade: this device's view of the older thread is replaced. Nothing
+       * is destroyed, because that session is still durable on the agent, but
+       * it is no longer what this agent's chat shows.
+       */
+      const local = get().conversations[entry.agent] ?? [];
+      const localAt = local.length ? Math.max(...local.map((b) => b.at)) : 0;
+      const remoteAt = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
+      if (localSession && localAt >= remoteAt) continue;
+
+      set((s) => {
+        const continuations = { ...s.continuations };
+        const streamIndexes = { ...s.streamIndexes };
+        // Both belong to the session being replaced; carrying them over would
+        // post the next message into a thread this device is no longer on.
+        delete continuations[entry.agent];
+        delete streamIndexes[entry.agent];
+        return {
+          sessions: { ...s.sessions, [entry.agent]: entry.sessionId },
+          conversations: { ...s.conversations, [entry.agent]: [] },
+          continuations,
+          streamIndexes,
+        };
+      });
+      await get().hydrate(entry.agent);
+    }
     get().persist();
   },
 
