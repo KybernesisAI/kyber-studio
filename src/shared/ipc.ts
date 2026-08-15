@@ -128,7 +128,12 @@ export interface StudioApi {
       connected: boolean;
     }[];
   }>;
-  connectService(input: { agent: string; slug: string }): Promise<{ ok: boolean; error?: string }>;
+  connectService(input: {
+    agent: string;
+    slug: string;
+    /** Names a SECOND account of a service, so its tools can be told apart. */
+    label?: string;
+  }): Promise<{ ok: boolean; error?: string }>;
   disconnectService(input: {
     agent: string;
     slug: string;

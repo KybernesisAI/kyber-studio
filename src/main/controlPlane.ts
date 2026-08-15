@@ -1361,6 +1361,12 @@ export async function listConnectors(
 export async function connectService(input: {
   agent: string;
   slug: string;
+  /**
+   * What to call this account when the person already has one of this service.
+   * It becomes the suffix on the tool names, so an agent can be told which
+   * mailbox to send from rather than picking whichever the broker defaults to.
+   */
+  label?: string;
 }): Promise<{ ok: boolean; error?: string }> {
   const s = await activeSession();
   if (!s?.bundle) return { ok: false, error: "Not signed in." };

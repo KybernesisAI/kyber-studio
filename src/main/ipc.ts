@@ -111,7 +111,7 @@ export function registerIpc(): void {
   ipcMain.handle("studio:connectors", (_e, agent: string) => listConnectors(agent));
   ipcMain.handle(
     "studio:connectService",
-    (_e, input: { agent: string; slug: string }) => connectService(input),
+    (_e, input: { agent: string; slug: string; label?: string }) => connectService(input),
   );
   ipcMain.handle(
     "studio:disconnectService",

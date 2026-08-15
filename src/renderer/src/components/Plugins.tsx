@@ -78,6 +78,36 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
     }
   };
 
+  /**
+   * Connect a second account of a service already connected.
+   *
+   * The name is asked for BEFORE the sign-in redirect rather than after,
+   * because afterwards the person is in a browser tab and the app has no
+   * moment to ask — and an account that arrives unnamed shows up as
+   * "account 2", which is exactly the ambiguity this exists to remove.
+   */
+  const addAnother = async (slug: string, name: string): Promise<void> => {
+    const label = window.prompt(
+      `Name this ${name} account so its tools can be told apart — "work", "personal", the address:`,
+      "",
+    );
+    if (label === null) return;
+    const trimmed = label.trim();
+    if (!trimmed) {
+      setError("A second account needs a name, or nothing can tell the two apart.");
+      return;
+    }
+    setBusy(slug);
+    setError(null);
+    try {
+      const res = await window.studio!.connectService({ agent, slug, label: trimmed });
+      if (!res.ok) setError(res.error ?? "That did not work.");
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <>
       {error ? <div className="modal__banner modal__banner--error">{error}</div> : null}
@@ -109,9 +139,25 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
                 <Spinner /> Working
               </span>
             ) : c.connected ? (
-              <button className="btn" onClick={() => void act(c.slug, true, c.scope === "app")}>
-                Disconnect
-              </button>
+              <div className="pl__actions">
+                {/*
+                 * A second account of a service someone already uses — a work
+                 * and a personal mailbox, two Slack workspaces. It has to be
+                 * named, because both produce identical tools and the agent
+                 * would otherwise act as whichever the broker prefers, with no
+                 * way for anyone to tell which that was.
+                 */}
+                <button
+                  className="btn"
+                  title="Connect another account of this service"
+                  onClick={() => void addAnother(c.slug, c.name)}
+                >
+                  Add another
+                </button>
+                <button className="btn" onClick={() => void act(c.slug, true, c.scope === "app")}>
+                  Disconnect
+                </button>
+              </div>
             ) : (
               <button className="btn btn--primary" onClick={() => void act(c.slug, false, false)}>
                 Connect
