@@ -1394,6 +1394,8 @@ export async function disconnectService(input: {
   agent: string;
   slug: string;
   shared?: boolean;
+  /** One account, when the service has more than one connected. */
+  account?: string;
 }): Promise<{ ok: boolean; error?: string }> {
   const s = await activeSession();
   if (!s?.bundle) return { ok: false, error: "Not signed in." };

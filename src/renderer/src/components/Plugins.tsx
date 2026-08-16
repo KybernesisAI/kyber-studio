@@ -35,12 +35,12 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
       mark?: string;
       logo?: string;
       connected: boolean;
+      accounts?: { id: string; label: string | null; status: string }[];
     }[];
   } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  /** Which service is having a second account named, and what it is called. */
-  const [naming, setNaming] = useState<string | null>(null);
-  const [label, setLabel] = useState("");
+  /** The connector whose accounts are open, if any. */
+  const [open, setOpen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = async (): Promise<void> => {
@@ -81,37 +81,20 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
     }
   };
 
-  /**
-   * Connect a second account of a service already connected.
-   *
-   * The name is collected BEFORE the sign-in redirect, because afterwards the
-   * person is in a browser tab and the app has no moment to ask — and an
-   * account that arrives unnamed shows up as "account 2", which is exactly the
-   * ambiguity this exists to remove.
-   *
-   * Asked with a real input rather than `window.prompt`, which Electron does
-   * not implement: it returns nothing, the handler reads that as "cancelled",
-   * and the button becomes a no-op that looks like a dead feature rather than
-   * a missing dialog.
-   */
-  const addAnother = async (slug: string, label: string): Promise<void> => {
-    const trimmed = label.trim();
-    if (!trimmed) {
-      setError("A second account needs a name, or nothing can tell the two apart.");
-      return;
-    }
-    setBusy(slug);
-    setError(null);
-    try {
-      const res = await window.studio!.connectService({ agent, slug, label: trimmed });
-      if (!res.ok) setError(res.error ?? "That did not work.");
-      setNaming(null);
-      setLabel("");
-      await refresh();
-    } finally {
-      setBusy(null);
-    }
-  };
+  // An open connector takes over this pane. Seeing accounts, naming a new one
+  // and removing the right one are three actions with state of their own, and
+  // squeezing them beside a description is what broke the library's layout.
+  const opened = open ? shown.find((c) => c.slug === open) : null;
+  if (opened) {
+    return (
+      <ConnectorDetail
+        agent={agent}
+        connector={opened}
+        onBack={() => setOpen(null)}
+        onChanged={refresh}
+      />
+    );
+  }
 
   return (
     <>
@@ -143,58 +126,13 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
               <span className="pl__added">
                 <Spinner /> Working
               </span>
-            ) : c.connected && naming === c.slug ? (
-              <div className="pl__actions">
-                <input
-                  className="input"
-                  value={label}
-                  autoFocus
-                  placeholder="work, personal, an address…"
-                  onChange={(e) => setLabel(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void addAnother(c.slug, label);
-                    if (e.key === "Escape") {
-                      setNaming(null);
-                      setLabel("");
-                    }
-                  }}
-                />
-                <button className="btn btn--primary" onClick={() => void addAnother(c.slug, label)}>
-                  Connect
-                </button>
-                <button
-                  className="btn"
-                  onClick={() => {
-                    setNaming(null);
-                    setLabel("");
-                  }}
-                >
-                  Cancel
-                </button>
-              </div>
             ) : c.connected ? (
-              <div className="pl__actions">
-                {/*
-                 * A second account of a service someone already uses — a work
-                 * and a personal mailbox, two Slack workspaces. It has to be
-                 * named, because both produce identical tools and the agent
-                 * would otherwise act as whichever the broker prefers, with no
-                 * way for anyone to tell which that was.
-                 */}
-                <button
-                  className="btn"
-                  title="Connect another account of this service"
-                  onClick={() => {
-                    setNaming(c.slug);
-                    setLabel("");
-                  }}
-                >
-                  Add another
-                </button>
-                <button className="btn" onClick={() => void act(c.slug, true, c.scope === "app")}>
-                  Disconnect
-                </button>
-              </div>
+              // One button, one screen. Managing accounts — seeing them, naming
+              // a new one, removing the right one — does not fit on a row, and
+              // squeezing it there is what broke the library's layout.
+              <button className="btn" onClick={() => setOpen(c.slug)}>
+                Manage{c.accounts && c.accounts.length > 1 ? ` (${c.accounts.length})` : ""}
+              </button>
             ) : (
               <button className="btn btn--primary" onClick={() => void act(c.slug, false, false)}>
                 Connect
@@ -204,6 +142,159 @@ function AppsTab({ agent, query }: { agent: string; query: string }): ReactNode 
         ))}
       </div>
     </>
+  );
+}
+
+
+/**
+ * One service, and every account behind it.
+ *
+ * This exists because a card could only say "connected" — a boolean that
+ * cannot describe two mailboxes, and cannot say which of them failed. With
+ * only that to look at, the way to find out what an agent could actually
+ * reach was to ASK THE AGENT, which is a question the app should be able to
+ * answer about itself.
+ *
+ * A screen rather than a row: seeing accounts, naming a new one, and removing
+ * the right one are three actions with state, and squeezing them beside a
+ * description is what broke the library's layout.
+ */
+function ConnectorDetail({
+  agent,
+  connector,
+  onBack,
+  onChanged,
+}: {
+  agent: string;
+  connector: {
+    slug: string;
+    name: string;
+    description?: string;
+    scope: string;
+    needsAdmin: boolean;
+    accounts?: { id: string; label: string | null; status: string }[];
+  };
+  onBack: () => void;
+  onChanged: () => Promise<void>;
+}): ReactNode {
+  const [label, setLabel] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const accounts = connector.accounts ?? [];
+
+  const run = async (what: string, fn: () => Promise<{ ok: boolean; error?: string }>) => {
+    setBusy(what);
+    setError(null);
+    try {
+      const res = await fn();
+      if (!res.ok) setError(res.error ?? "That did not work.");
+      await onChanged();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="cd">
+      <button className="cd__back" onClick={onBack}>
+        <Icon name="chevron-left" size={14} /> All apps
+      </button>
+
+      <div className="cd__head">
+        <div className="cd__title">{connector.name}</div>
+        <div className="cd__desc">{connector.description}</div>
+        <div className="pl__meta">
+          {connector.scope === "app" ? "Connects for the company" : "Connects as you"}
+          {connector.needsAdmin ? " · an admin must approve" : ""}
+        </div>
+      </div>
+
+      <div className="pl__group">Connected accounts</div>
+      {accounts.length === 0 ? (
+        <div className="empty">Nothing connected yet.</div>
+      ) : (
+        <div className="cd__list">
+          {accounts.map((a) => (
+            <div className="cd__acct" key={a.id}>
+              <div className="cd__acctName">{a.label ?? connector.name}</div>
+              {/*
+                * Status is shown per account, always. A connection that failed
+                * at the provider — an admin policy, a denied consent — looks
+                * exactly like a working one from outside, and the person who
+                * added it deserves to see which is which without interrogating
+                * the agent.
+                */}
+              <div className={`cd__status cd__status--${a.status}`}>{a.status}</div>
+              <div className="cd__acctActions">
+                {a.status !== "active" ? (
+                  <button
+                    className="btn"
+                    disabled={busy !== null}
+                    onClick={() =>
+                      void run(a.id, () =>
+                        window.studio!.connectService({ agent, slug: connector.slug, label: a.label ?? undefined }),
+                      )
+                    }
+                  >
+                    Re-authorize
+                  </button>
+                ) : null}
+                <button
+                  className="btn"
+                  disabled={busy !== null}
+                  onClick={() =>
+                    void run(a.id, () =>
+                      window.studio!.disconnectService({
+                        agent,
+                        slug: connector.slug,
+                        shared: connector.scope === "app",
+                        account: a.id,
+                      }),
+                    )
+                  }
+                >
+                  {busy === a.id ? "Working…" : "Remove"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="pl__group">Add an account</div>
+      <div className="cd__add">
+        <input
+          className="input"
+          value={label}
+          placeholder={accounts.length ? "work, personal, an address…" : "a name for this account"}
+          onChange={(e) => setLabel(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && label.trim()) {
+              void run("add", () =>
+                window.studio!.connectService({ agent, slug: connector.slug, label: label.trim() }),
+              ).then(() => setLabel(""));
+            }
+          }}
+        />
+        <button
+          className="btn btn--primary"
+          disabled={!label.trim() || busy !== null}
+          onClick={() =>
+            void run("add", () =>
+              window.studio!.connectService({ agent, slug: connector.slug, label: label.trim() }),
+            ).then(() => setLabel(""))
+          }
+        >
+          {busy === "add" ? "Opening…" : "Connect"}
+        </button>
+      </div>
+      <div className="pl__meta cd__hint">
+        Sign-in opens in your browser. Name it first — two accounts of one service produce the same
+        tools, and the name is how the agent is told which to act as.
+      </div>
+
+      {error ? <div className="modal__banner modal__banner--error">{error}</div> : null}
+    </div>
   );
 }
 

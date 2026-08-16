@@ -115,7 +115,8 @@ export function registerIpc(): void {
   );
   ipcMain.handle(
     "studio:disconnectService",
-    (_e, input: { agent: string; slug: string; shared?: boolean }) => disconnectService(input),
+    (_e, input: { agent: string; slug: string; shared?: boolean; account?: string }) =>
+      disconnectService(input),
   );
 
   ipcMain.handle(

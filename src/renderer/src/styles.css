@@ -904,3 +904,43 @@ input, textarea { font: inherit; color: inherit; }
   gap: 6px;
   align-items: center;
 }
+
+/* ── One connector, and every account behind it ──────────────────────────────
+   A screen rather than a row: a card could only say "connected", which cannot
+   describe two mailboxes and cannot say which of them failed. */
+.cd { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cd__back {
+  align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: none; border: 0; cursor: pointer;
+  color: var(--muted); font: inherit; font-size: 13px;
+  padding: 4px 6px 4px 0; margin-bottom: 6px;
+}
+.cd__back:hover { color: var(--text); }
+.cd__head { margin-bottom: 10px; }
+.cd__title { font-size: 17px; font-weight: 600; }
+.cd__desc { color: var(--muted); font-size: 13px; margin-top: 2px; }
+
+.cd__list { display: flex; flex-direction: column; gap: 2px; }
+.cd__acct {
+  display: flex; align-items: center; gap: 11px;
+  padding: 9px 8px; border-radius: 10px; min-width: 0;
+}
+.cd__acct:hover { background: var(--hover); }
+.cd__acctName { flex: 1; min-width: 0; font-size: 14px; }
+.cd__acctActions { display: flex; gap: 6px; flex: none; }
+.cd__acct .btn { height: 27px; padding: 0 14px; border-radius: 999px; }
+
+/* Status earns a colour only when it is not the ordinary case: green for every
+   working account is noise, red for a broken one is the whole point. */
+.cd__status {
+  flex: none; font-size: 12px; color: var(--muted);
+  text-transform: lowercase;
+}
+.cd__status--failed, .cd__status--revoked { color: var(--danger, #e5534b); }
+.cd__status--pending { color: var(--warn, #d29922); }
+
+.cd__add { display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+.cd__add .input { flex: 1; min-width: 0; }
+.cd__add .btn { flex: none; height: 30px; padding: 0 16px; border-radius: 999px; }
+.cd__hint { margin-top: 8px; max-width: 62ch; }

@@ -135,6 +135,8 @@ export interface StudioApi {
     label?: string;
   }): Promise<{ ok: boolean; error?: string }>;
   disconnectService(input: {
+    /** One account, when the service has more than one connected. */
+    account?: string;
     agent: string;
     slug: string;
     shared?: boolean;
