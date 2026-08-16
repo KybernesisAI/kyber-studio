@@ -13,6 +13,8 @@ export interface ReplayedBlock {
   at: number;
   /** The event's durable id, so replaying twice cannot duplicate a bubble. */
   eventId: string;
+  /** The turn it belongs to; a later answer in the same turn replaces it. */
+  turnId?: string;
 }
 
 /**
@@ -62,7 +64,25 @@ export function blocksFromEvents(lines: string[], limit = Number.POSITIVE_INFINI
       if (data.finishReason === "tool-calls") continue;
       if (seen.has(id)) continue;
       seen.add(id);
-      blocks.push({ role: "agent", text: data.message, at, eventId: id });
+      /**
+       * One answer per turn: a later final message REPLACES an earlier one.
+       *
+       * An agent can end a turn twice — two `message.completed` events with
+       * finishReason "stop", seconds apart, both durable. Live, the second
+       * overwrites the first because they share a bubble, so a person sees one
+       * answer. Replayed, each event became its own block and the same turn
+       * showed two near-identical answers, which reads as the agent repeating
+       * itself and as a bug in sync. Sync only revealed it.
+       *
+       * Matching the live rule keeps the two views of one conversation
+       * identical, which matters more than preserving an event the app has
+       * never shown. Whether the agent SHOULD end a turn twice is a separate
+       * question, and not one a transcript reader can answer.
+       */
+      const openTurn = typeof data.turnId === "string" ? data.turnId : null;
+      const previous = openTurn === null ? -1 : blocks.findIndex((b) => b.turnId === openTurn && b.role === "agent");
+      if (previous >= 0) blocks.splice(previous, 1);
+      blocks.push({ role: "agent", text: data.message, at, eventId: id, turnId: openTurn ?? undefined });
     } else if (event.type === "message.received") {
       const text = typeof data.message === "string" ? data.message : "";
       if (!text || seen.has(id)) continue;

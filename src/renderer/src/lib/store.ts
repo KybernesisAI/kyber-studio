@@ -721,7 +721,9 @@ interface State {
   deleteSchedule(agentId: string, name: string): Promise<boolean>;
   setWorkspace(agentId: string, path: string | null): void;
   chooseWorkspace(agentId: string): Promise<void>;
-  signIn(onCode: (code: string) => void): Promise<boolean>;
+  signIn(onCode: (code: string, verificationUri?: string) => void): Promise<boolean>;
+  /** Abandon a sign-in that is still waiting, so a new code can be requested. */
+  cancelSignIn(): Promise<void>;
   signOut(): Promise<void>;
 }
 
@@ -1630,12 +1632,19 @@ export const useStore = create<State>((set, get) => ({
     }));
   },
 
+  cancelSignIn: async () => {
+    // Clears the error too: abandoning a wait is a choice, not a fault, and
+    // leaving "sign-in cancelled" on screen reads as something going wrong.
+    await window.studio?.cancelSignIn();
+    set({ authError: null });
+  },
+
   signIn: async (onCode) => {
     if (!window.studio) return false;
     set({ authError: null });
     try {
-      const { userCode } = await window.studio.signIn();
-      onCode(userCode);
+      const { userCode, verificationUri } = await window.studio.signIn();
+      onCode(userCode, verificationUri);
       const session = await window.studio.awaitSignIn();
       set({
         authState: "signed-in",
@@ -1646,7 +1655,11 @@ export const useStore = create<State>((set, get) => ({
       await get().refreshAgents();
       return true;
     } catch (e) {
-      set({ authError: e instanceof Error ? e.message : String(e) });
+      const message = e instanceof Error ? e.message : String(e);
+      // A cancellation travels as an error because that is how an abandoned
+      // await unwinds; it is not one, and reporting it would make starting
+      // again look like a failure.
+      set({ authError: /sign-in cancelled/i.test(message) ? null : message });
       return false;
     }
   },

@@ -29,6 +29,7 @@ import {
   signOut,
   testRemoteMcp,
   startDeviceAuth,
+  cancelDeviceAuth,
 } from "./controlPlane";
 
 /**
@@ -45,6 +46,11 @@ export function registerIpc(): void {
   ipcMain.handle("studio:signIn", async () => {
     pending = await startDeviceAuth();
     return { userCode: pending.userCode, verificationUri: pending.verificationUri };
+  });
+
+  ipcMain.handle("studio:cancelSignIn", () => {
+    cancelDeviceAuth();
+    pending = null;
   });
 
   ipcMain.handle("studio:awaitSignIn", async () => {

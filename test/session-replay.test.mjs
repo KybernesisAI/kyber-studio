@@ -103,3 +103,59 @@ test("only the unseen turns are added", () => {
   assert.equal(fresh.length, blocks.length - 1);
   assert.ok(!fresh.some((b) => b.eventId === blocks[0].eventId), "never re-adds a known turn");
 });
+
+/**
+ * An agent can end one turn twice — two finalized messages, seconds apart,
+ * both durable, both finishReason "stop". Live they share a bubble so the
+ * second overwrites the first and a person sees one answer; replayed, each
+ * became its own block and the turn appeared to have been answered twice.
+ * Captured from a real session on 2026-08-16.
+ */
+const twoFinals = [
+  JSON.stringify({
+    type: "message.received",
+    data: { message: "go through my latest emails", turnId: "turn_9" },
+    meta: { id: "evt_u", at: "2026-08-16T15:35:28.000Z" },
+  }),
+  JSON.stringify({
+    type: "message.completed",
+    data: { message: "First answer.", finishReason: "stop", turnId: "turn_9" },
+    meta: { id: "evt_a1", at: "2026-08-16T15:36:53.000Z" },
+  }),
+  JSON.stringify({
+    type: "message.completed",
+    data: { message: "Second, fuller answer.", finishReason: "stop", turnId: "turn_9" },
+    meta: { id: "evt_a2", at: "2026-08-16T15:36:55.000Z" },
+  }),
+];
+
+test("a turn answered twice shows its last answer, once", () => {
+  const { blocks } = blocksFromEvents(twoFinals);
+  const answers = blocks.filter((b) => b.role === "agent");
+  assert.equal(answers.length, 1, "the transcript must not repeat the turn");
+  assert.equal(answers[0].text, "Second, fuller answer.", "the later answer supersedes");
+});
+
+test("separate turns keep their own answers", () => {
+  const two = [
+    ...twoFinals,
+    JSON.stringify({
+      type: "message.completed",
+      data: { message: "A different turn.", finishReason: "stop", turnId: "turn_10" },
+      meta: { id: "evt_b1", at: "2026-08-16T15:40:00.000Z" },
+    }),
+  ];
+  const answers = blocksFromEvents(two).blocks.filter((b) => b.role === "agent");
+  assert.equal(answers.length, 2, "collapsing must be per turn, never across turns");
+});
+
+test("an answer with no turn id is still kept", () => {
+  const noTurn = [
+    JSON.stringify({
+      type: "message.completed",
+      data: { message: "Answer.", finishReason: "stop" },
+      meta: { id: "evt_x", at: "2026-08-16T15:36:53.000Z" },
+    }),
+  ];
+  assert.equal(blocksFromEvents(noTurn).blocks.length, 1, "absent turn ids must not drop content");
+});

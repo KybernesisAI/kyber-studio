@@ -89,6 +89,8 @@ export interface LocalAsk {
 export interface StudioApi {
   session(): Promise<Session | null>;
   signIn(): Promise<{ userCode: string; verificationUri: string }>;
+  /** Abandon a sign-in that is still waiting, so a new code can be requested. */
+  cancelSignIn(): Promise<void>;
   awaitSignIn(): Promise<Session>;
   signOut(): Promise<void>;
   listAgents(): Promise<RemoteAgent[]>;

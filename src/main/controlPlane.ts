@@ -1,4 +1,4 @@
-import { Client, ClientError } from "eve/client";
+import { Client, ClientError, type MessageResponse } from "eve/client";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -130,12 +130,42 @@ export async function startDeviceAuth(): Promise<DeviceStart> {
 }
 
 /** Poll until the user approves in the browser, the code expires, or we are told to stop. */
+/**
+ * Abandon a sign-in that is still waiting.
+ *
+ * The code is valid for ten minutes, and until now those ten minutes were
+ * unconditional: open the wrong browser profile and there was nothing to do but
+ * watch a screen that could not succeed. Cancelling has to reach the POLL, not
+ * just the window — a loop left running would go on holding the old code and
+ * could sign the app in from an approval the person had already given up on.
+ */
+let deviceAbort: AbortController | null = null;
+export function cancelDeviceAuth(): void {
+  deviceAbort?.abort();
+  deviceAbort = null;
+}
+
+/** Thrown when the person asked to start again; not a failure worth reporting. */
+export const SIGN_IN_CANCELLED = "sign-in cancelled";
+
 export async function pollDeviceAuth(start: DeviceStart): Promise<Session> {
   const deadline = Date.now() + start.expiresIn * 1000;
   let interval = start.interval * 1000;
+  const abort = new AbortController();
+  deviceAbort = abort;
 
   while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, interval));
+    if (abort.signal.aborted) throw new Error(SIGN_IN_CANCELLED);
+    // Wake early when cancelled, rather than finishing a five-second sleep the
+    // person is watching.
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, interval);
+      abort.signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        resolve();
+      }, { once: true });
+    });
+    if (abort.signal.aborted) throw new Error(SIGN_IN_CANCELLED);
     const res = await fetch(`${ISSUER}/api/oauth/token`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -760,11 +790,13 @@ export async function sendTurn(input: {
     : 0;
 
   console.log(`[send] resume=${resumeAt}`);
-  let session = clientFor(base).session({
-    sessionId: input.sessionId,
-    continuationToken: input.continuationToken,
-    streamIndex: resumeAt,
-  });
+  // Sessions are ID-addressed: attach to one we already have, or let the first
+  // message create it. Nothing is carried between turns except the id and the
+  // cursor, so there is no longer a token that can go stale and make a live
+  // session refuse an otherwise valid turn.
+  let session = input.sessionId
+    ? clientFor(base).sessions.attach(input.sessionId, { streamIndex: resumeAt })
+    : null;
 
   let reply = "";
   let askedQuestion = false;
@@ -782,7 +814,7 @@ export async function sendTurn(input: {
    * pre-turn position — re-creating the very drift this is meant to avoid.
    */
   const publishCursor = (): void => {
-    const at = session.state.streamIndex;
+    const at = session?.state.streamIndex;
     if (typeof at === "number") input.onCursor(at);
   };
 
@@ -810,17 +842,28 @@ export async function sendTurn(input: {
    */
   const dispatchGuard = setTimeout(() => abandon.abort(), 45_000);
 
-  const dispatch = async () =>
-    await session.send({
-      signal: abandon.signal,
-      // A resumed turn may carry only answers, with no new message.
-      ...(input.text ? { message: input.text } : {}),
-      ...(input.inputResponses?.length ? { inputResponses: input.inputResponses } : {}),
-      // Serialized here rather than passed as an object: eve JSON-serializes it
-      // into one user-role context message either way, and a string keeps this
-      // code free of the framework's internal JSON types.
-      ...(input.clientContext ? { clientContext: JSON.stringify(input.clientContext) } : {}),
-    });
+  // A message and a set of answers are mutually exclusive now: `send` carries
+  // new text, `respond` carries answers to a question the agent already asked.
+  // Serialized clientContext rather than an object: eve JSON-serializes it into
+  // one user-role context message either way, and a string keeps this code free
+  // of the framework's internal JSON types.
+  const options = {
+    signal: abandon.signal,
+    ...(input.clientContext ? { clientContext: JSON.stringify(input.clientContext) } : {}),
+  };
+
+  const dispatch = async (): Promise<MessageResponse> => {
+    // A resumed turn may carry only answers, with no new message. That can only
+    // happen on a session we are already attached to — there is nothing to
+    // answer in a conversation that does not exist yet.
+    if (input.inputResponses?.length && session) {
+      return await session.respond(input.inputResponses, options);
+    }
+    if (session) return await session.send(input.text, options);
+    const created = await clientFor(base).sessions.create({ message: input.text, ...options });
+    session = created.session;
+    return created.response;
+  };
 
   let response: Awaited<ReturnType<typeof dispatch>>;
   try {
@@ -845,7 +888,7 @@ export async function sendTurn(input: {
         // is ours and stays on screen; only the agent's thread restarts, which
         // is the same thing Reset does and does not need a person to ask for it.
         console.log("[send] session gone; starting a fresh one");
-        session = clientFor(base).session({ streamIndex: 0 });
+        session = null;
         response = await dispatch();
       } else {
         throw error;
@@ -863,8 +906,8 @@ export async function sendTurn(input: {
     clearTimeout(dispatchGuard);
   }
 
-  console.log(`[send] dispatched session=${session.state.sessionId ?? "?"}`);
-  if (session.state.sessionId) {
+  console.log(`[send] dispatched session=${session?.state.sessionId ?? "?"}`);
+  if (session?.state.sessionId) {
     input.onTurn?.({ sessionId: session.state.sessionId });
   }
 
@@ -881,7 +924,7 @@ export async function sendTurn(input: {
     silenceTimer = setTimeout(() => {
       silent = true;
       // Ask the agent to stop, then stop listening regardless of the answer.
-      void session.cancel({ ...(turnId ? { turnId } : {}) }).catch(() => undefined);
+      void session?.cancel({ ...(turnId ? { turnId } : {}) }).catch(() => undefined);
       abandon.abort();
     }, SILENCE_LIMIT_MS);
   };
@@ -899,7 +942,7 @@ export async function sendTurn(input: {
 
       if (typeof data.turnId === "string" && data.turnId !== turnId) {
         turnId = data.turnId;
-        if (session.state.sessionId) {
+        if (session?.state.sessionId) {
           input.onTurn?.({ sessionId: session.state.sessionId, turnId });
         }
       }
@@ -1029,9 +1072,8 @@ export async function sendTurn(input: {
 
   return {
     reply: reply.trim(),
-    sessionId: session.state.sessionId,
-    continuationToken: session.state.continuationToken,
-    streamIndex: session.state.streamIndex ?? 0,
+    sessionId: session?.state.sessionId,
+    streamIndex: session?.state.streamIndex ?? 0,
     askedQuestion,
   };
 }
@@ -1048,7 +1090,7 @@ export async function cancelTurn(input: {
   turnId?: string;
 }): Promise<string> {
   const base = input.url.replace(/\/$/, "");
-  const session = clientFor(base).session({ sessionId: input.sessionId, streamIndex: 0 });
+  const session = clientFor(base).sessions.attach(input.sessionId, { streamIndex: 0 });
   try {
     const result = await session.cancel({ ...(input.turnId ? { turnId: input.turnId } : {}) });
     return result.status;
@@ -1065,17 +1107,13 @@ export async function cancelTurn(input: {
  * queues behind it forever. Cancelling a turn whose executor is gone does not
  * always land — reset releases the durable owner regardless.
  */
-export async function resetSession(input: {
-  url: string;
-  sessionId?: string;
-  continuationToken?: string;
-}): Promise<void> {
+export async function resetSession(input: { url: string; sessionId?: string }): Promise<void> {
   const base = input.url.replace(/\/$/, "");
-  const session = clientFor(base).session({
-    sessionId: input.sessionId,
-    continuationToken: input.continuationToken,
-    streamIndex: 0,
-  });
+  // Nothing to retire: with ID-addressed sessions there is no handle to a
+  // conversation that was never started, and the next message opens a fresh one
+  // anyway. Returning quietly beats a 404 the user cannot act on.
+  if (!input.sessionId) return;
+  const session = clientFor(base).sessions.attach(input.sessionId, { streamIndex: 0 });
   try {
     await session.reset();
   } catch (error) {

@@ -607,10 +607,21 @@ input, textarea { font: inherit; color: inherit; }
 .signin__title { font-size: 21px; font-weight: 640; margin: 16px 0 6px; }
 .signin__sub { color: var(--ink-secondary); font-size: var(--fs-base); margin: 0 0 22px; line-height: 1.5; }
 .signin__btn { min-width: 150px; height: 34px; }
+/* A button now, because the code is the one thing worth copying — but it must
+   still read as a displayed code rather than an action. */
 .signin__code {
   font-family: var(--font-mono); font-size: 26px; letter-spacing: 0.1em;
   padding: 12px 20px; border-radius: 12px; background: var(--bubble-agent);
+  border: 0; color: inherit; cursor: pointer; display: block; width: 100%;
 }
+.signin__code:hover { filter: brightness(0.97); }
+/* Time remaining sits with the hint, quietly: it answers "should I wait?" and
+   should not compete with the code itself. */
+.signin__left { opacity: 0.7; }
+.signin__actions {
+  display: flex; gap: 8px; justify-content: center; margin-top: 14px;
+}
+.signin__actions .btn { height: 30px; padding: 0 14px; border-radius: 999px; }
 .signin__hint { color: var(--ink-tertiary); font-size: var(--fs-sm); margin: 12px 0 0; }
 .signin__error {
   display: flex; align-items: center; gap: 6px; margin-top: 18px;

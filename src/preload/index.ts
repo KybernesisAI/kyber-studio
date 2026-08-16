@@ -9,6 +9,7 @@ import type { StudioApi } from "../shared/ipc";
 const studio: StudioApi = {
   session: () => ipcRenderer.invoke("studio:session"),
   signIn: () => ipcRenderer.invoke("studio:signIn"),
+  cancelSignIn: () => ipcRenderer.invoke("studio:cancelSignIn"),
   awaitSignIn: () => ipcRenderer.invoke("studio:awaitSignIn"),
   signOut: () => ipcRenderer.invoke("studio:signOut"),
   listAgents: () => ipcRenderer.invoke("studio:listAgents"),
