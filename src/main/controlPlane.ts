@@ -693,7 +693,6 @@ export async function sendTurn(input: {
   url: string;
   text: string;
   sessionId?: string;
-  continuationToken?: string;
   /** Events already consumed on this session; the stream resumes after them. */
   streamIndex?: number;
   /** Answers to questions the agent asked, resuming a parked turn. */
@@ -752,7 +751,6 @@ export async function sendTurn(input: {
 }): Promise<{
   reply: string;
   sessionId?: string;
-  continuationToken?: string;
   streamIndex: number;
   /** The turn parked on a question; there is no reply because none is due. */
   askedQuestion: boolean;

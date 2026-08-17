@@ -33,11 +33,6 @@ test("timestamps come from the event, not from the replay", () => {
   assert.ok(blocks[0].at <= blocks[1].at, "the question precedes the answer");
 });
 
-test("the continuation token is recovered from the stream", () => {
-  const { continuationToken } = blocksFromEvents(lines);
-  assert.ok(continuationToken?.startsWith("eve:"), "so the index never has to store one");
-});
-
 test("replaying twice cannot duplicate a bubble", () => {
   const once = blocksFromEvents(lines).blocks;
   const twice = blocksFromEvents([...lines, ...lines]).blocks;

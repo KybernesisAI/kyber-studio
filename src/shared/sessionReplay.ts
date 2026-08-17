@@ -36,8 +36,6 @@ export interface Replayed {
   blocks: ReplayedBlock[];
   /** Agent-to-agent exchanges, one entry per turn that had any. */
   peerBlocks: ReplayedPeerBlock[];
-  /** The live continuation token, read off the stream rather than stored. */
-  continuationToken?: string;
   /** How many events were consumed, so streaming can resume after them. */
   streamIndex: number;
   /** True when older events were skipped to bound the read. */
@@ -45,10 +43,9 @@ export interface Replayed {
 }
 
 /** Turn recorded stream events into the bubbles a transcript is made of. */
-export function blocksFromEvents(lines: string[], limit = Number.POSITIVE_INFINITY): { blocks: ReplayedBlock[]; continuationToken?: string; consumed: number } {
+export function blocksFromEvents(lines: string[], limit = Number.POSITIVE_INFINITY): { blocks: ReplayedBlock[]; consumed: number } {
   const blocks: ReplayedBlock[] = [];
   const seen = new Set<string>();
-  let continuationToken: string | undefined;
   let consumed = 0;
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -89,10 +86,9 @@ export function blocksFromEvents(lines: string[], limit = Number.POSITIVE_INFINI
       seen.add(id);
       blocks.push({ role: "user", text, at, eventId: id });
     } else if (event.type === "session.waiting") {
-      if (typeof data.continuationToken === "string") continuationToken = data.continuationToken;
     }
   }
-  return { blocks, continuationToken, consumed };
+  return { blocks, consumed };
 }
 
 

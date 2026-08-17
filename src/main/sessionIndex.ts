@@ -193,7 +193,7 @@ export async function replaySession(input: {
     }
     if (buffer.trim()) lines.push(buffer);
 
-    const { blocks, continuationToken } = blocksFromEvents(lines);
+    const { blocks } = blocksFromEvents(lines);
 
     /**
      * Rebuild the agent-to-agent exchanges too, with the same reader the live
@@ -224,7 +224,6 @@ export async function replaySession(input: {
     return {
       blocks,
       peerBlocks,
-      continuationToken,
       streamIndex: tail >= 0 ? tail + 1 : lines.length,
       truncated: tail >= 0 && tail + 1 > limit,
     };

@@ -398,13 +398,11 @@ async function deliverToMember(
       url: member.url,
       text: body,
       sessionId: get().sessions[key],
-      continuationToken: get().continuations[key],
       streamIndex: get().streamIndexes[key],
       streamId,
     });
     set((s) => ({
       sessions: { ...s.sessions, [key]: res.sessionId },
-      continuations: { ...s.continuations, [key]: res.continuationToken },
       streamIndexes: { ...s.streamIndexes, [key]: res.streamIndex },
     }));
     const reply = res.reply?.trim();
@@ -636,7 +634,6 @@ interface State {
   closeExchange: () => void;
   /** Per-agent eve session id, so a conversation keeps its thread across turns. */
   sessions: Record<string, string | undefined>;
-  continuations: Record<string, string | undefined>;
   streamIndexes: Record<string, number | undefined>;
   /** Per-agent "what it is doing right now", or null when idle. */
   activity: Record<string, string | null>;
@@ -744,7 +741,6 @@ export const useStore = create<State>((set, get) => ({
   issuer: "agent.kybernesis.ai",
   account: null,
   sessions: {},
-  continuations: {},
   streamIndexes: {},
   rooms: [],
   roomQueue: {},
@@ -813,16 +809,13 @@ export const useStore = create<State>((set, get) => ({
       if (localSession && localAt >= remoteAt) continue;
 
       set((s) => {
-        const continuations = { ...s.continuations };
         const streamIndexes = { ...s.streamIndexes };
-        // Both belong to the session being replaced; carrying them over would
-        // post the next message into a thread this device is no longer on.
-        delete continuations[entry.agent];
+        // The cursor belongs to the session being replaced; carrying it over
+        // would post the next message into a thread this device is no longer on.
         delete streamIndexes[entry.agent];
         return {
           sessions: { ...s.sessions, [entry.agent]: entry.sessionId },
           conversations: { ...s.conversations, [entry.agent]: [] },
-          continuations,
           streamIndexes,
         };
       });
@@ -909,11 +902,6 @@ export const useStore = create<State>((set, get) => ({
     set((s) => ({
       conversations: { ...s.conversations, [agentId]: next },
       // Taken from the stream rather than stored anywhere: the token is a live
-      // handle to the session, and the agent is the one that knows the current
-      // one.
-      continuations: replayed.continuationToken
-        ? { ...s.continuations, [agentId]: replayed.continuationToken }
-        : s.continuations,
       // Resume streaming after what was just read, so the next turn does not
       // replay the history it already has.
       streamIndexes: { ...s.streamIndexes, [agentId]: replayed.streamIndex },
@@ -1135,7 +1123,6 @@ export const useStore = create<State>((set, get) => ({
         url: agent.url,
         text,
         sessionId: get().sessions[agentId],
-        continuationToken: get().continuations[agentId],
         streamIndex: get().streamIndexes[agentId],
         clientContext: get().workspaces[agentId]
           ? {
@@ -1148,7 +1135,6 @@ export const useStore = create<State>((set, get) => ({
       .then((res) => {
         set((s) => ({
           sessions: { ...s.sessions, [agentId]: res.sessionId },
-          continuations: { ...s.continuations, [agentId]: res.continuationToken },
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
         }));
         /**
@@ -1259,20 +1245,18 @@ export const useStore = create<State>((set, get) => ({
     if (!agent?.url || !window.studio) return;
     const url = agent.url;
     const sessionId = get().sessions[agentId];
-    const continuationToken = get().continuations[agentId];
     // Drop the local handles first. Even if the agent cannot retire the session
     // (its owner may already be gone), the next message must not be posted into
     // the session that was stuck — that is the whole point of resetting.
     disarmDeadMan(agentId);
     set((s) => ({
       sessions: { ...s.sessions, [agentId]: undefined },
-      continuations: { ...s.continuations, [agentId]: undefined },
       streamIndexes: { ...s.streamIndexes, [agentId]: 0 },
       inflight: { ...s.inflight, [agentId]: undefined },
       activity: { ...s.activity, [agentId]: null },
     }));
     get().persist();
-    void window.studio.resetSession({ url, sessionId, continuationToken }).catch(() => undefined);
+    void window.studio.resetSession({ url, sessionId }).catch(() => undefined);
   },
 
   answerQuestion: (agentId, blockId, answer) => {
@@ -1312,7 +1296,6 @@ export const useStore = create<State>((set, get) => ({
         // No new message: this turn resumes on the answer alone.
         text: "",
         sessionId: get().sessions[agentId],
-        continuationToken: get().continuations[agentId],
         streamIndex: get().streamIndexes[agentId],
         inputResponses: [
           { requestId: block.requestId, optionId: answer.optionId, text: answer.text },
@@ -1322,7 +1305,6 @@ export const useStore = create<State>((set, get) => ({
       .then((res) => {
         set((s) => ({
           sessions: { ...s.sessions, [agentId]: res.sessionId },
-          continuations: { ...s.continuations, [agentId]: res.continuationToken },
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
         }));
         if (res.reply) {
@@ -1493,7 +1475,6 @@ export const useStore = create<State>((set, get) => ({
     const saved = await window.studio.loadState<{
       conversations: Record<string, Block[]>;
       sessions: Record<string, string | undefined>;
-      continuations: Record<string, string | undefined>;
       streamIndexes: Record<string, number | undefined>;
       prefs: State["prefs"];
       rooms: Room[];
@@ -1504,7 +1485,6 @@ export const useStore = create<State>((set, get) => ({
       set({
         conversations: saved.conversations,
         sessions: saved.sessions ?? {},
-        continuations: saved.continuations ?? {},
         streamIndexes: saved.streamIndexes ?? {},
         prefs: saved.prefs ?? {},
         rooms: saved.rooms ?? [],
@@ -1526,7 +1506,6 @@ export const useStore = create<State>((set, get) => ({
       value: {
         conversations: get().conversations,
         sessions: get().sessions,
-        continuations: get().continuations,
         streamIndexes: get().streamIndexes,
         prefs: get().prefs,
         rooms: get().rooms,

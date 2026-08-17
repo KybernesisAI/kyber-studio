@@ -158,7 +158,7 @@ export function registerIpc(): void {
 
   ipcMain.handle(
     "studio:resetSession",
-    (_e, input: { url: string; sessionId?: string; continuationToken?: string }) =>
+    (_e, input: { url: string; sessionId?: string }) =>
       resetSession(input),
   );
 
@@ -170,7 +170,6 @@ export function registerIpc(): void {
         url: string;
         text: string;
         sessionId?: string;
-        continuationToken?: string;
         streamIndex?: number;
         inputResponses?: { requestId: string; optionId?: string; text?: string }[];
         clientContext?: Record<string, unknown>;

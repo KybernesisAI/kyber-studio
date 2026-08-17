@@ -98,7 +98,6 @@ export interface StudioApi {
     url: string;
     text: string;
     sessionId?: string;
-    continuationToken?: string;
     streamIndex?: number;
     inputResponses?: { requestId: string; optionId?: string; text?: string }[];
     clientContext?: Record<string, unknown>;
@@ -106,7 +105,6 @@ export interface StudioApi {
   }): Promise<{
     reply: string;
     sessionId?: string;
-    continuationToken?: string;
     streamIndex: number;
     askedQuestion: boolean;
   }>;
@@ -170,7 +168,6 @@ export interface StudioApi {
   resetSession(input: {
     url: string;
     sessionId?: string;
-    continuationToken?: string;
   }): Promise<void>;
   onTurn(
     handler: (payload: { streamId: string; sessionId: string; turnId?: string }) => void,
