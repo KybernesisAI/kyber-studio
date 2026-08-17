@@ -652,9 +652,12 @@ function describeClientError(error: unknown, base: string): Error {
           `serving /eve/v1/session.`,
       );
     case 409:
+      // Reached only when starting a FRESH session also came back 409, since a
+      // 409 on a session we hold is retried as a new conversation. So this is
+      // the agent itself refusing to open one, not a stuck thread of ours.
       return new Error(
-        `That conversation is busy: a previous turn has not finished yet. Wait for it, or stop it ` +
-          `and start again.`,
+        `${base} would not start a conversation (409). The agent is usually mid-restart — wait a ` +
+          `few seconds and send it again.`,
       );
     default:
       if (error.status >= 500) {
@@ -878,16 +881,30 @@ export async function sendTurn(input: {
         const renewed = await forceRefresh();
         if (!renewed) throw error;
         response = await dispatch();
-      } else if (error instanceof ClientError && error.status === 404 && input.sessionId) {
-        // A 404 on a CONTINUE means the agent no longer has that session — its
-        // durable owner was retired, or a redeploy took the continuation with
-        // it. The route is obviously present, so reporting "no eve API here"
-        // sends someone to check a URL that was never wrong.
+      } else if (
+        error instanceof ClientError &&
+        (error.status === 404 || error.status === 409) &&
+        input.sessionId
+      ) {
+        // Two ways a session we hold can refuse a follow-up, and neither is
+        // worth telling a person about.
         //
-        // The conversation cannot be resumed, so start a new one. The transcript
-        // is ours and stays on screen; only the agent's thread restarts, which
-        // is the same thing Reset does and does not need a person to ask for it.
-        console.log("[send] session gone; starting a fresh one");
+        // 404: the agent no longer has that session — its durable owner was
+        // retired, or a redeploy took it. The route is obviously present, so
+        // reporting "no eve API here" sends someone to check a URL that was
+        // never wrong.
+        //
+        // 409 (`session_not_active`): the session is there but cannot take a
+        // turn, which is what a restart mid-turn leaves behind — the interrupted
+        // turn never settles, so the session never parks and every later message
+        // queues behind one that will never finish. Studio used to report this
+        // as "that conversation is busy: wait for it", and waiting was precisely
+        // the wrong advice: nothing was going to finish.
+        //
+        // Either way the conversation cannot be resumed, so start a new one. The
+        // transcript is ours and stays on screen; only the agent's thread
+        // restarts, which is what Reset does and does not need to be asked for.
+        console.log(`[send] session cannot continue (${error.status}); starting a fresh one`);
         session = null;
         response = await dispatch();
       } else {
