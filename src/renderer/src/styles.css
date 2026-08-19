@@ -955,3 +955,42 @@ input, textarea { font: inherit; color: inherit; }
 .cd__add .input { flex: 1; min-width: 0; }
 .cd__add .btn { flex: none; height: 30px; padding: 0 16px; border-radius: 999px; }
 .cd__hint { margin-top: 8px; max-width: 62ch; }
+
+/* Attachments ------------------------------------------------------------- */
+
+/* Chips sit ABOVE the input rather than inside it. Inside, a few long
+   filenames push the caret somewhere unpredictable and the composer stops
+   feeling like a text field. */
+.composer__files {
+  max-width: 780px; margin: 0 auto 6px;
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.chip-file {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bubble-agent);
+  border: 1px solid var(--border);
+  border-radius: 14px; padding: 3px 5px 3px 9px;
+  font-size: 12px; max-width: 260px;
+}
+.chip-file__name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chip-file__size { color: var(--ink-dim); font-size: 11px; flex: none; }
+.chip-file__x {
+  flex: none; border: 0; background: none; cursor: pointer;
+  color: var(--ink-dim); font-size: 14px; line-height: 1;
+  padding: 0 3px; border-radius: 8px;
+}
+.chip-file__x:hover { background: var(--hover); color: var(--ink); }
+
+/* The drop target is the composer itself, so the thing that lights up is the
+   thing the file is going into. */
+.composer__inner--drop {
+  outline: 2px dashed var(--accent, #6aa9ff);
+  outline-offset: 2px;
+}
+
+.composer__attach-error {
+  max-width: 780px; margin: 0 auto 6px;
+  font-size: 12px; color: var(--danger, #d2544a);
+}

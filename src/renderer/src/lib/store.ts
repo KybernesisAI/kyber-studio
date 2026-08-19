@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { PendingAttachment } from "./attachments";
 import type { AgentSummary } from "@shared/ipc";
 import { summarize } from "./agentInfo";
 import type { Agent, Block, PeerEvent, Room, Section } from "@shared/types";
@@ -693,7 +694,7 @@ interface State {
   setPluginsOpen(open: boolean): void;
   setPaletteOpen(open: boolean): void;
 
-  send(agentId: string, text: string, fromQueue?: boolean): void;
+  send(agentId: string, text: string, fromQueue?: boolean, attachments?: PendingAttachment[]): void;
   /** Ask the agent to stop the turn it is running. */
   stopTurn(agentId: string): void;
   /**
@@ -1035,7 +1036,7 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  send: (agentId, text, fromQueue) => {
+  send: (agentId, text, fromQueue, attachments) => {
     const at = Date.now();
     // A queued message was already shown when the user typed it. Adding it again
     // on flush is how one message becomes two identical bubbles.
@@ -1045,7 +1046,17 @@ export const useStore = create<State>((set, get) => ({
           ...s.conversations,
           [agentId]: [
             ...(s.conversations[agentId] ?? []),
-            { kind: "text", id: `u${at}`, role: "user", text, at },
+            {
+              kind: "text",
+              id: `u${at}`,
+              role: "user",
+              // The bubble records the handover: a message that attached three
+              // files and said "have a look" reads as blank without it.
+              text: attachments?.length
+                ? [text, attachments.map((a) => `📎 ${a.name}`).join("\n")].filter(Boolean).join("\n\n")
+                : text,
+              at,
+            },
           ],
         },
         agents: s.agents.map((a) =>
@@ -1122,6 +1133,14 @@ export const useStore = create<State>((set, get) => ({
       .send({
         url: agent.url,
         text,
+        // Stripped of the id the UI needed: it is a renderer concern and has no
+        // meaning to the agent.
+        attachments: attachments?.map(({ name, mediaType, size, bytes }) => ({
+          name,
+          mediaType,
+          size,
+          bytes,
+        })),
         sessionId: get().sessions[agentId],
         streamIndex: get().streamIndexes[agentId],
         clientContext: get().workspaces[agentId]

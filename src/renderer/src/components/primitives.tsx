@@ -5,6 +5,7 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }): Reac
   const paths: Record<string, ReactNode> = {
     search: <><circle cx="7" cy="7" r="5" /><path d="M11 11l4 4" /></>,
     plus: <path d="M8 3v10M3 8h10" />,
+    paperclip: <path d="M11.5 7.2L7 11.7a2.4 2.4 0 01-3.4-3.4l5-5a1.6 1.6 0 012.3 2.3l-5 5a.8.8 0 01-1.1-1.1l4.4-4.4" />,
     chevronRight: <path d="M6 3l5 5-5 5" />,
     chevronLeft: <path d="M10 3L5 8l5 5" />,
     close: <path d="M4 4l8 8M12 4l-8 8" />,

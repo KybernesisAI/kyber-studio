@@ -1,4 +1,10 @@
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  filesFromClipboard,
+  formatSize,
+  readFiles,
+  type PendingAttachment,
+} from "../lib/attachments";
 import type { Block, PeerEvent } from "@shared/types";
 import { peerSummaryLabel, summarizePeerEvents } from "@shared/types";
 import { useStore } from "@/lib/store";
@@ -338,6 +344,13 @@ export function Conversation(): ReactNode {
   const [draft, setDraft] = useState("");
   const [acCursor, setAcCursor] = useState(0);
   const [folderMenu, setFolderMenu] = useState(false);
+  /** Files chosen for the next message, not yet sent. */
+  const [pending, setPending] = useState<PendingAttachment[]>([]);
+  /** Why the last attempt to attach did not fully work. */
+  const [attachError, setAttachError] = useState<string | null>(null);
+  /** Whether files are being dragged over the composer right now. */
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLDivElement>(null);
@@ -525,12 +538,43 @@ export function Conversation(): ReactNode {
 
   if (!agent && !room) return <div className="main" />;
 
+  /**
+   * Attaching a file is the user handing something over deliberately.
+   *
+   * @remarks
+   * Distinct from the agent reaching into the filesystem, which is what local
+   * access governs and asks about separately. That distinction is the whole
+   * reason the bytes travel with the message instead of a path: what is shared
+   * is this file, chosen at this moment, and nothing else on the disk.
+   */
+  const attach = async (files: readonly File[]): Promise<void> => {
+    if (files.length === 0) return;
+    const { accepted, rejected } = await readFiles(files, pending);
+    if (accepted.length > 0) setPending((current) => [...current, ...accepted]);
+    // Refusals replace rather than accumulate: the second attempt's problem is
+    // the one being solved, and a stack of stale complaints obscures it.
+    setAttachError(rejected.length > 0 ? rejected.join(" ") : null);
+  };
+
   const submit = (): void => {
     const text = draft.trim();
-    if (!text) return;
-    if (room) sendToRoom(room.id, text);
-    else if (agent) send(agent.id, text);
+    // A file with no words is still a message — dragging a document in and
+    // pressing enter means "look at this", and refusing it as empty is wrong.
+    if (!text && pending.length === 0) return;
+    if (room) {
+      // Rooms fan one message out to several agents; attachments are not
+      // carried there yet, so say so rather than dropping them silently.
+      if (pending.length > 0) {
+        setAttachError("Files can be attached in a direct conversation, not in a group yet.");
+        return;
+      }
+      sendToRoom(room.id, text);
+    } else if (agent) {
+      send(agent.id, text, false, pending.length > 0 ? pending : undefined);
+    }
     setDraft("");
+    setPending([]);
+    setAttachError(null);
     if (inputRef.current) composerDom.clear(inputRef.current);
   };
 
@@ -719,8 +763,66 @@ export function Conversation(): ReactNode {
             />
           </div>
         ) : null}
-        <div className="composer__inner">
-          <button className="icon-btn" title="Attach">
+        {pending.length > 0 ? (
+          <div className="composer__files">
+            {pending.map((file) => (
+              <span key={file.id} className="chip-file" title={`${file.name} · ${file.mediaType}`}>
+                <Icon name="paperclip" size={11} />
+                <span className="chip-file__name">{file.name}</span>
+                <span className="chip-file__size">{formatSize(file.size)}</span>
+                <button
+                  className="chip-file__x"
+                  title="Remove"
+                  aria-label={`Remove ${file.name}`}
+                  onClick={() => setPending((c) => c.filter((f) => f.id !== file.id))}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {attachError ? <div className="composer__attach-error">{attachError}</div> : null}
+        <div
+          className={`composer__inner${dragging ? " composer__inner--drop" : ""}`}
+          onDragOver={(e) => {
+            // Only for actual files: a drag of selected text inside the
+            // composer must keep behaving like text.
+            if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={(e) => {
+            // Fires when crossing onto a child element too, which would flicker
+            // the highlight off while the pointer is still over the composer.
+            if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+            setDragging(false);
+          }}
+          onDrop={(e) => {
+            if (!Array.from(e.dataTransfer.types).includes("Files")) return;
+            e.preventDefault();
+            setDragging(false);
+            void attach(Array.from(e.dataTransfer.files));
+          }}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            style={{ display: "none" }}
+            onChange={(e) => {
+              void attach(Array.from(e.target.files ?? []));
+              // Cleared so choosing the same file twice in a row still fires a
+              // change event.
+              e.target.value = "";
+            }}
+          />
+          <button
+            className="icon-btn"
+            title="Attach a file"
+            aria-label="Attach a file"
+            onClick={() => fileInputRef.current?.click()}
+          >
             <Icon name="plus" />
           </button>
           <div
@@ -746,6 +848,14 @@ export function Conversation(): ReactNode {
               if (el) setCaretTrigger(composerDom.triggerBeforeCaret(el));
             }}
             onPaste={(e) => {
+              // A pasted screenshot is the fastest way anyone attaches
+              // anything, and it arrives as a clipboard file rather than text.
+              const files = filesFromClipboard(e.clipboardData);
+              if (files.length > 0) {
+                e.preventDefault();
+                void attach(files);
+                return;
+              }
               // Plain text only. Pasted markup would bring styles, and worse,
               // spans that serialize into the message as invisible junk.
               e.preventDefault();

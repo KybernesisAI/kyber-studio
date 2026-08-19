@@ -86,6 +86,26 @@ export interface LocalAsk {
   detail: string;
 }
 
+/**
+ * A file the user is handing to the agent.
+ *
+ * @remarks
+ * Bytes travel with the message rather than a path. A path would be smaller,
+ * but it would mean the agent reaching into the filesystem to fetch something —
+ * which is a different act, governed by local access and its own consent, and
+ * not what a person means when they drag a file into a conversation. Attaching
+ * is a deliberate handover of this file and nothing else.
+ */
+export interface Attachment {
+  /** What to call it in the conversation and to the model. */
+  name: string;
+  /** Sniffed from the file, since a model needs it to decode the bytes. */
+  mediaType: string;
+  /** Kept so the UI can show a size without re-reading the file. */
+  size: number;
+  bytes: Uint8Array;
+}
+
 export interface StudioApi {
   session(): Promise<Session | null>;
   signIn(): Promise<{ userCode: string; verificationUri: string }>;
@@ -97,6 +117,8 @@ export interface StudioApi {
   send(input: {
     url: string;
     text: string;
+    /** Files handed over with this message. */
+    attachments?: Attachment[];
     sessionId?: string;
     streamIndex?: number;
     inputResponses?: { requestId: string; optionId?: string; text?: string }[];

@@ -1,4 +1,5 @@
 import { ipcMain, shell, type WebContents } from "electron";
+import type { Attachment } from "../shared/ipc";
 import { loadState, pickFolder, saveState } from "./store";
 import { listSessions, recordSession, replaySession } from "./sessionIndex";
 import { type LocalMcpServer, authenticate, listServers, saveServers, testServer } from "./localMcp";
@@ -169,6 +170,7 @@ export function registerIpc(): void {
       input: {
         url: string;
         text: string;
+        attachments?: Attachment[];
         sessionId?: string;
         streamIndex?: number;
         inputResponses?: { requestId: string; optionId?: string; text?: string }[];

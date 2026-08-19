@@ -1,4 +1,6 @@
 import { Client, ClientError, type MessageResponse } from "eve/client";
+import type { Attachment } from "../shared/ipc";
+import { buildMessage } from "../shared/message";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -692,6 +694,8 @@ const SILENCE_LIMIT_MS = 150_000;
 export async function sendTurn(input: {
   url: string;
   text: string;
+  /** Files the user attached to this message. */
+  attachments?: Attachment[];
   sessionId?: string;
   /** Events already consumed on this session; the stream resumes after them. */
   streamIndex?: number;
@@ -853,6 +857,10 @@ export async function sendTurn(input: {
     ...(input.clientContext ? { clientContext: JSON.stringify(input.clientContext) } : {}),
   };
 
+  // Built here rather than inline, so the ordering rule (text before files) is
+  // covered by a test instead of by whoever reads this next.
+  const message = buildMessage(input.text, input.attachments);
+
   const dispatch = async (): Promise<MessageResponse> => {
     // A resumed turn may carry only answers, with no new message. That can only
     // happen on a session we are already attached to — there is nothing to
@@ -860,8 +868,8 @@ export async function sendTurn(input: {
     if (input.inputResponses?.length && session) {
       return await session.respond(input.inputResponses, options);
     }
-    if (session) return await session.send(input.text, options);
-    const created = await clientFor(base).sessions.create({ message: input.text, ...options });
+    if (session) return await session.send(message, options);
+    const created = await clientFor(base).sessions.create({ message, ...options });
     session = created.session;
     return created.response;
   };
