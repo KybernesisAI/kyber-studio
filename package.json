@@ -1,6 +1,6 @@
 {
   "name": "kyber-studio",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "KYBER Studio — the desktop door to your Kybernesis agents.",
   "main": "./out/main/index.js",
   "author": "Kybernesis",
@@ -20,15 +20,18 @@
     "test": "node --experimental-strip-types --test \"test/**/*.test.mjs\"",
     "fetch:speech": "node scripts/fetch-speech-model.mjs",
     "prepackage": "node scripts/fetch-speech-model.mjs",
-    "prerelease:mac": "node scripts/fetch-speech-model.mjs"
+    "prerelease:mac": "node scripts/fetch-speech-model.mjs",
+    "verify:package": "node scripts/verify-package.mjs"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^3.0.0",
     "@huggingface/transformers": "^4.2.0",
+    "@opentelemetry/api": "^1.9.0",
     "ai": "^7.0.58",
     "electron-updater": "^6.3.9",
     "eve": "0.38.3",
+    "zod": "^4.0.0",
     "zustand": "^5.0.2"
   },
   "devDependencies": {

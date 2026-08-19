@@ -63,6 +63,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The build is not proof. Two releases shipped that could not load their
+      # own dependencies: one was inspected but never run, and the next started
+      # fine because the failing import is not on the startup path. This checks
+      # the bundle can resolve what it imports, before anyone downloads it.
+      - name: Verify the packaged app can load what it imports
+        run: node scripts/verify-package.mjs "dist/mac-arm64/KYBER Studio.app"
+
       - name: Write release notes
         if: startsWith(github.ref, 'refs/tags/v')
         env:
