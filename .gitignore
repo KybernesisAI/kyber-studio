@@ -3,3 +3,8 @@ out
 dist
 .DS_Store
 *.tsbuildinfo
+
+# The speech model is a build input, not source. It is fetched into resources/
+# by scripts/fetch-speech-model.mjs before packaging, and ships inside the app —
+# but 75 MB of weights do not belong in git history.
+resources/models/

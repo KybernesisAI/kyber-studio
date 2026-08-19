@@ -17,7 +17,10 @@
     "release:mac": "npm run build && electron-builder --mac --publish always",
     "release": "npm version patch -m \"release: v%s\" && git push --follow-tags",
     "release:minor": "npm version minor -m \"release: v%s\" && git push --follow-tags",
-    "test": "node --experimental-strip-types --test \"test/**/*.test.mjs\""
+    "test": "node --experimental-strip-types --test \"test/**/*.test.mjs\"",
+    "fetch:speech": "node scripts/fetch-speech-model.mjs",
+    "prepackage": "node scripts/fetch-speech-model.mjs",
+    "prerelease:mac": "node scripts/fetch-speech-model.mjs"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.1",
