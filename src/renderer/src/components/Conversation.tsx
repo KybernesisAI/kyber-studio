@@ -12,6 +12,9 @@ import * as composerDom from "@/lib/composerDom";
 import { Autocomplete, type Suggestion } from "./Autocomplete";
 import { LocalAskCard } from "./LocalAsk";
 import { Markdown } from "./Markdown";
+import { record, type Recorder } from "../lib/dictation";
+import { DeliveredFiles } from "./DeliveredFiles";
+import { deliveredFiles } from "../../../shared/deliveredFiles";
 import { Spinner } from "./Spinner";
 import { Avatar, Icon, RichText, timeLabel } from "./primitives";
 
@@ -351,6 +354,13 @@ export function Conversation(): ReactNode {
   /** Whether files are being dragged over the composer right now. */
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  /** The live recorder while the user holds the mic; null when not recording. */
+  const recorderRef = useRef<Recorder | null>(null);
+  /** "idle" | "recording" | "transcribing" — what the mic control is doing. */
+  const [voice, setVoice] = useState<"idle" | "recording" | "transcribing">("idle");
+  /** Input level while recording, so a muted microphone is visible as one. */
+  const [level, setLevel] = useState(0);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLDivElement>(null);
@@ -556,6 +566,69 @@ export function Conversation(): ReactNode {
     setAttachError(rejected.length > 0 ? rejected.join(" ") : null);
   };
 
+  /**
+   * Click to start, click again to stop and transcribe.
+   *
+   * The microphone opens only between those two clicks; it is not listening
+   * before the first or after the second. Holding a button down for the length
+   * of a sentence is fine for a two-word command and tiring for anything real,
+   * and it makes the button impossible to use while reading something else on
+   * screen — which is most of what dictation is for.
+   */
+  const startDictation = async (): Promise<void> => {
+    if (voice !== "idle") return;
+    setVoiceError(null);
+    try {
+      const recorder = await record();
+      recorderRef.current = recorder;
+      setVoice("recording");
+      const tick = (): void => {
+        if (recorderRef.current !== recorder) return;
+        setLevel(recorder.level());
+        requestAnimationFrame(tick);
+      };
+      tick();
+    } catch {
+      // Refused permission, or no input device. Either way the honest answer is
+      // that the microphone is unavailable, not that dictation is broken.
+      setVoiceError("No microphone available. Check the system permission for KYBER Studio.");
+      setVoice("idle");
+    }
+  };
+
+  const finishDictation = async (): Promise<void> => {
+    const recorder = recorderRef.current;
+    if (!recorder || voice !== "recording") return;
+    recorderRef.current = null;
+    setVoice("transcribing");
+    setLevel(0);
+    const samples = await recorder.stop();
+    if (samples.length === 0) {
+      setVoice("idle");
+      return;
+    }
+    const result = await window.studio.transcribe(samples);
+    setVoice("idle");
+    if (result.error) {
+      setVoiceError(result.error);
+      return;
+    }
+    const el = inputRef.current;
+    if (!el || !result.text) return;
+    // Inserted at the caret rather than replacing the draft: dictation is
+    // another way to type, so it must compose with what is already written.
+    el.focus();
+    document.execCommand("insertText", false, (draft.trim() ? " " : "") + result.text);
+    setDraft(composerDom.serialize(el));
+  };
+
+  const cancelDictation = (): void => {
+    recorderRef.current?.cancel();
+    recorderRef.current = null;
+    setLevel(0);
+    setVoice("idle");
+  };
+
   const submit = (): void => {
     const text = draft.trim();
     // A file with no words is still a message — dragging a document in and
@@ -608,7 +681,7 @@ export function Conversation(): ReactNode {
           </>
         ) : (
           <>
-            <Avatar name={agent!.name} accent={agent!.accent} size={22} />
+            <Avatar name={agent!.name} accent={agent!.accent} src={agent!.avatar} size={22} />
             <span className="topbar__title">{agent!.name}</span>
           </>
         )}
@@ -710,13 +783,19 @@ export function Conversation(): ReactNode {
                     <Avatar name={b.speaker.name} accent={b.speaker.accent} size={22} />
                     <div className="bubble bubble--agent">
                       <Markdown text={b.text} />
+                      <DeliveredFiles files={deliveredFiles(b.text)} />
                     </div>
                   </div>
                 </div>
               ) : (
                 <div key={b.id} className={`bubble bubble--${b.role}`}>
                   {b.role === "agent" ? (
-                    <Markdown text={b.text} />
+                    <>
+                      <Markdown text={b.text} />
+                      {/* Under the words, never instead of them: the sentence
+                          explaining what the file is stays exactly as written. */}
+                      <DeliveredFiles files={deliveredFiles(b.text)} />
+                    </>
                   ) : (
                     <RichText text={b.text} mentions={mentionable} />
                   )}
@@ -783,6 +862,18 @@ export function Conversation(): ReactNode {
           </div>
         ) : null}
         {attachError ? <div className="composer__attach-error">{attachError}</div> : null}
+        {voiceError ? <div className="composer__attach-error">{voiceError}</div> : null}
+        {voice === "recording" ? (
+          <div className="composer__voice">
+            <span className="composer__voice-dot" />
+            <span>Listening — click again to transcribe, Esc to discard</span>
+            {/* The level is what tells someone the microphone is actually
+                hearing them. Without it a muted input looks like silence. */}
+            <span className="composer__voice-level">
+              <span style={{ width: `${Math.min(100, Math.round(level * 140))}%` }} />
+            </span>
+          </div>
+        ) : null}
         <div
           className={`composer__inner${dragging ? " composer__inner--drop" : ""}`}
           onDragOver={(e) => {
@@ -863,6 +954,13 @@ export function Conversation(): ReactNode {
               document.execCommand("insertText", false, text);
             }}
             onKeyDown={(e) => {
+              // The banner promises Esc discards the recording, so Esc must
+              // mean that before anything else claims the key.
+              if (e.key === "Escape" && voice === "recording") {
+                e.preventDefault();
+                cancelDictation();
+                return;
+              }
               if (suggestions.length > 0) {
                 if (e.key === "ArrowDown") {
                   e.preventDefault();
@@ -910,13 +1008,23 @@ export function Conversation(): ReactNode {
                 if (room) stopRoom(room.id);
                 else stopTurn(activeAgentId);
               }
-              else if (draft.trim()) submit();
+              // Recording: this click ends it and transcribes.
+              else if (voice === "recording") void finishDictation();
+              else if (draft.trim() || pending.length > 0) submit();
+              // Empty composer and idle: this click starts recording.
+              else if (voice === "idle") void startDictation();
             }}
           >
             {running ? (
               <Icon name="stop" />
+            ) : voice === "transcribing" ? (
+              <Spinner />
+            ) : voice === "recording" ? (
+              // A square, not a microphone: mid-recording the button's job is
+              // to stop, and showing a mic there invites a second start.
+              <Icon name="stop" />
             ) : (
-              <Icon name={draft.trim() ? "arrowUp" : "mic"} />
+              <Icon name={draft.trim() || pending.length > 0 ? "arrowUp" : "mic"} />
             )}
           </button>
         </div>

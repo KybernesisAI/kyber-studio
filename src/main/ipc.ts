@@ -1,6 +1,14 @@
 import { ipcMain, shell, type WebContents } from "electron";
 import type { Attachment } from "../shared/ipc";
 import { loadState, pickFolder, saveState } from "./store";
+import { dictationAvailable, transcribe } from "./dictation";
+import {
+  localFileExists,
+  openLocalFile,
+  openRemoteFile,
+  revealLocalFile,
+  saveRemoteFile,
+} from "./deliveredFile";
 import { listSessions, recordSession, replaySession } from "./sessionIndex";
 import { type LocalMcpServer, authenticate, listServers, saveServers, testServer } from "./localMcp";
 import {
@@ -147,6 +155,25 @@ export function registerIpc(): void {
   });
 
   ipcMain.handle("studio:openExternal", (_e, url: string) => shell.openExternal(url));
+
+  // Files the agent handed back. The renderer passes a location the USER
+  // clicked; none of these take an instruction from the model.
+  ipcMain.handle("studio:fileExists", (_e, path: string) => localFileExists(path));
+
+  // Dictation. The audio arrives as samples and leaves as text; nothing is
+  // written to disk and nothing goes to a network.
+  ipcMain.handle("studio:dictationAvailable", () => dictationAvailable());
+  ipcMain.handle("studio:transcribe", (_e, samples: Float32Array) => transcribe(samples));
+  ipcMain.handle("studio:openLocalFile", (_e, path: string) => openLocalFile(path));
+  ipcMain.handle("studio:revealLocalFile", (_e, path: string) => revealLocalFile(path));
+  ipcMain.handle(
+    "studio:saveRemoteFile",
+    (_e, input: { url: string; suggestedName: string }) => saveRemoteFile(input),
+  );
+  ipcMain.handle(
+    "studio:openRemoteFile",
+    (_e, input: { url: string; suggestedName: string }) => openRemoteFile(input),
+  );
 
   ipcMain.handle("studio:localAccess", (_e, agent: string) => localAccessGranted(agent));
 

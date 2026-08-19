@@ -429,6 +429,18 @@ async function describeFailure(res: Response, base: string): Promise<Error> {
     case 504:
       return new Error(`${base} is not responding (${res.status}). The agent may be down.`);
     default:
+      // An agent still on the pre-0.31 runtime answers a modern send with a
+      // complaint about continuationToken — a field this client stopped
+      // sending when sessions became id-addressed. Left raw, that error sends
+      // people looking for a bug in Studio, or in their own agent's code,
+      // when the whole story is that the agent is running an older framework.
+      if (/continuationToken/i.test(snippet)) {
+        return new Error(
+          `${base} is running a framework older than this app supports (pre-0.31). ` +
+            `Conversations are addressed by session id now, and that agent still expects a ` +
+            `continuation token. Upgrade the agent (kyb upgrade) and redeploy it.`,
+        );
+      }
       return new Error(`Agent returned HTTP ${res.status}. ${snippet}`);
   }
 }

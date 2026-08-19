@@ -76,7 +76,7 @@ export function Palette(): ReactNode {
         title: a.name,
         subtitle: a.title ?? a.description,
         scope: "Agents",
-        icon: <Avatar name={a.name} accent={a.accent} size={30} />,
+        icon: <Avatar name={a.name} accent={a.accent} src={a.avatar} size={30} />,
         run: () => select(a.id),
       });
     }
@@ -93,7 +93,7 @@ export function Palette(): ReactNode {
           title: b.text.length > 90 ? `${b.text.slice(0, 90)}…` : b.text,
           subtitle: agent.name,
           scope: "Messages",
-          icon: <Avatar name={agent.name} accent={agent.accent} size={30} />,
+          icon: <Avatar name={agent.name} accent={agent.accent} src={agent.avatar} size={30} />,
           run: () => select(agentId),
         });
       }

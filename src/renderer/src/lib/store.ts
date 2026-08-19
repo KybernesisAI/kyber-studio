@@ -502,6 +502,31 @@ function retireStaleQuestions(
 const DEAD_MAN_MS = 240_000;
 const deadMan = new Map<string, ReturnType<typeof setTimeout>>();
 
+/**
+ * How many times each agent's conversation has been retired.
+ *
+ * @remarks
+ * A send that is already in flight cannot be recalled: the request is with the
+ * agent, and the answer — or the timeout — arrives whenever it arrives. When
+ * someone resets a stuck conversation and carries on, the old request is still
+ * out there, and up to 150 seconds later it fails and reports itself.
+ *
+ * That report is worse than useless. It describes a turn the person has already
+ * abandoned, it arrives after a NEW message has been answered successfully, and
+ * it reads as though the agent that just replied is broken. This counter is how
+ * a late answer knows it belongs to a conversation nobody is having any more.
+ */
+const generation = new Map<string, number>();
+
+function currentGeneration(agentId: string): number {
+  return generation.get(agentId) ?? 0;
+}
+
+/** Retire everything in flight for this agent, so late results stay quiet. */
+function retireGeneration(agentId: string): void {
+  generation.set(agentId, currentGeneration(agentId) + 1);
+}
+
 function armDeadMan(
   get: () => State,
   set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
@@ -586,7 +611,15 @@ interface State {
    */
   prefs: Record<
     string,
-    { name?: string; pinned?: boolean; hidden?: boolean; notifications?: boolean; accent?: string }
+    {
+      name?: string;
+      pinned?: boolean;
+      hidden?: boolean;
+      notifications?: boolean;
+      accent?: string;
+      /** The picture chosen for this agent, as a data URL. */
+      avatar?: string;
+    }
   >;
   /**
    * Conversations with more than one agent in them.
@@ -1129,6 +1162,7 @@ export const useStore = create<State>((set, get) => ({
     set((s) => ({ inflight: { ...s.inflight, [agentId]: { streamId } } }));
     armDeadMan(get, set, agentId);
 
+    const sentAtGeneration = currentGeneration(agentId);
     void window.studio
       .send({
         url: agent.url,
@@ -1178,9 +1212,13 @@ export const useStore = create<State>((set, get) => ({
           upsertBlock(get, set, agentId, bubbleId, "(the agent returned no text for this turn)");
         }
       })
-      .catch((e: unknown) =>
-        upsertBlock(get, set, agentId, bubbleId, e instanceof Error ? e.message : String(e)),
-      )
+      .catch((e: unknown) => {
+        // The conversation this belonged to has been retired. Saying anything
+        // now would blame the current conversation for a failure that happened
+        // in one the person already walked away from.
+        if (sentAtGeneration !== currentGeneration(agentId)) return;
+        upsertBlock(get, set, agentId, bubbleId, e instanceof Error ? e.message : String(e));
+      })
       .finally(() => {
         set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
         set((s) => {
@@ -1268,6 +1306,7 @@ export const useStore = create<State>((set, get) => ({
     // (its owner may already be gone), the next message must not be posted into
     // the session that was stuck — that is the whole point of resetting.
     disarmDeadMan(agentId);
+    retireGeneration(agentId);
     set((s) => ({
       sessions: { ...s.sessions, [agentId]: undefined },
       streamIndexes: { ...s.streamIndexes, [agentId]: 0 },
@@ -1363,6 +1402,7 @@ export const useStore = create<State>((set, get) => ({
           ...("hidden" in patch ? { hidden: patch.hidden } : {}),
           ...("notifications" in patch ? { notifications: patch.notifications } : {}),
           ...("accent" in patch ? { accent: patch.accent } : {}),
+          ...("avatar" in patch ? { avatar: patch.avatar } : {}),
         },
       },
     }));
@@ -1596,6 +1636,11 @@ export const useStore = create<State>((set, get) => ({
             url: r.url ?? "",
             peers: r.peers ?? [],
             accent: chosen.accent ?? prior?.accent ?? palette[i % palette.length] ?? "#2ec4a6",
+            // Restored on every refresh, like the name and the accent. Left out,
+            // a picture would survive a relaunch and then vanish the next time
+            // the agent list synced — which reads as the app losing it at
+            // random rather than as a missing line here.
+            avatar: chosen.avatar ?? prior?.avatar,
             pinned: chosen.pinned ?? prior?.pinned,
             hidden: chosen.hidden ?? prior?.hidden,
             unread: prior?.unread,

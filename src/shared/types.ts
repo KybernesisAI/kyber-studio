@@ -24,8 +24,19 @@ export interface Agent {
   description?: string;
   /** Base URL of the agent's eve deployment. */
   url: string;
-  /** Hex color for the generated avatar mark. */
+  /** Hex color for the generated avatar mark, used when there is no picture. */
   accent: string;
+  /**
+   * A picture for this agent, as a data URL.
+   *
+   * @remarks
+   * Stored inline rather than as a path, deliberately. A path breaks the moment
+   * someone moves the file, empties a Downloads folder, or signs in on a second
+   * machine — and it breaks silently, leaving a blank where a face was. The
+   * image is resized to a small square before it gets here, so carrying the
+   * bytes costs a few kilobytes and never has to be resolved again.
+   */
+  avatar?: string;
   /** Sidebar organization. */
   pinned?: boolean;
   sectionId?: string | null;

@@ -56,12 +56,30 @@ export function Avatar({
   name,
   accent,
   size = 34,
+  src,
 }: {
   name: string;
   accent: string;
   size?: number;
+  /** A picture for this agent. Falls back to the lettered mark when absent. */
+  src?: string;
 }): ReactNode {
   const initial = name.trim().charAt(0).toUpperCase() || "?";
+  if (src) {
+    return (
+      <img
+        className="avatar avatar--image"
+        style={{ width: size, height: size }}
+        src={src}
+        alt=""
+        // The name is on the title, not in alt text: this sits beside the name
+        // almost everywhere it appears, and a screen reader should not read it
+        // out twice.
+        title={name}
+        draggable={false}
+      />
+    );
+  }
   return (
     <div
       className="avatar"

@@ -146,7 +146,7 @@ function Row({
         onMenu({ x: e.clientX, y: e.clientY, agent });
       }}
     >
-      <Avatar name={agent.name} accent={agent.accent} />
+      <Avatar name={agent.name} accent={agent.accent} src={agent.avatar} />
       <div className="row__body">
         <div className="row__line">
           <span className="row__name">{agent.name}</span>
@@ -189,7 +189,7 @@ function RoomRow({ room, onMenu }: { room: Room; onMenu(state: MenuState): void 
     >
       <span className="stack">
         {members.slice(0, 3).map((m: Agent) => (
-          <Avatar key={m.id} name={m.name} accent={m.accent} size={34} />
+          <Avatar key={m.id} name={m.name} accent={m.accent} src={m.avatar} size={34} />
         ))}
       </span>
       <div className="row__body">
@@ -250,7 +250,7 @@ function NewRoom({ onClose }: { onClose: () => void }): ReactNode {
             className={`newroom__opt${picked.includes(a.id) ? " newroom__opt--on" : ""}`}
             onClick={() => toggle(a.id)}
           >
-            <Avatar name={a.name} accent={a.accent} size={20} />
+            <Avatar name={a.name} accent={a.accent} src={a.avatar} size={20} />
             <span>{a.name}</span>
             {picked.includes(a.id) ? <Icon name="check" size={14} /> : null}
           </button>

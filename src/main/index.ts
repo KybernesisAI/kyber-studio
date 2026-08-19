@@ -1,4 +1,5 @@
 import { stopAll } from "./localMcp";
+import { warmUp } from "./dictation";
 import { registerUpdater } from "./updater";
 import { join } from "node:path";
 import { BrowserWindow, app, shell } from "electron";
@@ -57,6 +58,9 @@ void app.whenReady().then(() => {
   startLocalExec();
   app.on("browser-window-created", (_, window) => optimizer.watchWindowShortcuts(window));
   createWindow();
+  // Load the speech model in the background so the first dictation is not the
+  // one that waits for it. Silent on failure: nobody asked for anything yet.
+  warmUp();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

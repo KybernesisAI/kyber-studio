@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { isImage, toAvatarDataUrl } from "../lib/avatarImage";
+import { useEffect, useState, useRef } from "react";
 import {
   DEFAULT_SPEC,
   FREQUENCIES,
@@ -592,14 +593,55 @@ function Settings(): ReactNode {
     useStore();
   const agent = agents.find((a) => a.id === activeAgentId);
   const info = details[activeAgentId];
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
   if (!agent) return null;
 
   return (
     <>
       <Head title="Settings" onBack={() => setPanel("overview")} onClose={() => setPanel("none")} />
       <div className="panel__body">
-        <div style={{ display: "grid", placeItems: "center", padding: "6px 0 20px" }}>
-          <Avatar name={agent.name} accent={agent.accent} size={62} />
+        <div className="agent-portrait">
+          <Avatar name={agent.name} accent={agent.accent} src={agent.avatar} size={62} />
+          <input
+            ref={avatarInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: "none" }}
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              // Cleared immediately so choosing the same file twice still fires.
+              e.target.value = "";
+              if (!file) return;
+              if (!isImage(file)) {
+                setAvatarError("That file is not an image.");
+                return;
+              }
+              try {
+                const dataUrl = await toAvatarDataUrl(file);
+                patchAgent(agent.id, { avatar: dataUrl });
+                setAvatarError(null);
+              } catch (error) {
+                setAvatarError((error as Error).message);
+              }
+            }}
+          />
+          <div className="agent-portrait__actions">
+            <button className="btn btn--small" onClick={() => avatarInputRef.current?.click()}>
+              {agent.avatar ? "Change picture" : "Upload picture"}
+            </button>
+            {agent.avatar ? (
+              <button
+                className="btn btn--small"
+                // Back to the lettered mark rather than to nothing: an agent
+                // always has an avatar, and this only chooses which kind.
+                onClick={() => patchAgent(agent.id, { avatar: undefined })}
+              >
+                Remove
+              </button>
+            ) : null}
+          </div>
+          {avatarError ? <div className="agent-portrait__error">{avatarError}</div> : null}
         </div>
 
         <div className="field">

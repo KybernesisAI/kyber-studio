@@ -106,6 +106,16 @@ export interface Attachment {
   bytes: Uint8Array;
 }
 
+/** What came of taking delivery of a file. */
+export interface DeliveryResult {
+  ok: boolean;
+  /** Where it ended up, when it was saved. */
+  path?: string;
+  error?: string;
+  /** The user closed the save dialog. Not a failure worth reporting loudly. */
+  cancelled?: boolean;
+}
+
 export interface StudioApi {
   session(): Promise<Session | null>;
   signIn(): Promise<{ userCode: string; verificationUri: string }>;
@@ -130,6 +140,18 @@ export interface StudioApi {
     streamIndex: number;
     askedQuestion: boolean;
   }>;
+  /** Whether this build carries the speech model. */
+  dictationAvailable(): Promise<boolean>;
+  /** Mono 16 kHz PCM in, text out. Runs on this machine; no audio is sent anywhere. */
+  transcribe(samples: Float32Array): Promise<{ text?: string; error?: string }>;
+  /** Whether a file the agent named is actually on this machine. */
+  fileExists(path: string): Promise<boolean>;
+  openLocalFile(path: string): Promise<DeliveryResult>;
+  revealLocalFile(path: string): Promise<DeliveryResult>;
+  /** Ask where to keep a published file, then fetch it there. */
+  saveRemoteFile(input: { url: string; suggestedName: string }): Promise<DeliveryResult>;
+  /** Fetch a published file to a temporary place and open it. */
+  openRemoteFile(input: { url: string; suggestedName: string }): Promise<DeliveryResult>;
   /** Subscribe to streaming deltas. Returns an unsubscribe function. */
   onDelta(handler: (payload: { streamId: string; text: string }) => void): () => void;
   /** Subscribe to "what the agent is doing" updates. null clears the line. */

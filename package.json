@@ -22,6 +22,7 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^3.0.0",
+    "@huggingface/transformers": "^4.2.0",
     "electron-updater": "^6.3.9",
     "eve": "0.38.3",
     "zustand": "^5.0.2"
