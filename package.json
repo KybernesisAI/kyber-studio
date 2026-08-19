@@ -1,6 +1,6 @@
 {
   "name": "kyber-studio",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "KYBER Studio — the desktop door to your Kybernesis agents.",
   "main": "./out/main/index.js",
   "author": "Kybernesis",
@@ -26,6 +26,7 @@
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^3.0.0",
     "@huggingface/transformers": "^4.2.0",
+    "ai": "^7.0.58",
     "electron-updater": "^6.3.9",
     "eve": "0.38.3",
     "zustand": "^5.0.2"
@@ -49,10 +50,7 @@
       "buildResources": "build"
     },
     "files": [
-      "out/**/*",
-      "!node_modules/onnxruntime-node/bin/napi-v6/linux/**",
-      "!node_modules/onnxruntime-node/bin/napi-v6/win32/**",
-      "!node_modules/onnxruntime-node/bin/napi-v6/darwin/x64/**"
+      "out/**/*"
     ],
     "mac": {
       "icon": "build/icon.icns",
