@@ -10,7 +10,7 @@ import {
   timeOptions,
   toCron,
 } from "@/lib/schedule";
-import { useStore } from "@/lib/store";
+import { useStore, type PanelView } from "@/lib/store";
 import { Avatar, Icon, Toggle } from "./primitives";
 
 /**
@@ -715,9 +715,35 @@ function Settings(): ReactNode {
 
 export function Panel(): ReactNode {
   const panel = useStore((s) => s.panel);
-  if (panel === "none") return null;
+  /**
+   * The view being shown, which lags the store while the drawer closes.
+   *
+   * A component that unmounts cannot animate: the moment `panel` becomes
+   * "none" the element is gone, and any exit animation is attached to
+   * something that no longer exists. So the last real view is held for the
+   * length of the animation, and only then released.
+   */
+  const [shown, setShown] = useState<PanelView>(panel);
+  const [closing, setClosing] = useState(false);
+
+  useEffect(() => {
+    if (panel !== "none") {
+      setClosing(false);
+      setShown(panel);
+      return;
+    }
+    if (shown === "none") return;
+    setClosing(true);
+    const timer = setTimeout(() => {
+      setClosing(false);
+      setShown("none");
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [panel, shown]);
+
+  if (shown === "none") return null;
   return (
-    <aside className="panel">
+    <aside className={`panel${closing ? " panel--closing" : ""}`}>
       {panel === "overview" ? <Overview /> : null}
       {panel === "routine" ? <RoutineView /> : null}
       {panel === "settings" || panel === "channels" ? <Settings /> : null}

@@ -734,7 +734,7 @@ export function Conversation(): ReactNode {
           title="Agent panel"
           onClick={() => setPanel(panel === "none" ? "overview" : "none")}
         >
-          <Icon name="monitor" />
+          <Icon name="sidePanel" />
         </button>
       </div>
 

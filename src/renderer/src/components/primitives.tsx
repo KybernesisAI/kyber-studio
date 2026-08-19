@@ -10,6 +10,10 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }): Reac
     chevronLeft: <path d="M10 3L5 8l5 5" />,
     close: <path d="M4 4l8 8M12 4l-8 8" />,
     monitor: <><rect x="2" y="3" width="12" height="9" rx="1.5" /><path d="M6 14h4" /></>,
+    // What the control actually does: opens a panel down the right-hand side.
+    // A monitor suggested "this computer", which is a different feature here
+    // and one the app genuinely has.
+    sidePanel: <><rect x="2" y="2.5" width="12" height="11" rx="1.5" /><path d="M10 2.5v11" /></>,
     plug: <><path d="M6 2v4M10 2v4" /><path d="M4 6h8v3a4 4 0 01-8 0z" /><path d="M8 13v2" /></>,
     gear: <><circle cx="8" cy="8" r="2.4" /><path d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4M12.6 12.6l-1.4-1.4M4.8 4.8L3.4 3.4" /></>,
     clock: <><circle cx="8" cy="8" r="6" /><path d="M8 4.5V8l2.5 1.5" /></>,
