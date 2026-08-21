@@ -27,7 +27,7 @@
  * present all through development and absent in the .dmg.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 
 const APP = process.argv[2] ?? "dist/mac-arm64/KYBER Studio.app";
@@ -112,7 +112,10 @@ const ENTRY_POINTS = [
 ];
 
 for (const entry of ENTRY_POINTS) {
-  const target = join(process.cwd(), asar, entry);
+  // resolve, not join: the app path may be absolute (a mounted volume), and
+  // joining it onto the working directory produces a path that exists nowhere
+  // — which reads as a broken build rather than a broken check.
+  const target = resolve(asar, entry);
   try {
     execFileSync(binary, ["--input-type=module", "-e", `await import(${JSON.stringify(target)});`], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
