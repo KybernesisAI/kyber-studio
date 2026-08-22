@@ -191,6 +191,12 @@ export interface StudioApi {
     url: string;
     token?: string;
     shared?: boolean;
+  }): Promise<{ ok: boolean; error?: string; slug?: string; needsSignIn?: boolean }>;
+  /** Open the browser to approve a remote MCP server that asks for OAuth. */
+  startMcpSignIn(input: {
+    slug: string;
+    agent: string;
+    shared?: boolean;
   }): Promise<{ ok: boolean; error?: string }>;
   connectMcpServer(id: string): Promise<{ ok: boolean; message: string; signInUrl?: string }>;
   testRemoteMcp(slug: string): Promise<{ ok: boolean; tools?: string[]; error?: string }>;

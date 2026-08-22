@@ -629,14 +629,14 @@ function AddLocalServer({
  * Adding a remote MCP server by URL.
  *
  * The half of the library no broker can cover: the server a company built last
- * week, a vendor whose endpoint is three days old, anything internal. Two
- * fields, because there are only two — nobody registered an OAuth app on their
- * behalf, so a token is the honest ask.
+ * week, a vendor whose endpoint is three days old, anything internal.
  *
- * Unlike everything else in this app, this one does take a secret from the
- * user. That is not the pattern we removed: there is no broker who could have
- * done it for them, and the alternative is not supporting custom servers at
- * all. It goes straight to their control plane and is never shown again.
+ * The token field is the last resort rather than the ask. A server that does
+ * OAuth is detected when it is added — it answers with a pointer to its own
+ * authorization server — and then this offers a browser sign-in instead, the
+ * same as every other connection in this app. Only servers with no such flow
+ * need a pasted secret, which then goes straight to the control plane and is
+ * never shown again.
  */
 function AddRemoteServer({
   agent,
@@ -651,6 +651,8 @@ function AddRemoteServer({
   const [shared, setShared] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Set when the server asked for OAuth: added, but not yet connected. */
+  const [signIn, setSignIn] = useState<{ slug: string } | null>(null);
 
   const submit = async (): Promise<void> => {
     if (!name.trim() || !url.trim()) return;
@@ -668,11 +670,53 @@ function AddRemoteServer({
         setError(res.error ?? "That did not work.");
         return;
       }
+      // A server that signs people in is not finished being added. Closing the
+      // form here would leave it looking added and behaving disconnected.
+      if (res.needsSignIn && res.slug) {
+        setSignIn({ slug: res.slug });
+        return;
+      }
       onDone();
     } finally {
       setBusy(false);
     }
   };
+
+  const connect = async (): Promise<void> => {
+    if (!signIn) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await window.studio!.startMcpSignIn({ slug: signIn.slug, agent, shared });
+      if (!res.ok) {
+        setError(res.error ?? "Could not start the sign-in.");
+        return;
+      }
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (signIn) {
+    return (
+      <div className="card" style={{ marginTop: 12 }}>
+        <p style={{ marginTop: 0 }}>
+          <strong>{name.trim()}</strong> signs you in itself. Approve it in your browser and it
+          connects for you — {shared ? "for everyone here" : "for you"}, on this agent.
+        </p>
+        {error ? <div className="error">{error}</div> : null}
+        <div className="row" style={{ gap: 8 }}>
+          <button className="btn btn-primary" disabled={busy} onClick={() => void connect()}>
+            {busy ? "Opening…" : "Connect"}
+          </button>
+          <button className="btn" disabled={busy} onClick={onDone}>
+            Later
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="card" style={{ marginTop: 12 }}>

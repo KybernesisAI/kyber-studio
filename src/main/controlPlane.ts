@@ -1493,7 +1493,7 @@ export async function addCustomConnector(input: {
   url: string;
   token?: string;
   shared?: boolean;
-}): Promise<{ ok: boolean; error?: string }> {
+}): Promise<{ ok: boolean; error?: string; slug?: string; needsSignIn?: boolean }> {
   const s = await activeSession();
   if (!s?.bundle) return { ok: false, error: "Not signed in." };
   const res = await fetch(`${ISSUER}/api/connectors/custom`, {
@@ -1508,6 +1508,41 @@ export async function addCustomConnector(input: {
   });
   const body = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) return { ok: false, error: body.error ?? `The control plane refused (${res.status}).` };
+  return { ok: true };
+}
+
+/**
+ * Sign in to a remote MCP server that asks for OAuth.
+ *
+ * @remarks
+ * The server-side half discovers everything from the URL — where to register,
+ * where to send the person, where to redeem the code — so this only has to open
+ * a browser and get out of the way. The tokens never come here: they are held
+ * and refreshed by the control plane, which is what lets the agent use the
+ * server from Slack or a workspace at a time when this app is not running.
+ */
+export async function startMcpSignIn(input: {
+  slug: string;
+  agent: string;
+  shared?: boolean;
+}): Promise<{ ok: boolean; error?: string }> {
+  const s = await activeSession();
+  if (!s?.bundle) return { ok: false, error: "Not signed in." };
+  const res = await fetch(`${ISSUER}/api/connectors/mcp/oauth/start`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${s.token}`,
+      "x-kybernesis-bundle": s.bundle,
+    },
+    body: JSON.stringify(input),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const body = (await res.json().catch(() => ({}))) as { authorizeUrl?: string; error?: string };
+  if (!res.ok || !body.authorizeUrl) {
+    return { ok: false, error: body.error ?? `The control plane refused (${res.status}).` };
+  }
+  await shell.openExternal(body.authorizeUrl);
   return { ok: true };
 }
 

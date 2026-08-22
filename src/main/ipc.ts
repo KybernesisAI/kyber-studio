@@ -22,6 +22,7 @@ import {
   type DeviceStart,
   agentInfo,
   addCustomConnector,
+  startMcpSignIn,
   cancelTurn,
   connectService,
   disconnectService,
@@ -140,6 +141,11 @@ export function registerIpc(): void {
       _e,
       input: { agent: string; name: string; url: string; token?: string; shared?: boolean },
     ) => addCustomConnector(input),
+  );
+
+  ipcMain.handle(
+    "studio:startMcpSignIn",
+    (_event, input: { slug: string; agent: string; shared?: boolean }) => startMcpSignIn(input),
   );
 
   ipcMain.handle("studio:testRemoteMcp", (_e, slug: string) => testRemoteMcp(slug));
