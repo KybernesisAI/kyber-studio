@@ -165,6 +165,12 @@ export interface StudioApi {
       name: string;
       description?: string;
       provider: string;
+      /** none | bearer | oauth — whether this server signs people in. */
+      authMode?: string;
+      /** Added to THIS agent, and waiting on a person to approve it. */
+      awaitingSignIn?: boolean;
+      /** This agent has this server, whatever state its sign-in is in. */
+      present?: boolean;
       scope: string;
       needsAdmin: boolean;
       mark?: string;

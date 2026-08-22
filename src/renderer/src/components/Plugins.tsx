@@ -310,10 +310,23 @@ function ConnectorDetail({
  */
 function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   const [local, setLocal] = useState<LocalMcpServer[] | null>(null);
-  const [remote, setRemote] = useState<{ slug: string; name: string; description?: string }[]>([]);
+  const [remote, setRemote] = useState<
+    {
+      slug: string;
+      name: string;
+      description?: string;
+      authMode?: string;
+      awaitingSignIn?: boolean;
+      present?: boolean;
+      scope: string;
+      connected: boolean;
+    }[]
+  >([]);
   const [mode, setMode] = useState<"none" | "remote" | "local">("none");
   const [checking, setChecking] = useState<string | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
+  /** A sign-in happening in the browser, which this window cannot see. */
+  const [awaiting, setAwaiting] = useState<string | null>(null);
   const [result, setResult] = useState<
     Record<string, { ok: boolean; tools?: string[]; error?: string; signInUrl?: string }>
   >({});
@@ -324,10 +337,61 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
     const cards = await window.studio?.connectors(agent);
     setRemote(
       (cards?.connectors ?? [])
-        .filter((c) => c.provider === "mcp-direct" && c.connected)
-        .map((c) => ({ slug: c.slug, name: c.name, description: c.description })),
+        // What THIS agent has, whatever state it is in.
+        //
+        // Listing every definition in the org put a server added to one agent
+        // under all of them. Listing only connected ones hid a server waiting
+        // to be signed in. Listing connected-or-waiting hid the case between
+        // them — added, with an authorization already held — and a card that
+        // vanishes on Add reads as the button being broken.
+        .filter((c) => c.provider === "mcp-direct" && c.present !== false && (c.present || c.connected || c.awaitingSignIn))
+        .map((c) => ({
+          slug: c.slug,
+          name: c.name,
+          description: c.description,
+          authMode: c.authMode,
+          awaitingSignIn: c.awaitingSignIn,
+          present: c.present,
+          scope: c.scope,
+          connected: c.connected,
+        })),
     );
   };
+
+  /**
+   * Notice an approval that happened somewhere else.
+   *
+   * The browser has no way to tell this window that a person pressed Approve,
+   * so the window has to look. Two triggers, because either alone leaves a
+   * case stranded: coming back to the app covers the ordinary path, and a poll
+   * covers approving on a phone or on a second monitor without ever switching
+   * back. Both stop as soon as the answer arrives, and the poll gives up after
+   * a few minutes rather than running for the life of the app.
+   */
+  useEffect(() => {
+    if (!awaiting) return;
+    let cancelled = false;
+    const look = async (): Promise<void> => {
+      const cards = await window.studio?.connectors(agent);
+      const card = (cards?.connectors ?? []).find((c) => c.slug === awaiting);
+      if (!cancelled && card?.connected) {
+        setAwaiting(null);
+        await refresh();
+      }
+    };
+    const timer = setInterval(() => void look(), 2_000);
+    const giveUp = setTimeout(() => {
+      if (!cancelled) setAwaiting(null);
+    }, 180_000);
+    const onFocus = (): void => void look();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      clearTimeout(giveUp);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [awaiting, agent]);
 
   useEffect(() => {
     void refresh();
@@ -363,13 +427,64 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                       ? result[s.slug]!.ok
                         ? `Answering · ${result[s.slug]!.tools?.length ?? 0} tools`
                         : result[s.slug]!.error
-                      : "Your agents call this directly"}
+                      : awaiting === s.slug
+                        ? "Waiting for you to approve it…"
+                        : s.authMode === "oauth" && !s.connected
+                          ? "Signs you in — connect to use it"
+                        : "Your agents call this directly"}
                   </div>
                 </div>
-                {checking === s.slug ? (
+                {checking === s.slug || awaiting === s.slug ? (
                   <span className="pl__added">
                     <Spinner />
                   </span>
+                ) : s.connected ? (
+                  // Say it. A connection that worked and shows only a
+                  // diagnostic button reads as unfinished — the person did
+                  // everything asked of them and the interface never agreed.
+                  <>
+                    <span className="pl__added">
+                      <Icon name="check" size={13} /> Connected
+                    </span>
+                    <button
+                      className="btn btn-sm"
+                      title="Ask the server whether it answers"
+                      onClick={async () => {
+                        setChecking(s.slug);
+                        const outcome = await window.studio!.testRemoteMcp(s.slug);
+                        setResult((r) => ({ ...r, [s.slug]: outcome }));
+                        setChecking(null);
+                      }}
+                    >
+                      Check
+                    </button>
+                  </>
+                ) : s.authMode === "oauth" ? (
+                  // A server that signs people in has one obvious next step, and
+                  // it is not a diagnostic. Offering Check here reports the
+                  // missing sign-in as though the server were broken.
+                  <button
+                    className="btn btn-primary"
+                    onClick={async () => {
+                      setChecking(s.slug);
+                      const outcome = await window.studio!.startMcpSignIn({
+                        slug: s.slug,
+                        agent,
+                        shared: s.scope === "app",
+                      });
+                      setChecking(null);
+                      if (!outcome.ok) {
+                        setResult((r) => ({ ...r, [s.slug]: { ok: false, error: outcome.error } }));
+                        return;
+                      }
+                      // The browser has it now, and approving happens out
+                      // there. Watch for it rather than claiming success on the
+                      // strength of having opened a tab.
+                      setAwaiting(s.slug);
+                    }}
+                  >
+                    Connect
+                  </button>
                 ) : (
                   <button
                     className="btn"
