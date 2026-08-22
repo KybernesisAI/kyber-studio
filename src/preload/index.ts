@@ -22,6 +22,7 @@ const studio: StudioApi = {
   saveRemoteFile: (input) => ipcRenderer.invoke("studio:saveRemoteFile", input),
   openRemoteFile: (input) => ipcRenderer.invoke("studio:openRemoteFile", input),
   agentInfo: (url) => ipcRenderer.invoke("studio:agentInfo", url),
+  agentHealth: (url) => ipcRenderer.invoke("studio:agentHealth", url),
   localAnswer: (input) => ipcRenderer.invoke("studio:localAnswer", input),
   localPermissions: () => ipcRenderer.invoke("studio:localPermissions"),
   listSessions: (agent) => ipcRenderer.invoke("studio:listSessions", agent),

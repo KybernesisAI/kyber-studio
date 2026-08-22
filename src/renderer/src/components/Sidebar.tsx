@@ -150,6 +150,14 @@ function Row({
       <div className="row__body">
         <div className="row__line">
           <span className="row__name">{agent.name}</span>
+          {/* Shown only when the agent has been asked and did not answer. A
+              badge on every healthy row is decoration; this one means
+              something is wrong, which is when a badge earns its place. */}
+          {agent.status === "offline" ? (
+            <span className="row__down" title="Not answering">
+              ○
+            </span>
+          ) : null}
           {agent.pinned ? <span className="row__pin"><Icon name="pin" size={12} /></span> : null}
           <span className="row__time">{last ? timeLabel(last.at) : ""}</span>
         </div>

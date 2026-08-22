@@ -169,6 +169,9 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--accent); flex: none; align-self: center;
 }
 .row__pin { color: var(--ink-tertiary); flex: none; }
+/* An agent that was asked and did not answer. Muted rather than alarming: it is
+   often a VM that is simply off, not an incident. */
+.row__down { color: var(--danger, #e5484d); flex: none; font-size: 11px; line-height: 1; }
 
 .sidebar__foot { padding: 4px 8px 6px; border-top: 0.5px solid var(--stroke); -webkit-app-region: no-drag; }
 .foot-row {

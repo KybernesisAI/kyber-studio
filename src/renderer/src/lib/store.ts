@@ -745,6 +745,8 @@ interface State {
   restore(): Promise<void>;
   persist(): void;
   refreshAgents(): Promise<void>;
+  /** Ask each agent whether it answers, and record it as their status. */
+  refreshLiveness(): Promise<void>;
   loadAgentInfo(agentId: string): Promise<void>;
   loadCatalog(agentId: string): Promise<void>;
   install(agentId: string, item: string): Promise<void>;
@@ -1645,20 +1647,54 @@ export const useStore = create<State>((set, get) => ({
             hidden: chosen.hidden ?? prior?.hidden,
             unread: prior?.unread,
             notifications: chosen.notifications ?? prior?.notifications ?? true,
-            status: r.reachable ? "online" : "offline",
+            // "unknown" until something asks the agent itself. Holding an
+            // address is not being alive, and calling it "online" here is what
+            // made a registration whose machine was long gone look healthy.
+            status: (r.hasUrl ?? r.reachable) ? (prior?.status ?? "unknown") : "offline",
             title: prior?.title,
             description: prior?.description,
             lastMessageAt: prior?.lastMessageAt,
-            lastMessagePreview: r.reachable
+            lastMessagePreview: (r.hasUrl ?? r.reachable)
               ? prior?.lastMessagePreview
               : "Registered, but no URL on file in the control plane.",
           };
         }),
         activeAgentId: remote[0]?.id ?? get().activeAgentId,
       });
+
+      // Then ask the agents themselves. Deliberately after the list is already
+      // on screen and deliberately not awaited into it: liveness is worth
+      // showing, never worth making someone wait for, and one unreachable host
+      // must not hold up the whole sidebar behind its timeout.
+      void get().refreshLiveness();
     } catch (e) {
       set({ authError: e instanceof Error ? e.message : String(e) });
     }
+  },
+
+  /**
+   * Ask every agent with an address whether it is answering.
+   *
+   * The control plane can only say whether it holds a URL, and this app used to
+   * render that as "online" — so an agent whose machine had been deleted looked
+   * exactly like a healthy one. Only a client sitting where the user sits can
+   * tell the difference, so it asks.
+   */
+  refreshLiveness: async () => {
+    if (!window.studio) return;
+    const targets = get()
+      .agents.filter((a) => a.url)
+      .map((a) => ({ id: a.id, url: a.url as string }));
+    await Promise.all(
+      targets.map(async ({ id, url }) => {
+        const live = await window.studio!.agentHealth(url);
+        set((s) => ({
+          agents: s.agents.map((a) =>
+            a.id === id ? { ...a, status: live ? "online" : "offline" } : a,
+          ),
+        }));
+      }),
+    );
   },
 
   loadAgentInfo: async (agentId) => {

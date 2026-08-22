@@ -20,6 +20,7 @@ import {
 } from "./localExec";
 import {
   type DeviceStart,
+  agentHealth,
   agentInfo,
   addCustomConnector,
   startMcpSignIn,
@@ -80,6 +81,8 @@ export function registerIpc(): void {
   ipcMain.handle("studio:listAgents", () => listAgents());
 
   ipcMain.handle("studio:agentInfo", (_e, url: string) => agentInfo(url));
+
+  ipcMain.handle("studio:agentHealth", (_e, url: string) => agentHealth(url));
 
   ipcMain.handle(
     "studio:localAnswer",

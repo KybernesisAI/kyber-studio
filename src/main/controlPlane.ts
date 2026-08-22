@@ -528,6 +528,31 @@ function activityLabel(
 }
 
 /** What the agent reports about itself — model, name, description. */
+/**
+ * Ask an agent, directly, whether it is answering.
+ *
+ * @remarks
+ * The control plane cannot answer this. Its `hasUrl` says only that a
+ * registration holds an address — and a registration outlives the machine it
+ * names, so an agent whose VM was deleted months ago looked exactly as healthy
+ * here as one serving traffic. This app read that field as liveness and
+ * reported such agents as "online".
+ *
+ * Unauthenticated on purpose: `/eve/v1/health` answers without a token, so
+ * checking costs no credential, and a 401 is itself an answer — something is
+ * listening there, but it is not this agent.
+ */
+export async function agentHealth(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${url.replace(/\/$/, "")}/eve/v1/health`, {
+      signal: AbortSignal.timeout(6_000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function agentInfo(url: string): Promise<Record<string, unknown> | null> {
   const s = await activeSession();
   if (!s?.bundle) return null;

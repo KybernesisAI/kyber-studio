@@ -63,6 +63,12 @@ export interface RemoteAgent {
   url: string | null;
   accessMode: string;
   audience: string | null;
+  /**
+   * Whether the control plane holds an address for this agent — NOT whether it
+   * answers. Probe with `agentHealth` for the second thing.
+   */
+  hasUrl?: boolean;
+  /** @deprecated Use `hasUrl`. Kept for control planes not yet redeployed. */
   reachable: boolean;
   daemonLabel: string | null;
   /**
@@ -266,6 +272,8 @@ export interface StudioApi {
     }) => void,
   ): () => void;
   agentInfo(url: string): Promise<AgentInfo | null>;
+  /** Whether the agent itself answers right now. See `agentHealth` in main. */
+  agentHealth(url: string): Promise<boolean>;
 
   /** A remote agent wants to do something on this machine. */
   onLocalAsk(handler: (ask: LocalAsk) => void): () => void;
