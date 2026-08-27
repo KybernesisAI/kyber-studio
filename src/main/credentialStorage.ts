@@ -136,7 +136,33 @@ export function describeCredentialStorage(report: CredentialStorageReport): stri
   );
 }
 
-/** Collect and print, once. The only function the main process needs. */
-export function reportCredentialStorage(safeStorage: SafeStorageLike): void {
-  console.log(describeCredentialStorage(collectCredentialStorage(safeStorage)));
+/**
+ * Build the reporter the main process calls.
+ *
+ * @remarks
+ * Two things are deliberate here, and both were learned the hard way on a
+ * Linux Mint MATE box with a locked keyring.
+ *
+ * **It reports at most once.** `createWindow` runs again on macOS `activate`,
+ * and a diagnostic that reprints every time a window opens stops reading as a
+ * fact about the machine and starts reading as noise.
+ *
+ * **It must not be called before there is a window on screen.** Asking these
+ * questions is what triggers the OS to unlock its keyring, and on Linux that
+ * can put a system password dialog in front of the user and block the main
+ * process until it is answered. Called too early, the first thing a new user
+ * sees is an unexplained password prompt with no application behind it, and
+ * the window does not appear until they deal with it. Observed, not theorised.
+ * The call site belongs after `ready-to-show`.
+ */
+export function createCredentialStorageReporter(
+  safeStorage: SafeStorageLike,
+  log: (line: string) => void = console.log,
+): () => void {
+  let reported = false;
+  return () => {
+    if (reported) return;
+    reported = true;
+    log(describeCredentialStorage(collectCredentialStorage(safeStorage)));
+  };
 }

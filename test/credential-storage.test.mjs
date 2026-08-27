@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 // passed in — so node --test can load it directly under --experimental-strip-types.
 import {
   collectCredentialStorage,
+  createCredentialStorageReporter,
   describeCredentialStorage,
 } from "../src/main/credentialStorage.ts";
 
@@ -146,4 +147,44 @@ test("the whole report is one line", () => {
       assert.match(line, /^\[storage\] /);
     }
   }
+});
+
+test("the reporter speaks once, however many windows open", () => {
+  // createWindow runs again on macOS 'activate'. A diagnostic that reprints
+  // every time a window opens stops reading as a fact about the machine and
+  // starts reading as noise.
+  const lines = [];
+  const report = createCredentialStorageReporter(fakeSafeStorage(), (l) => lines.push(l));
+
+  report();
+  report();
+  report();
+
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^\[storage\] /);
+});
+
+test("the reporter does not touch the keyring until it is called", () => {
+  // This is the regression that made the fix necessary. Asking these questions
+  // is what makes the OS unlock its keyring, and on Linux that can raise a
+  // password dialog and block the main process until it is answered. Built at
+  // module scope and called from whenReady, it put that dialog in front of a
+  // user with no application window behind it — observed on Linux Mint MATE,
+  // where the window did not appear until the dialog was dealt with.
+  //
+  // Construction must therefore be inert; only the call may ask.
+  let asked = 0;
+  const safeStorage = {
+    isEncryptionAvailable: () => {
+      asked += 1;
+      return true;
+    },
+    getSelectedStorageBackend: () => "gnome_libsecret",
+  };
+
+  const report = createCredentialStorageReporter(safeStorage, () => {});
+  assert.equal(asked, 0, "constructing the reporter asked the OS about encryption");
+
+  report();
+  assert.equal(asked, 1);
 });

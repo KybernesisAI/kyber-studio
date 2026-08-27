@@ -6,7 +6,18 @@ import { BrowserWindow, app, safeStorage, shell } from "electron";
 import { electronApp, is, optimizer } from "@electron-toolkit/utils";
 import { registerIpc } from "./ipc";
 import { setLocalExecWindow, startLocalExec } from "./localExec";
-import { reportCredentialStorage } from "./credentialStorage";
+import { createCredentialStorageReporter } from "./credentialStorage";
+
+/**
+ * Say which credential store the OS gave us — once, and only once there is a
+ * window to say it behind.
+ *
+ * On Linux `isEncryptionAvailable()` answers true even when the backend is
+ * `basic_text`, a hard-coded key shared by every install, so the promise in
+ * controlPlane.ts can be broken on a machine that looks fine from inside the
+ * app. Asking the second question is how we find out which machines those are.
+ */
+const reportCredentialStorage = createCredentialStorageReporter(safeStorage);
 
 /**
  * The window is deliberately chrome-light: a hidden-inset title bar with traffic
@@ -33,7 +44,15 @@ function createWindow(): void {
     },
   });
 
-  win.on("ready-to-show", () => win.show());
+  win.on("ready-to-show", () => {
+    win.show();
+    // Deferred to here on purpose: asking about the credential store is what
+    // makes the OS unlock its keyring, and on Linux that can raise a system
+    // password dialog and block the main process until it is answered. Run
+    // from whenReady it did exactly that — a password prompt with no
+    // application behind it, and no window until the user dealt with it.
+    reportCredentialStorage();
+  });
   // The permission card lives in this window, so local execution must know
   // which contents to ask in — and must refuse rather than assume consent when
   // there is no window.
@@ -52,12 +71,6 @@ function createWindow(): void {
 
 void app.whenReady().then(() => {
   electronApp.setAppUserModelId("ai.kybernesis.kyberstudio");
-  // Before anything reads or writes a credential, say out loud which store the
-  // OS actually gave us. On Linux isEncryptionAvailable() answers true even when
-  // the backend is basic_text — a hard-coded key shared by every install — so the
-  // promise in controlPlane.ts can be broken on a machine that looks fine from
-  // inside the app. This line is how we find out which machines those are.
-  reportCredentialStorage(safeStorage);
   registerIpc();
   // The updater needs a live window to report progress to, and windows come and
   // go on macOS — so it takes a getter rather than an instance.
