@@ -2,10 +2,11 @@ import { stopAll } from "./localMcp";
 import { warmUp } from "./dictation";
 import { registerUpdater } from "./updater";
 import { join } from "node:path";
-import { BrowserWindow, app, shell } from "electron";
+import { BrowserWindow, app, safeStorage, shell } from "electron";
 import { electronApp, is, optimizer } from "@electron-toolkit/utils";
 import { registerIpc } from "./ipc";
 import { setLocalExecWindow, startLocalExec } from "./localExec";
+import { reportCredentialStorage } from "./credentialStorage";
 
 /**
  * The window is deliberately chrome-light: a hidden-inset title bar with traffic
@@ -51,6 +52,12 @@ function createWindow(): void {
 
 void app.whenReady().then(() => {
   electronApp.setAppUserModelId("ai.kybernesis.kyberstudio");
+  // Before anything reads or writes a credential, say out loud which store the
+  // OS actually gave us. On Linux isEncryptionAvailable() answers true even when
+  // the backend is basic_text — a hard-coded key shared by every install — so the
+  // promise in controlPlane.ts can be broken on a machine that looks fine from
+  // inside the app. This line is how we find out which machines those are.
+  reportCredentialStorage(safeStorage);
   registerIpc();
   // The updater needs a live window to report progress to, and windows come and
   // go on macOS — so it takes a getter rather than an instance.
