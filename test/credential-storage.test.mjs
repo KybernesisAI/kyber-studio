@@ -195,12 +195,18 @@ test("the reporter does not touch the keyring until it is called", () => {
   assert.equal(asked, 1);
 });
 
-test("the call returns before the OS is asked, so the frame can paint first", async () => {
-  // ready-to-show plus show() is not yet a painted window — the show still has
-  // to reach the renderer. Asking synchronously from that handler blocks the
-  // main process inside the keyring call with the window visible and blank, so
-  // on a locked keyring the password dialog arrives over an empty frame.
-  // Whatever the caller is in the middle of must finish first.
+test("the call returns before the OS is asked, so nothing waits inside the handler", async () => {
+  // Asking is what makes the OS unlock its keyring, and on a locked keyring
+  // that blocks the main process until a password dialog is answered — which
+  // may be a minute. Blocking inside the ready-to-show handler that made the
+  // call would put everything else queued on the main process behind that
+  // dialog, so the caller must be allowed to finish first.
+  //
+  // Note what this does NOT claim. The original argument for deferring was
+  // that it would let the window paint first; measured on Linux Mint MATE with
+  // a locked keyring, it does not — show() only starts the presentation. The
+  // blank window behind the prompt is accepted; not blocking the handler is
+  // the property worth keeping.
   let asked = 0;
   const safeStorage = {
     isEncryptionAvailable: () => {

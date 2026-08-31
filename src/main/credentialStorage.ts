@@ -153,13 +153,22 @@ export function describeCredentialStorage(report: CredentialStorageReport): stri
  *
  * **The questions are asked on a later tick than the call.** Asking is what
  * makes the OS unlock its keyring, and on Linux that can raise a system
- * password dialog and block the main process until it is answered. Called from
- * `whenReady` it did exactly that: a password prompt with no application behind
- * it, and no window until the user dealt with it. Called synchronously from
- * `ready-to-show` the window exists but has not painted, so the prompt arrives
- * over a blank frame instead. Deferring one turn of the loop lets the show
- * reach the renderer before the main process blocks. The scheduler is
- * injectable so that deferral can be tested rather than assumed.
+ * password dialog and block the main process until it is answered — so the
+ * call must not block inside the `ready-to-show` handler that made it, where
+ * everything else queued on the main process would wait behind a dialog the
+ * user may take a minute to answer. The scheduler is injectable so that is a
+ * tested property rather than an assumption.
+ *
+ * What deferring does **not** buy is a painted window. That was the original
+ * argument for it and it was wrong: measured on Linux Mint MATE with a locked
+ * keyring, the window is still blank behind the prompt, because `show()` only
+ * starts the presentation and that VM is on Chromium's software rasteriser, so
+ * first paint takes far longer than a turn of the loop. Getting a painted frame
+ * would need the renderer to signal back after its first paint — an IPC
+ * round-trip for a diagnostic, to turn a blank rectangle into a white one.
+ * Judged not worth it; the blank window behind an unlock prompt is accepted.
+ * The case that mattered — a prompt with *no* window behind it, from
+ * `whenReady` — is fixed by the call site, not by this deferral.
  */
 export function createCredentialStorageReporter(
   safeStorage: SafeStorageLike,

@@ -52,9 +52,9 @@ function createWindow(): void {
     // from whenReady it did exactly that — a password prompt with no
     // application behind it, and no window until the user dealt with it.
     //
-    // The reporter defers again internally, off this tick, because show() has
-    // not reached the renderer yet: blocking here would leave the window
-    // visible but blank behind the prompt.
+    // The reporter defers again internally so it does not block inside this
+    // handler. It does not make the window paint first — measured on MATE, it
+    // is still blank behind the prompt — and that is accepted.
     reportCredentialStorage();
   });
   // The permission card lives in this window, so local execution must know
