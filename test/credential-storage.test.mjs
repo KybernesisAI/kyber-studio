@@ -149,12 +149,18 @@ test("the whole report is one line", () => {
   }
 });
 
+/** Run the scheduled work immediately, for the tests that are not about timing. */
+const immediately = (task) => task();
+
+/** Let one turn of the event loop pass, so a deferred report has run. */
+const nextTick = () => new Promise((resolve) => setImmediate(resolve));
+
 test("the reporter speaks once, however many windows open", () => {
   // createWindow runs again on macOS 'activate'. A diagnostic that reprints
   // every time a window opens stops reading as a fact about the machine and
   // starts reading as noise.
   const lines = [];
-  const report = createCredentialStorageReporter(fakeSafeStorage(), (l) => lines.push(l));
+  const report = createCredentialStorageReporter(fakeSafeStorage(), (l) => lines.push(l), immediately);
 
   report();
   report();
@@ -182,9 +188,63 @@ test("the reporter does not touch the keyring until it is called", () => {
     getSelectedStorageBackend: () => "gnome_libsecret",
   };
 
-  const report = createCredentialStorageReporter(safeStorage, () => {});
+  const report = createCredentialStorageReporter(safeStorage, () => {}, immediately);
   assert.equal(asked, 0, "constructing the reporter asked the OS about encryption");
 
   report();
   assert.equal(asked, 1);
+});
+
+test("the call returns before the OS is asked, so the frame can paint first", async () => {
+  // ready-to-show plus show() is not yet a painted window — the show still has
+  // to reach the renderer. Asking synchronously from that handler blocks the
+  // main process inside the keyring call with the window visible and blank, so
+  // on a locked keyring the password dialog arrives over an empty frame.
+  // Whatever the caller is in the middle of must finish first.
+  let asked = 0;
+  const safeStorage = {
+    isEncryptionAvailable: () => {
+      asked += 1;
+      return true;
+    },
+    getSelectedStorageBackend: () => "gnome_libsecret",
+  };
+
+  const lines = [];
+  const report = createCredentialStorageReporter(safeStorage, (l) => lines.push(l));
+
+  report();
+  assert.equal(asked, 0, "the OS was asked on the caller's tick");
+  assert.equal(lines.length, 0);
+
+  await nextTick();
+
+  assert.equal(asked, 1);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^\[storage\] /);
+});
+
+test("two calls before the deferred report runs still ask once", async () => {
+  // The once-only latch has to close when the reporter is called, not when the
+  // scheduled work runs — otherwise two windows opening in the same tick queue
+  // two keyring questions, which is two password dialogs.
+  let asked = 0;
+  const safeStorage = {
+    isEncryptionAvailable: () => {
+      asked += 1;
+      return true;
+    },
+    getSelectedStorageBackend: () => "gnome_libsecret",
+  };
+
+  const lines = [];
+  const report = createCredentialStorageReporter(safeStorage, (l) => lines.push(l));
+
+  report();
+  report();
+
+  await nextTick();
+
+  assert.equal(asked, 1);
+  assert.equal(lines.length, 1);
 });

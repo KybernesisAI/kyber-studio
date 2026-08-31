@@ -140,29 +140,40 @@ export function describeCredentialStorage(report: CredentialStorageReport): stri
  * Build the reporter the main process calls.
  *
  * @remarks
- * Two things are deliberate here, and both were learned the hard way on a
- * Linux Mint MATE box with a locked keyring.
+ * Three things are deliberate here, and all three were learned on a Linux Mint
+ * MATE box with a locked keyring.
  *
  * **It reports at most once.** `createWindow` runs again on macOS `activate`,
  * and a diagnostic that reprints every time a window opens stops reading as a
  * fact about the machine and starts reading as noise.
  *
- * **It must not be called before there is a window on screen.** Asking these
- * questions is what triggers the OS to unlock its keyring, and on Linux that
- * can put a system password dialog in front of the user and block the main
- * process until it is answered. Called too early, the first thing a new user
- * sees is an unexplained password prompt with no application behind it, and
- * the window does not appear until they deal with it. Observed, not theorised.
- * The call site belongs after `ready-to-show`.
+ * **Construction asks nothing.** Only the call reaches the OS, so building the
+ * reporter at module scope cannot trigger a keyring unlock before the app has
+ * decided it is ready to survive one.
+ *
+ * **The questions are asked on a later tick than the call.** Asking is what
+ * makes the OS unlock its keyring, and on Linux that can raise a system
+ * password dialog and block the main process until it is answered. Called from
+ * `whenReady` it did exactly that: a password prompt with no application behind
+ * it, and no window until the user dealt with it. Called synchronously from
+ * `ready-to-show` the window exists but has not painted, so the prompt arrives
+ * over a blank frame instead. Deferring one turn of the loop lets the show
+ * reach the renderer before the main process blocks. The scheduler is
+ * injectable so that deferral can be tested rather than assumed.
  */
 export function createCredentialStorageReporter(
   safeStorage: SafeStorageLike,
   log: (line: string) => void = console.log,
+  schedule: (task: () => void) => void = setImmediate,
 ): () => void {
   let reported = false;
   return () => {
+    // Latched before scheduling rather than inside the task: two calls in the
+    // same tick must not queue two questions at the OS.
     if (reported) return;
     reported = true;
-    log(describeCredentialStorage(collectCredentialStorage(safeStorage)));
+    schedule(() => {
+      log(describeCredentialStorage(collectCredentialStorage(safeStorage)));
+    });
   };
 }

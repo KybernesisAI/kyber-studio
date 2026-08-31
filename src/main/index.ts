@@ -51,6 +51,10 @@ function createWindow(): void {
     // password dialog and block the main process until it is answered. Run
     // from whenReady it did exactly that — a password prompt with no
     // application behind it, and no window until the user dealt with it.
+    //
+    // The reporter defers again internally, off this tick, because show() has
+    // not reached the renderer yet: blocking here would leave the window
+    // visible but blank behind the prompt.
     reportCredentialStorage();
   });
   // The permission card lives in this window, so local execution must know
