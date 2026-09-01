@@ -102,7 +102,7 @@
           ]
         }
       ],
-      "maintainer": "Kybernesis <paul@kybernesis.ai>",
+      "maintainer": "Kybernesis <support@kybernesis.ai>",
       "category": "Development",
       "synopsis": "Desktop client for Kybernesis agents",
       "desktop": {
