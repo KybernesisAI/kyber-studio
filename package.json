@@ -55,6 +55,11 @@
     "files": [
       "out/**/*"
     ],
+    "asarUnpack": [
+      "**/node_modules/@img/**",
+      "**/node_modules/onnxruntime-node/**",
+      "**/*.node"
+    ],
     "mac": {
       "icon": "build/icon.icns",
       "category": "public.app-category.productivity",

@@ -107,10 +107,12 @@ export async function transcribe(samples: Float32Array): Promise<TranscriptionRe
  * Load the model without transcribing.
  *
  * Called when the window opens so the first dictation is not the one that pays
- * for loading. Failure is silent by design: this is an optimisation, and an
- * error here would be reported to somebody who has not asked for anything.
+ * for loading. Logs failure so a broken build leaves evidence, but does not
+ * surface errors until the user actually invokes dictation.
  */
 export function warmUp(): void {
   if (!dictationAvailable()) return;
-  void load().catch(() => undefined);
+  void load().catch((error) => {
+    console.warn("[dictation] warmup failed:", error.message ?? String(error));
+  });
 }
