@@ -1,0 +1,77 @@
+# TEMPORARY — delete before this PR merges.
+#
+# NEGATIVE CONTROL. This workflow is EXPECTED TO FAIL, and a red run of it is
+# the evidence for one of KYB-510's acceptance criteria: that the speech-model
+# assertion in release-linux demonstrably fails the build when the model is
+# absent, rather than merely warning. An assertion that cannot fail is a
+# comment, so it has to be watched failing at least once.
+#
+# The steps below are the release-linux steps, with exactly one addition: the
+# model is deleted out of the packaged app immediately before the assertion.
+# The expected outcome is a red run stopping at "Assert the speech model is in
+# the packaged app". If this workflow ever goes GREEN, the assertion is broken.
+#
+# Deleted in the same commit as the positive check, before merge.
+name: Linux package check — negative control (KYB-510)
+
+on:
+  push:
+    branches: [paul/kyb-510-linux-ci-lane]
+
+jobs:
+  assertion-must-fail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm install --no-audit --no-fund
+
+      - name: Package
+        run: npm run package:linux -- --${{ matrix.arch }} --publish never
+
+      # The one difference from release-linux. Simulates the failure mode the
+      # assertion exists to catch: the packaging step succeeded, but the model
+      # never made it into the app because its source directory was missing and
+      # electron-builder only warned.
+      - name: Remove the speech model from the packaged app
+        run: |
+          case "${{ matrix.arch }}" in
+            x64) unpacked="dist/linux-unpacked" ;;
+            *) unpacked="dist/linux-${{ matrix.arch }}-unpacked" ;;
+          esac
+          model="${unpacked}/resources/models/Xenova/whisper-base.en/onnx/encoder_model_quantized.onnx"
+          test -s "${model}" || { echo "precondition failed: model was not there to remove"; exit 1; }
+          rm -f "${model}"
+          echo "removed ${model}"
+
+      # Identical to the assertion in release-linux. This step MUST fail.
+      - name: Assert the speech model is in the packaged app
+        run: |
+          case "${{ matrix.arch }}" in
+            x64) unpacked="dist/linux-unpacked" ;;
+            *) unpacked="dist/linux-${{ matrix.arch }}-unpacked" ;;
+          esac
+          echo "checking speech model under ${unpacked}"
+          test -s "${unpacked}/resources/models/Xenova/whisper-base.en/onnx/encoder_model_quantized.onnx"
+
+      - name: This step must never run
+        run: |
+          echo "The assertion did not fail on a missing model. That is the bug." >&2
+          exit 1

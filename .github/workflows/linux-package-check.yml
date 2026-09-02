@@ -1,0 +1,111 @@
+# TEMPORARY — delete before this PR merges.
+#
+# Proves the release-linux job in release.yml actually works, on this branch
+# alone. workflow_dispatch only dispatches workflows already on the default
+# branch, so the new job cannot be triggered from its own branch that way —
+# the same arrangement KYB-508 used for the macOS package check.
+#
+# Why not simply add a branch push trigger to release.yml: every push would
+# also fire release-mac, which runs `electron-builder --mac --publish always`
+# on a non-tag ref and would attempt to create a GitHub Release. Not acceptable
+# as a side effect of testing a Linux lane.
+#
+# The job body below is kept BYTE-IDENTICAL to release-linux in release.yml —
+# only the trigger differs. A copy that drifts would prove nothing about the
+# real job. If you change release-linux, copy the block across verbatim.
+name: Linux package check (KYB-510)
+
+on:
+  push:
+    branches: [paul/kyb-510-linux-ci-lane]
+
+jobs:
+  release-linux:
+    # A real Linux runner rather than a cross-build from macOS. sharp / @img/*
+    # are genuinely per-platform optional dependencies, so a macOS-runner
+    # `npm install` never puts the linux-x64 variants on disk — every AppImage
+    # and .deb before this was therefore built by hand on a laptop or a UAT VM.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    # This lane uploads workflow artefacts and publishes nothing, so it needs no
+    # write scope. The file-level `contents: write` exists for release-mac's
+    # Release creation; narrowing it here keeps that reach off this job.
+    permissions:
+      contents: read
+
+    strategy:
+      # A matrix of one, on purpose. arm64 is then one more entry in this array
+      # plus one in build.linux.target — so the arch is threaded through to
+      # electron-builder and into the unpacked path below rather than hardcoded
+      # anywhere, which is what keeps that claim true.
+      fail-fast: false
+      matrix:
+        arch: [x64]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # install, not ci — the same reason as release-mac above: the lock is
+      # written by npm 11 locally and the runner ships npm 10, and the two
+      # resolve a transitive range differently, so npm ci refuses a lock that
+      # installs perfectly well.
+      - run: npm install --no-audit --no-fund
+
+      # package:linux, not release:linux. release:linux is `--publish always`,
+      # which is the release stage; this is a port of the packaging stage.
+      #
+      # --publish never is load-bearing, not stylistic: build.publish names a
+      # GitHub provider, so electron-builder schedules an upload for every
+      # artefact it creates and then dies with "GitHub Personal Access Token is
+      # not set" — AFTER a full build has already succeeded. That was measured
+      # the expensive way during KYB-508 (run 33611485421).
+      #
+      # The extra flags append to the END of the script string, so
+      # electron-builder receives `--linux --x64 --publish never` and the
+      # `npm run build` half is left untouched. The prepackage:linux hook still
+      # fires, colon and all — that hook is what fetches the speech model.
+      - name: Package
+        run: npm run package:linux -- --${{ matrix.arch }} --publish never
+
+      # The subtle one. resources/models/ is gitignored, so a clean CI checkout
+      # never has it — and a missing extraResources source is a WARNING, not an
+      # error, in electron-builder: app-builder-lib's fileMatcher logs "file
+      # source doesn't exist" and returns. So a lane that fails to fetch the
+      # model still goes green and ships an app with no speech model, with the
+      # failure buried in a line nobody reads. Assert it into the artefact
+      # instead.
+      #
+      # build.extraResources maps resources/models -> models, and
+      # src/main/dictation.ts resolves process.resourcesPath/models, so this is
+      # the path the app genuinely reads. The unpacked directory name is
+      # arch-dependent, so derive it from matrix.arch.
+      - name: Assert the speech model is in the packaged app
+        run: |
+          case "${{ matrix.arch }}" in
+            x64) unpacked="dist/linux-unpacked" ;;
+            *) unpacked="dist/linux-${{ matrix.arch }}-unpacked" ;;
+          esac
+          echo "checking speech model under ${unpacked}"
+          test -s "${unpacked}/resources/models/Xenova/whisper-base.en/onnx/encoder_model_quantized.onnx"
+
+      - name: What was produced
+        run: ls -la dist/*.AppImage dist/*.deb dist/latest-linux.yml && du -m dist/*.AppImage dist/*.deb
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          # upload-artifact@v4 requires a unique name per matrix job.
+          name: kyber-studio-linux-${{ matrix.arch }}
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/latest-linux.yml
+          retention-days: 14
