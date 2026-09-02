@@ -2,6 +2,7 @@
   "name": "kyber-studio",
   "version": "0.5.0",
   "description": "KYBER Studio — the desktop door to your Kybernesis agents.",
+  "homepage": "https://github.com/KybernesisAI/kyber-studio",
   "main": "./out/main/index.js",
   "author": "Kybernesis",
   "private": true,
@@ -14,13 +15,17 @@
     "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "package": "npm run build && electron-builder",
+    "package:linux": "npm run build && electron-builder --linux",
     "release:mac": "npm run build && electron-builder --mac --publish always",
+    "release:linux": "npm run build && electron-builder --linux --publish always",
     "release": "npm version patch -m \"release: v%s\" && git push --follow-tags",
     "release:minor": "npm version minor -m \"release: v%s\" && git push --follow-tags",
     "test": "node --experimental-strip-types --test \"test/**/*.test.mjs\"",
     "fetch:speech": "node scripts/fetch-speech-model.mjs",
     "prepackage": "node scripts/fetch-speech-model.mjs",
+    "prepackage:linux": "node scripts/fetch-speech-model.mjs",
     "prerelease:mac": "node scripts/fetch-speech-model.mjs",
+    "prerelease:linux": "node scripts/fetch-speech-model.mjs",
     "verify:package": "node scripts/verify-package.mjs"
   },
   "dependencies": {
@@ -82,7 +87,37 @@
       "icon": "build/icon.png"
     },
     "linux": {
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "maintainer": "Kybernesis <support@kybernesis.ai>",
+      "category": "Development",
+      "synopsis": "Desktop client for Kybernesis agents",
+      "desktop": {
+        "StartupWMClass": "kyber-studio"
+      },
+      "files": [
+        "out/**/*",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/darwin/**",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/**",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/linux/arm64/**",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime_providers_cuda.so",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime_providers_tensorrt.so",
+        "!**/node_modules/@img/sharp-linuxmusl-*/**",
+        "!**/node_modules/@img/sharp-libvips-linuxmusl-*/**"
+      ]
     },
     "publish": {
       "provider": "github",
