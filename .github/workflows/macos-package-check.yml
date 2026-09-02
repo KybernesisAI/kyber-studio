@@ -38,10 +38,14 @@ jobs:
       # Signing and notarisation are disabled on the command line rather than in
       # package.json, so the committed config stays honest about what a release
       # does.
+      # --publish never is not optional. build.publish names a GitHub provider,
+      # and electron-builder schedules an upload for every artefact it creates
+      # unless told otherwise — which fails on a runner with no GH_TOKEN, after
+      # the build has already succeeded. PR-2's CI lane will need the same flag.
       - name: Package
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npx electron-builder --mac dmg --arm64 -c.mac.notarize=false
+        run: npx electron-builder --mac dmg --arm64 -c.mac.notarize=false --publish never
 
       - name: What was produced
         run: ls -la dist/*.dmg && du -m dist/*.dmg
