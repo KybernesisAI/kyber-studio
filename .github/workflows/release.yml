@@ -101,6 +101,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
+    env:
+      # KYB-510's acceptance line is "AppImage under 250 MB". Decimal MB, so
+      # 250,000,000 bytes — the tighter of the two readings, and the one the
+      # words actually say. The first green run measured 238.0 MB (227.0 MiB),
+      # so this leaves about 5% of headroom: it is a real gate, not a formality.
+      #
+      # One number in one place, so the ceiling can be raised deliberately and
+      # a negative control can exercise the gate by lowering it.
+      APPIMAGE_MAX_BYTES: 250000000
+
     # This lane uploads workflow artefacts and publishes nothing, so it needs no
     # write scope. The file-level `contents: write` exists for release-mac's
     # Release creation; narrowing it here keeps that reach off this job.
@@ -168,6 +178,22 @@ jobs:
           esac
           echo "checking speech model under ${unpacked}"
           test -s "${unpacked}/resources/models/Xenova/whisper-base.en/onnx/encoder_model_quantized.onnx"
+
+      # The size line from acceptance, as a gate rather than a number printed
+      # into a log. Actions logs are not readable without authentication, so a
+      # size that only appears in log output cannot be checked by everyone who
+      # can see the run — and the same reasoning that put the model assertion
+      # here applies: a criterion nothing enforces is a wish.
+      - name: Assert the AppImage is under the size ceiling
+        run: |
+          appimage="$(ls -1 dist/*.AppImage | head -n1)"
+          bytes="$(stat -c %s "${appimage}")"
+          awk -v b="${bytes}" -v f="${appimage}" -v max="${APPIMAGE_MAX_BYTES}" \
+            'BEGIN { printf "%s: %d bytes = %.1f MB = %.1f MiB (ceiling %d bytes = %.0f MB)\n", f, b, b/1000000, b/1048576, max, max/1000000 }'
+          if [ "${bytes}" -gt "${APPIMAGE_MAX_BYTES}" ]; then
+            echo "::error::AppImage is ${bytes} bytes, over the ${APPIMAGE_MAX_BYTES} byte ceiling"
+            exit 1
+          fi
 
       - name: What was produced
         run: ls -la dist/*.AppImage dist/*.deb dist/latest-linux.yml && du -m dist/*.AppImage dist/*.deb
