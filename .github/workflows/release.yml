@@ -4,6 +4,10 @@ name: release
 # this repo. electron-updater in the shipped app polls that release's
 # latest-mac.yml, so apps on a lower version show the in-app update control.
 #
+# The Linux lane below is a port of the PACKAGING stage only: it uploads
+# workflow artefacts and publishes nothing. Turning on Linux publishing is a
+# separate decision and deliberately not taken here.
+#
 # Trigger: push a tag `vX.Y.Z` matching package.json "version".
 #
 # Same shape as eve-studio's release workflow, deliberately: two desktop apps
@@ -88,3 +92,119 @@ jobs:
             echo
             [ -n "$PREV" ] && echo "**Full changelog:** https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${TAG}"
           } | gh release edit "$TAG" --notes-file -
+
+  release-linux:
+    # A real Linux runner rather than a cross-build from macOS. sharp / @img/*
+    # are genuinely per-platform optional dependencies, so a macOS-runner
+    # `npm install` never puts the linux-x64 variants on disk — every AppImage
+    # and .deb before this was therefore built by hand on a laptop or a UAT VM.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      # KYB-510's acceptance line is "AppImage under 250 MB". Decimal MB, so
+      # 250,000,000 bytes — the tighter of the two readings, and the one the
+      # words actually say. The first green run measured 238.0 MB (227.0 MiB),
+      # so this leaves about 5% of headroom: it is a real gate, not a formality.
+      #
+      # One number in one place, so the ceiling can be raised deliberately and
+      # a negative control can exercise the gate by lowering it.
+      APPIMAGE_MAX_BYTES: 250000000
+
+    # This lane uploads workflow artefacts and publishes nothing, so it needs no
+    # write scope. The file-level `contents: write` exists for release-mac's
+    # Release creation; narrowing it here keeps that reach off this job.
+    permissions:
+      contents: read
+
+    strategy:
+      # A matrix of one, on purpose. arm64 is then one more entry in this array
+      # plus one in build.linux.target — so the arch is threaded through to
+      # electron-builder and into the unpacked path below rather than hardcoded
+      # anywhere, which is what keeps that claim true.
+      fail-fast: false
+      matrix:
+        arch: [x64]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # install, not ci — the same reason as release-mac above: the lock is
+      # written by npm 11 locally and the runner ships npm 10, and the two
+      # resolve a transitive range differently, so npm ci refuses a lock that
+      # installs perfectly well.
+      - run: npm install --no-audit --no-fund
+
+      # package:linux, not release:linux. release:linux is `--publish always`,
+      # which is the release stage; this is a port of the packaging stage.
+      #
+      # --publish never is load-bearing, not stylistic: build.publish names a
+      # GitHub provider, so electron-builder schedules an upload for every
+      # artefact it creates and then dies with "GitHub Personal Access Token is
+      # not set" — AFTER a full build has already succeeded. That was measured
+      # the expensive way during KYB-508 (run 33611485421).
+      #
+      # The extra flags append to the END of the script string, so
+      # electron-builder receives `--linux --x64 --publish never` and the
+      # `npm run build` half is left untouched. The prepackage:linux hook still
+      # fires, colon and all — that hook is what fetches the speech model.
+      - name: Package
+        run: npm run package:linux -- --${{ matrix.arch }} --publish never
+
+      # The subtle one. resources/models/ is gitignored, so a clean CI checkout
+      # never has it — and a missing extraResources source is a WARNING, not an
+      # error, in electron-builder: app-builder-lib's fileMatcher logs "file
+      # source doesn't exist" and returns. So a lane that fails to fetch the
+      # model still goes green and ships an app with no speech model, with the
+      # failure buried in a line nobody reads. Assert it into the artefact
+      # instead.
+      #
+      # build.extraResources maps resources/models -> models, and
+      # src/main/dictation.ts resolves process.resourcesPath/models, so this is
+      # the path the app genuinely reads. The unpacked directory name is
+      # arch-dependent, so derive it from matrix.arch.
+      - name: Assert the speech model is in the packaged app
+        run: |
+          case "${{ matrix.arch }}" in
+            x64) unpacked="dist/linux-unpacked" ;;
+            *) unpacked="dist/linux-${{ matrix.arch }}-unpacked" ;;
+          esac
+          echo "checking speech model under ${unpacked}"
+          test -s "${unpacked}/resources/models/Xenova/whisper-base.en/onnx/encoder_model_quantized.onnx"
+
+      # The size line from acceptance, as a gate rather than a number printed
+      # into a log. Actions logs are not readable without authentication, so a
+      # size that only appears in log output cannot be checked by everyone who
+      # can see the run — and the same reasoning that put the model assertion
+      # here applies: a criterion nothing enforces is a wish.
+      - name: Assert the AppImage is under the size ceiling
+        run: |
+          appimage="$(ls -1 dist/*.AppImage | head -n1)"
+          bytes="$(stat -c %s "${appimage}")"
+          awk -v b="${bytes}" -v f="${appimage}" -v max="${APPIMAGE_MAX_BYTES}" \
+            'BEGIN { printf "%s: %d bytes = %.1f MB = %.1f MiB (ceiling %d bytes = %.0f MB)\n", f, b, b/1000000, b/1048576, max, max/1000000 }'
+          if [ "${bytes}" -gt "${APPIMAGE_MAX_BYTES}" ]; then
+            echo "::error::AppImage is ${bytes} bytes, over the ${APPIMAGE_MAX_BYTES} byte ceiling"
+            exit 1
+          fi
+
+      - name: What was produced
+        run: ls -la dist/*.AppImage dist/*.deb dist/latest-linux.yml && du -m dist/*.AppImage dist/*.deb
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          # upload-artifact@v4 requires a unique name per matrix job.
+          name: kyber-studio-linux-${{ matrix.arch }}
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/latest-linux.yml
+          retention-days: 14
