@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, safeStorage, shell } from "electron";
 import type { RemoteAgent, Session } from "@shared/ipc";
+import { resolveSharedGatewayUrls } from "./agentUrls";
 import { readPeerEvents, type PeerState } from "./peerEvents";
 
 /**
@@ -326,7 +327,16 @@ export async function listAgents(): Promise<RemoteAgent[]> {
   if (res.status === 401) throw new Error("Session expired. Sign in again.");
   if (!res.ok) throw new Error(`Could not list agents (HTTP ${res.status}).`);
   const body = (await res.json()) as { agents?: RemoteAgent[] };
-  return body.agents ?? [];
+  return await resolveSharedGatewayUrls(body.agents ?? [], async (candidate) => {
+    try {
+      const health = await fetch(`${candidate}/eve/v1/health`, {
+        signal: AbortSignal.timeout(6_000),
+      });
+      return health.ok;
+    } catch {
+      return false;
+    }
+  });
 }
 
 
@@ -919,8 +929,12 @@ export async function sendTurn(input: {
       // A 401 here is not a conversation to have with the user. Refresh and try
       // once more: sessions are meant to renew silently, and "sign out and back
       // in" is not an instruction any product should give.
-      if (error instanceof ClientError && error.status === 401) {
-        console.log("[auth] agent refused the token; refreshing and retrying once");
+      const staleGrantBundle =
+        error instanceof ClientError &&
+        error.status === 403 &&
+        String(error.body ?? '').includes('agent_not_granted');
+      if (error instanceof ClientError && (error.status === 401 || staleGrantBundle)) {
+        console.log("[auth] agent refused the credential pair; refreshing and retrying once");
         const renewed = await forceRefresh();
         if (!renewed) throw error;
         response = await dispatch();
