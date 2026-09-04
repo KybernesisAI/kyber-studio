@@ -109,7 +109,6 @@ console.log(`✓ module graph closes (${packages.length} packages)`);
 const ENTRY_POINTS = [
   "node_modules/eve/dist/src/shared/tool-schema.js",
   "node_modules/eve/dist/src/client/index.js",
-  "node_modules/@huggingface/transformers/dist/transformers.js",
 ];
 
 for (const entry of ENTRY_POINTS) {
