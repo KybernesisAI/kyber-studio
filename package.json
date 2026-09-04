@@ -60,6 +60,9 @@
     "files": [
       "out/**/*"
     ],
+    "asarUnpack": [
+      "**/node_modules/@img/**"
+    ],
     "mac": {
       "icon": "build/icon.icns",
       "category": "public.app-category.productivity",
