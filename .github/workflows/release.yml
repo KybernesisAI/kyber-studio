@@ -195,6 +195,18 @@ jobs:
             exit 1
           fi
 
+      # The steps above prove the artefacts exist, are the right size, and carry
+      # the model. This proves the app inside them can load what it imports and
+      # run what it loads — the same script release-mac uses, which is why it
+      # learned the Linux layout rather than the workflow learning it twice.
+      - name: Verify the packaged app can load what it imports
+        run: |
+          case "${{ matrix.arch }}" in
+            x64) unpacked="dist/linux-unpacked" ;;
+            *) unpacked="dist/linux-${{ matrix.arch }}-unpacked" ;;
+          esac
+          node scripts/verify-package.mjs "${unpacked}"
+
       - name: What was produced
         run: ls -la dist/*.AppImage dist/*.deb dist/latest-linux.yml && du -m dist/*.AppImage dist/*.deb
 
