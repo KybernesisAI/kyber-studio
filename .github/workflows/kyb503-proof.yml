@@ -1,0 +1,138 @@
+name: KYB-503 proof (TEMPORARY)
+
+# TEMPORARY. Deleted before merging KYB-503.
+#
+# release-linux only runs on a `v*` tag, so this fix cannot be proven by the
+# pull request's own checks. Same mechanism as KYB-510, KYB-533 and KYB-535: a
+# separate branch-scoped workflow, never a push trigger on release.yml itself,
+# which would also fire release-mac (--publish always on a non-tag ref).
+#
+# Every fact is its own step with `if: always()`, so the answers are legible
+# from step conclusions alone. The matched negative control already exists: the
+# identical questions were asked on the UNFIXED tree in run 33784699523, where
+# the libvips and sharp-import steps were RED. They must now be GREEN.
+
+on:
+  push:
+    branches:
+      - cursor/kyb-503-fix-sharp-libvips-unpacking-47a3
+
+jobs:
+  linux-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      UNPACKED: dist/linux-unpacked
+      APPIMAGE_MAX_BYTES: 250000000
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install --no-audit --no-fund
+
+      - name: Package
+        run: npm run package:linux -- --x64 --publish never
+
+      - name: P1 the libvips shared library is on disk, outside the archive
+        if: always()
+        run: |
+          found="$(find "${UNPACKED}/resources/app.asar.unpacked" -name 'libvips*.so*' 2>/dev/null | head -n1)"
+          echo "found: ${found:-<nothing>}"
+          test -n "${found}"
+
+      - name: P2 sharp imports from inside the packaged app
+        if: always()
+        env:
+          ELECTRON_RUN_AS_NODE: "1"
+        run: |
+          export SHARP_PATH="${PWD}/${UNPACKED}/resources/app.asar/node_modules/sharp"
+          "${UNPACKED}/kyber-studio" -e "require(process.env.SHARP_PATH); console.log('sharp loaded ok')"
+
+      - name: P3 control — an onnxruntime .node is still on disk, outside the archive
+        if: always()
+        run: |
+          found="$(find "${UNPACKED}/resources/app.asar.unpacked" -name '*.node' -path '*onnxruntime*' 2>/dev/null | head -n1)"
+          echo "found: ${found:-<nothing>}"
+          test -n "${found}"
+
+      - name: P4 the speech model is still in the packaged app
+        if: always()
+        run: test -s "${UNPACKED}/resources/models/Xenova/whisper-base.en/onnx/encoder_model_quantized.onnx"
+
+      - name: P5 the AppImage is still under the size ceiling
+        if: always()
+        run: |
+          appimage="$(ls -1 dist/*.AppImage | head -n1)"
+          bytes="$(stat -c %s "${appimage}")"
+          awk -v b="${bytes}" -v f="${appimage}" -v max="${APPIMAGE_MAX_BYTES}" \
+            'BEGIN { printf "%s: %d bytes = %.1f MB = %.1f MiB (ceiling %d bytes = %.0f MB)\n", f, b, b/1000000, b/1048576, max, max/1000000 }'
+          if [ "${bytes}" -gt "${APPIMAGE_MAX_BYTES}" ]; then
+            echo "::error::AppImage is ${bytes} bytes, over the ${APPIMAGE_MAX_BYTES} byte ceiling"
+            exit 1
+          fi
+
+      - name: What was produced
+        if: always()
+        continue-on-error: true
+        run: |
+          ls -la dist/*.AppImage dist/*.deb dist/latest-linux.yml || true
+          du -m dist/*.AppImage dist/*.deb || true
+          echo "--- @img on disk, outside the archive"
+          find "${UNPACKED}/resources/app.asar.unpacked/node_modules/@img" -maxdepth 3 2>/dev/null || echo "<none>"
+
+  mac-no-regression:
+    runs-on: macos-14
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      APP: dist/mac-arm64/KYBER Studio.app
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install --no-audit --no-fund
+
+      # asarUnpack is a top-level key, so it applies to the mac build too. The
+      # expectation is that it changes nothing: @img already unpacks there,
+      # because libvips-cpp.8.17.3.dylib ends in .dylib. This job is what turns
+      # that expectation into a measurement. Unsigned and unnotarised — this
+      # proves the packaging, not the release.
+      - name: Package (no publish, no signing)
+        run: |
+          npm run build
+          npx electron-builder --mac dir --arm64 --publish never -c.mac.notarize=false
+
+      - name: M1 the sharp binding is on disk, outside the archive
+        if: always()
+        run: test -f "${APP}/Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node"
+
+      - name: M2 the libvips dylib is on disk, outside the archive
+        if: always()
+        run: |
+          found="$(find "${APP}/Contents/Resources/app.asar.unpacked" -name 'libvips*.dylib' 2>/dev/null | head -n1)"
+          echo "found: ${found:-<nothing>}"
+          test -n "${found}"
+
+      - name: M3 sharp imports from inside the packaged app
+        if: always()
+        env:
+          ELECTRON_RUN_AS_NODE: "1"
+        run: |
+          export SHARP_PATH="${PWD}/${APP}/Contents/Resources/app.asar/node_modules/sharp"
+          "${APP}/Contents/MacOS/KYBER Studio" -e "require(process.env.SHARP_PATH); console.log('sharp loaded ok')"
+
+      - name: What was produced
+        if: always()
+        continue-on-error: true
+        run: |
+          find "${APP}/Contents/Resources/app.asar.unpacked" -maxdepth 4 2>/dev/null || echo "<no app.asar.unpacked>"
