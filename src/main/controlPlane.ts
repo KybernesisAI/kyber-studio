@@ -721,6 +721,23 @@ function describeClientError(error: unknown, base: string): Error {
  * is exactly what it is.
  */
 const SILENCE_LIMIT_MS = 150_000;
+/**
+ * How long a turn may run once the agent has started it.
+ *
+ * eve's stream is quiet while the agent works: a long tool call or a delegated
+ * subagent emits nothing until it returns, and a study of a whole repository
+ * through a subagent has taken twenty minutes on a real deployment. Reading
+ * that quiet as silence killed every such turn at 150 seconds and reported a
+ * restart that never happened. So the short bound applies only before the
+ * first event of the turn, where silence really is a hang; after that the
+ * gap between events is allowed this much, and running out of it stops Studio
+ * watching but never cancels the agent's work.
+ */
+const WORK_LIMIT_MS = 60 * 60_000;
+/** While the agent is quiet and working, say so this often. */
+const WORKING_NOTE_MS = 30_000;
+const isTurnBoundary = (type: string): boolean =>
+  type === "session.waiting" || type === "session.completed" || type === "session.failed";
 
 /**
  * Send one turn to an agent and stream the reply back.
@@ -978,22 +995,71 @@ export async function sendTurn(input: {
    * spins on a dead turn until something else gives up. Each event rearms it.
    */
   let silenceTimer: NodeJS.Timeout | undefined;
+  let workingNote: NodeJS.Timeout | undefined;
   let silent = false;
+  let stoppedWatching = false;
+  let started = false;
+  const startedAt = Date.now();
+  let lastEventAt = Date.now();
   const rearm = (): void => {
     if (silenceTimer) clearTimeout(silenceTimer);
+    lastEventAt = Date.now();
+    if (!started) {
+      silenceTimer = setTimeout(() => {
+        silent = true;
+        // Nothing has come back at all: the turn never started. Ask the agent
+        // to stop, then stop listening regardless of the answer.
+        void session?.cancel({ ...(turnId ? { turnId } : {}) }).catch(() => undefined);
+        abandon.abort();
+      }, SILENCE_LIMIT_MS);
+      return;
+    }
     silenceTimer = setTimeout(() => {
+      // The agent is still working after the ceiling. Stop watching, but do
+      // not cancel: the work is real and the answer lands in the conversation.
       silent = true;
-      // Ask the agent to stop, then stop listening regardless of the answer.
-      void session?.cancel({ ...(turnId ? { turnId } : {}) }).catch(() => undefined);
+      stoppedWatching = true;
       abandon.abort();
-    }, SILENCE_LIMIT_MS);
+    }, WORK_LIMIT_MS);
   };
 
-  try {
-    rearm();
-    for await (const event of response) {
+  /**
+   * Which turn these events belong to.
+   *
+   * The client ends a send's stream at the first session boundary after the
+   * cursor. When this message ends an earlier turn that was still running (a
+   * person asks again during a long delegation), that earlier turn's
+   * `session.waiting` is the first event on the wire, before this turn's
+   * `turn.started`. Read as ours it produced "(the agent returned no text)",
+   * and the abandoned stream then closed the request, which cancelled the real
+   * turn minutes into its work. So a boundary that arrives first is the
+   * earlier turn's, and Studio keeps following the session until its own turn
+   * ends.
+   */
+  let seen = 0;
+  let sawTurnStart = false;
+  let staleBoundaryFirst = false;
+  let endedAtOwnBoundary = false;
+
+  const handle = (event: { type?: unknown; data?: unknown }): boolean => {
       rearm();
+      seen += 1;
       const type = String(event.type ?? "");
+      if (seen === 1 && isTurnBoundary(type) && !sawTurnStart) staleBoundaryFirst = true;
+      if (type === "turn.started") {
+        sawTurnStart = true;
+        if (!started) {
+          started = true;
+          rearm();
+        }
+        if (staleBoundaryFirst) {
+          reply = "";
+          input.onReset?.();
+        }
+      } else if (!started) {
+        started = true;
+        rearm();
+      }
       const data = ((event as { data?: unknown }).data ?? {}) as Record<string, unknown>;
 
       if (process.env.KYBER_STUDIO_DEBUG_STREAM) {
@@ -1111,22 +1177,56 @@ export async function sendTurn(input: {
         const message = typeof data.message === "string" ? data.message : "the turn failed";
         throw new Error(`Agent error: ${message}`);
       }
+      if (isTurnBoundary(type) && (!staleBoundaryFirst || sawTurnStart)) {
+        endedAtOwnBoundary = true;
+        return true;
+      }
+      return false;
+  };
+
+  try {
+    rearm();
+    workingNote = setInterval(() => {
+      if (!started) return;
+      const quietFor = Date.now() - lastEventAt;
+      if (quietFor < WORKING_NOTE_MS) return;
+      const minutes = Math.max(1, Math.round((Date.now() - startedAt) / 60_000));
+      input.onActivity(`still working (${minutes} min, a long tool call or delegation produces nothing until it returns)`);
+    }, WORKING_NOTE_MS);
+    for await (const event of response) {
+      if (handle(event as { type?: unknown; data?: unknown })) break;
+    }
+    if (staleBoundaryFirst && !endedAtOwnBoundary && session) {
+      console.log("[send] the stream ended on an earlier turn's boundary before this turn started; following the session");
+      for await (const event of session.stream({
+        follow: true,
+        startIndex: session.state.streamIndex,
+        signal: abandon.signal,
+      })) {
+        if (handle(event as { type?: unknown; data?: unknown })) break;
+      }
     }
   } catch (error) {
     if (!silent) throw describeClientError(error, base);
   } finally {
     if (silenceTimer) clearTimeout(silenceTimer);
+    if (workingNote) clearInterval(workingNote);
     input.onActivity(null);
     publishCursor();
   }
 
+  if (stoppedWatching && !reply) {
+    throw new Error(
+      `The agent has been working on this for ${Math.round(WORK_LIMIT_MS / 60_000)} minutes and ` +
+        `Studio stopped watching. The turn is still running on the agent; its answer lands in this ` +
+        `conversation when it finishes. Do not send the message again: a new message cancels the running turn.`,
+    );
+  }
   if (silent && !reply) {
     throw new Error(
-      `The agent accepted this message and then went silent for ${Math.round(
+      `The agent accepted this message and then produced nothing for ${Math.round(
         SILENCE_LIMIT_MS / 1000,
-      )} seconds without producing anything. That usually means the agent restarted mid-turn — ` +
-        `applying a routine does that — and the interrupted turn does not resume. Studio asked it ` +
-        `to stop, so you can send the message again.`,
+      )} seconds: the turn never started. Studio asked it to stop, so you can send the message again.`,
     );
   }
 
