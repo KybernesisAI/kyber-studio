@@ -166,3 +166,22 @@ export function replaceTriggerWithText(root: HTMLElement, token: string): boolea
 export function clear(root: HTMLElement): void {
   root.innerHTML = "";
 }
+
+/**
+ * Put the caret at the end of the composer and focus it.
+ *
+ * Switching to an agent used to land with nothing focused, so every message
+ * began with a click into the composer. Focus alone is not enough in a
+ * contenteditable: without a placed selection the caret sits at the start,
+ * before any existing draft or chip, and typing lands in the wrong place.
+ */
+export function focusAtEnd(root: HTMLElement): void {
+  root.focus();
+  const selection = window.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(root);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}

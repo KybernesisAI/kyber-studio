@@ -408,6 +408,17 @@ export function Conversation(): ReactNode {
     void loadAgentInfo(activeAgentId);
   }, [activeAgentId, loadAgentInfo]);
 
+  // Landing on an agent means you are about to talk to it: the composer takes
+  // the caret without a click. After paint, so the switch has rendered the
+  // input this effect is focusing.
+  useEffect(() => {
+    const id = window.requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (el) composerDom.focusAtEnd(el);
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [activeAgentId]);
+
   const busy = activity[activeAgentId] ?? null;
   const model = models[activeAgentId];
   // A turn in flight, which is a stronger fact than an activity label: the
