@@ -166,7 +166,7 @@ input, textarea { font: inherit; color: inherit; }
 .row__name { font-weight: 500; font-size: var(--fs-base); flex: 1; min-width: 0; }
 .row__name, .row__preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row__time { font-size: var(--fs-xs); color: var(--ink-tertiary); flex: none; }
-.row__preview { font-size: var(--fs-sm); color: var(--ink-secondary); margin-top: 1px; }
+.row__preview { font-size: var(--fs-sm); color: var(--ink-secondary); margin-top: -1px; line-height: var(--lh-sm); }
 .row__unread {
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--accent); flex: none; align-self: center;
