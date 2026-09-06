@@ -160,9 +160,6 @@ input, textarea { font: inherit; color: inherit; }
 }
 .row:hover { background: var(--hover); }
 .row--active { background: var(--selected); }
-/* The two text lines stand 37px tall after the scale bump; a 36px avatar read
-   shorter than its own label. 40px, centred on the row, sits it evenly. */
-.row .avatar { width: 40px; height: 40px; }
 .row__body { min-width: 0; flex: 1; }
 .row__line { display: flex; align-items: baseline; gap: 8px; }
 /* Agent names at body size, medium weight: the old 590 read too big after the scale bump, 400 too light. */

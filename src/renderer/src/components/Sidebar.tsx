@@ -146,7 +146,8 @@ function Row({
         onMenu({ x: e.clientX, y: e.clientY, agent });
       }}
     >
-      <Avatar name={agent.name} accent={agent.accent} src={agent.avatar} />
+      {/* 40, not the 34 default: the two text lines stand 37px tall after the scale bump. */}
+      <Avatar name={agent.name} accent={agent.accent} src={agent.avatar} size={40} />
       <div className="row__body">
         <div className="row__line">
           <span className="row__name">{agent.name}</span>
