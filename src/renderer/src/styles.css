@@ -162,7 +162,8 @@ input, textarea { font: inherit; color: inherit; }
 .row--active { background: var(--selected); }
 .row__body { min-width: 0; flex: 1; }
 .row__line { display: flex; align-items: baseline; gap: 8px; }
-.row__name { font-weight: 590; font-size: var(--fs-base); flex: 1; min-width: 0; }
+/* Agent names sit one step under the body: at base they read too big after the scale bump. */
+.row__name { font-weight: 590; font-size: var(--fs-sm); flex: 1; min-width: 0; }
 .row__name, .row__preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row__time { font-size: var(--fs-xs); color: var(--ink-tertiary); flex: none; }
 .row__preview { font-size: var(--fs-sm); color: var(--ink-secondary); margin-top: 1px; }
@@ -212,7 +213,7 @@ input, textarea { font: inherit; color: inherit; }
   padding: 0 14px;
   -webkit-app-region: drag;
 }
-.topbar__title { font-weight: 600; font-size: var(--fs-lg); }
+.topbar__title { font-weight: 600; font-size: var(--fs-base); }
 .topbar__spacer { flex: 1; }
 .topbar__btn {
   -webkit-app-region: no-drag;
