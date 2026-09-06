@@ -39,11 +39,13 @@
      they land between the hinting grid, so text renders a shade blurrier than
      its neighbours and nothing quite lines up. This is the scale macOS itself
      is drawn on. */
-  --fs-xs: 11px;    --lh-xs: 14px;
-  --fs-sm: 12px;    --lh-sm: 16px;
-  --fs-base: 13px;  --lh-base: 18px;
-  --fs-lg: 14px;    --lh-lg: 22px;
-  --fs-xl: 17px;    --lh-xl: 24px;
+  /* One pixel up the whole scale (2026-09-06): the sidebar and the chat read
+     a touch small. Line heights follow so nothing gets cramped. */
+  --fs-xs: 12px;    --lh-xs: 15px;
+  --fs-sm: 13px;    --lh-sm: 17px;
+  --fs-base: 14px;  --lh-base: 19px;
+  --fs-lg: 15px;    --lh-lg: 23px;
+  --fs-xl: 18px;    --lh-xl: 25px;
 
   /* Spacing. Everything vertical is a multiple of 4, so sections stack on one
      rhythm instead of each choosing its own. */
