@@ -1,0 +1,128 @@
+name: macOS arch check rehearsal (TEMPORARY — KYB-544)
+
+# TEMPORARY. Deleted before merging KYB-544.
+#
+# WHY THIS EXISTS AT ALL. KYB-544 adds a check to verify-package.mjs, and
+# release-mac runs that same script AFTER `npm run release:mac`, which is
+# `--publish always`. So a verifier that throws on macOS does not prevent a bad
+# release: it turns the job red once the GitHub Release already exists. (That
+# ordering defect is KYB-536 and is not fixed here.) Until it is fixed, any
+# change to this script has to be rehearsed on macOS BEFORE it can be merged —
+# the next tag is the expensive place to discover it.
+#
+# Same mechanism as KYB-508, KYB-510, KYB-533 and KYB-535: a separate,
+# branch-scoped workflow. Never a push trigger on release.yml itself, which
+# would also fire release-mac on a non-tag ref and try to cut a Release.
+#
+# NOTHING IS PUBLISHED BY THIS WORKFLOW. `npm run package`, not release:mac, and
+# `--publish never` on the end — load-bearing rather than stylistic, because
+# build.publish names a GitHub provider, so electron-builder otherwise schedules
+# an upload for every artefact and dies on a missing token after a full build.
+# The job also takes `contents: read` and is given no Apple secrets: unsigned and
+# un-notarized does not weaken what is under test, because the new check reads
+# file headers and a signature does not change a Mach-O's cputype.
+#
+# Two jobs, because a check that has only ever passed is not a check:
+#
+#   verify-mac         the real .app, from a real macOS build, must PASS
+#   negative-wrong-arch  the same .app with a genuine x86_64 Mach-O planted in
+#                      it, which must FAIL and name the file
+#
+# The negative asserts the binary was present and arm64 before replacing it, so
+# it cannot go green by having quietly done nothing.
+
+on:
+  push:
+    branches:
+      - paul/kyb-544-verify-node-arch
+
+jobs:
+  verify-mac:
+    # Apple silicon, matching the arm64 target in package.json build.mac.
+    runs-on: macos-14
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm install --no-audit --no-fund
+
+      - name: Package (no publish, no signing)
+        run: npm run package -- --publish never
+
+      - name: What was produced
+        run: ls -la dist && find "dist/mac-arm64/KYBER Studio.app" -name '*.node' | sed 's|.*KYBER Studio.app/||'
+
+      # The exact command release-mac runs, against the exact path it passes.
+      - name: Verify the packaged app can load what it imports
+        run: node scripts/verify-package.mjs "dist/mac-arm64/KYBER Studio.app"
+
+      # A check that runs and finds nothing prints a ✓ too. This is the line that
+      # says it actually read binaries, and that it worked out arm64 from the
+      # artefact path rather than from the runner (which is also arm64, so the
+      # line alone does not prove that — dist/linux-arm64-unpacked on an x64
+      # runner does, and that case is covered in the PR body).
+      - name: Assert the architecture check really ran, on real files
+        run: |
+          out="$(node scripts/verify-package.mjs "dist/mac-arm64/KYBER Studio.app")"
+          printf '%s\n' "$out"
+          echo "$out" | grep -E "^✓ all bundled \.node files are arm64 \([1-9][0-9]* checked" \
+            || { echo "::error::the architecture check did not check any .node files"; exit 1; }
+
+  negative-wrong-arch:
+    runs-on: macos-14
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm install --no-audit --no-fund
+
+      - name: Package (no publish, no signing)
+        run: npm run package -- --publish never
+
+      # A real x86_64 Mach-O from the registry, not a hand-edited header: the
+      # bundle this simulates is the one npm itself produces when the install
+      # host disagrees with the build target, so the planted file should be the
+      # very artefact npm would have installed.
+      - name: Plant a genuine x86_64 .node where the arm64 one lives
+        run: |
+          set -euo pipefail
+          app="dist/mac-arm64/KYBER Studio.app"
+          target="$(find "$app/Contents/Resources/app.asar.unpacked" -name '*.node' | head -n1)"
+          echo "target: ${target:-<nothing>}"
+          test -n "${target}"
+          # Assert it is arm64 BEFORE touching it, so a green run cannot come
+          # from planting a foreign binary on top of another foreign binary.
+          lipo -archs "${target}" | tee /tmp/before
+          grep -qw arm64 /tmp/before
+
+          npm pack @img/sharp-darwin-x64 --silent
+          tar xzf img-sharp-darwin-x64-*.tgz
+          cp package/lib/sharp-darwin-x64-*.node "${target}"
+          lipo -archs "${target}"
+
+      - name: The verifier MUST fail, and MUST name the file
+        run: |
+          set -uo pipefail
+          out="$(node scripts/verify-package.mjs "dist/mac-arm64/KYBER Studio.app" 2>&1)" && status=0 || status=$?
+          printf '%s\n' "$out"
+          if [ "${status}" -eq 0 ]; then
+            echo "::error::verifier passed with an x86_64 binary in an arm64 app — the check is a comment"
+            exit 1
+          fi
+          echo "$out" | grep -q "wrong architecture" \
+            || { echo "::error::it failed, but not on the architecture check"; exit 1; }
+          echo "$out" | grep -q "found x64, expected arm64" \
+            || { echo "::error::the failure did not report found/expected"; exit 1; }
+          echo "verifier failed as intended, naming the file and both architectures"
