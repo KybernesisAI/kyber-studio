@@ -319,10 +319,13 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
       awaitingSignIn?: boolean;
       present?: boolean;
       scope: string;
+      url?: string;
       connected: boolean;
     }[]
   >([]);
   const [mode, setMode] = useState<"none" | "remote" | "local">("none");
+  /** The card the remote form is changing, when it is not adding a new one. */
+  const [editing, setEditing] = useState<{ name: string; url: string; shared: boolean } | null>(null);
   const [checking, setChecking] = useState<string | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
   /** A sign-in happening in the browser, which this window cannot see. */
@@ -353,6 +356,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
           awaitingSignIn: c.awaitingSignIn,
           present: c.present,
           scope: c.scope,
+          url: c.url,
           connected: c.connected,
         })),
     );
@@ -431,7 +435,14 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                         ? "Waiting for you to approve it…"
                         : s.authMode === "oauth" && !s.connected
                           ? "Signs you in — connect to use it"
-                        : "Your agents call this directly"}
+                        : s.scope === "app"
+                          ? "Your agents call this directly"
+                        : // A scheduled run has no person, so the control plane
+                          // answers it with the shared connectors only. A card
+                          // added for one person is invisible to routines, and
+                          // the agent reports the server as unavailable rather
+                          // than as unshared (KYB-547).
+                          "Yours only — routines can't use it until it is shared"}
                   </div>
                 </div>
                 {checking === s.slug || awaiting === s.slug ? (
@@ -501,6 +512,22 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                     Check
                   </button>
                 )}
+                {s.url ? (
+                  <button
+                    className="btn btn-sm"
+                    title={
+                      s.scope === "app"
+                        ? "Change this server's address, or replace its token"
+                        : "Share this server with everyone, so routines can use it"
+                    }
+                    onClick={() => {
+                      setEditing({ name: s.name, url: s.url!, shared: s.scope === "app" });
+                      setMode("remote");
+                    }}
+                  >
+                    {s.scope === "app" ? "Change" : "Share"}
+                  </button>
+                ) : null}
                 <button
                   className="icon-btn"
                   title="Remove"
@@ -629,7 +656,11 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
       )}
 
       {mode === "remote" ? (
-        <AddRemoteServer agent={agent} onDone={() => { setMode("none"); void refresh(); }} />
+        <AddRemoteServer
+          agent={agent}
+          initial={editing ?? undefined}
+          onDone={() => { setMode("none"); setEditing(null); void refresh(); }}
+        />
       ) : mode === "local" ? (
         <AddLocalServer
           onAdd={async (server) => {
@@ -756,14 +787,25 @@ function AddLocalServer({
 function AddRemoteServer({
   agent,
   onDone,
+  initial,
 }: {
   agent: string;
   onDone(): void;
+  /**
+   * An existing card being changed rather than a new server being added.
+   *
+   * Adding by the same name updates the server in place, so sharing one is the
+   * add form with its answers already filled in. The token is the exception:
+   * the control plane never hands a stored secret back, so a bearer server
+   * asks for it again. Saying that is better than a disabled field nobody can
+   * explain.
+   */
+  initial?: { name: string; url: string; shared: boolean };
 }): ReactNode {
-  const [name, setName] = useState("");
-  const [url, setUrl] = useState("");
+  const [name, setName] = useState(initial?.name ?? "");
+  const [url, setUrl] = useState(initial?.url ?? "");
   const [token, setToken] = useState("");
-  const [shared, setShared] = useState(false);
+  const [shared, setShared] = useState(initial?.shared ?? false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** Set when the server asked for OAuth: added, but not yet connected. */
@@ -855,13 +897,21 @@ function AddRemoteServer({
         />
       </div>
       <div className="field">
-        <div className="field__label">Access token (optional)</div>
+        <div className="field__label">{initial ? "Access token" : "Access token (optional)"}</div>
         <input
           className="input"
           type="password"
           value={token}
           spellCheck={false}
-          placeholder="Leave blank if the server needs no token"
+          placeholder={
+            initial
+              // A shared connection keeps its own copy of the secret, and the
+              // control plane never hands a stored one back. Blank here leaves
+              // the shared card with no credential, and the agent then reports
+              // the server as unavailable rather than as missing its token.
+              ? "Paste it again — a shared connection stores its own copy"
+              : "Leave blank if the server needs no token"
+          }
           onChange={(e) => setToken(e.target.value)}
         />
       </div>
