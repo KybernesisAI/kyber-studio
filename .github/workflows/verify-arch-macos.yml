@@ -24,12 +24,27 @@ name: macOS arch check rehearsal (TEMPORARY — KYB-544)
 #
 # Two jobs, because a check that has only ever passed is not a check:
 #
-#   verify-mac         the real .app, from a real macOS build, must PASS
-#   negative-wrong-arch  the same .app with a genuine x86_64 Mach-O planted in
-#                      it, which must FAIL and name the file
+#   verify-mac           the real .app, from a real macOS build, must PASS
+#   negative-wrong-arch  a BASELINE pass on the same .app, then a genuine x86_64
+#                        Mach-O planted in it, which must FAIL and name the file
 #
-# The negative asserts the binary was present and arm64 before replacing it, so
-# it cannot go green by having quietly done nothing.
+# THE BASELINE IS THE POINT OF THE SECOND JOB, and it only became possible in
+# this commit. Under f19744d's ARCH-ONLY rule the unmodified build exited
+# non-zero (run 34111182446): the macOS bundle carries onnxruntime prebuilds for
+# linux and win32, and an x64 ELF among them was reported as a wrong-architecture
+# failure. There was therefore no clean pass to compare against, and the negative
+# asserted "wrong architecture" and "found x64, expected arm64" — exactly and
+# only the strings that red baseline was already printing. It would have gone
+# green with the `cp` deleted.
+#
+# This commit's (platform, arch) classification is what makes the unmodified
+# build pass: a linux ELF inside a darwin bundle is foreign payload, not a wrong
+# architecture. That is what the baseline step now asserts, and it is
+# load-bearing in both directions — if the baseline ever goes red again, the
+# plant is not the cause and the assert step below is not where to look.
+#
+# The negative also plants into a path it NAMES, rather than whichever file
+# `find` happened to return first, and greps for THAT path in the failure.
 
 on:
   push:
@@ -58,21 +73,50 @@ jobs:
       - name: What was produced
         run: ls -la dist && find "dist/mac-arm64/KYBER Studio.app" -name '*.node' | sed 's|.*KYBER Studio.app/||'
 
-      # The exact command release-mac runs, against the exact path it passes.
+      # The command release-mac runs, against the path it passes — captured
+      # rather than run twice, because the dictation section loads a model off a
+      # cold disk and a second identical run proves nothing the first did not.
+      # `tee` is exit-transparent only because of pipefail, which is why it is set.
       - name: Verify the packaged app can load what it imports
-        run: node scripts/verify-package.mjs "dist/mac-arm64/KYBER Studio.app"
+        run: |
+          set -euo pipefail
+          node scripts/verify-package.mjs "dist/mac-arm64/KYBER Studio.app" 2>&1 | tee /tmp/verify.out
 
-      # A check that runs and finds nothing prints a ✓ too. This is the line that
-      # says it actually read binaries, and that it worked out arm64 from the
+      # A check that runs and finds nothing prints a ✓ too. These are the lines
+      # that say it actually read binaries, and that it worked out arm64 from the
       # artefact path rather than from the runner (which is also arm64, so the
       # line alone does not prove that — dist/linux-arm64-unpacked on an x64
       # runner does, and that case is covered in the PR body).
       - name: Assert the architecture check really ran, on real files
         run: |
-          out="$(node scripts/verify-package.mjs "dist/mac-arm64/KYBER Studio.app")"
-          printf '%s\n' "$out"
-          echo "$out" | grep -E "^✓ all bundled \.node files are arm64 \([1-9][0-9]* checked" \
-            || { echo "::error::the architecture check did not check any .node files"; exit 1; }
+          set -euo pipefail
+          grep -E "^✓ all bundled darwin \.node files are arm64 \([1-9][0-9]* checked\)" /tmp/verify.out \
+            || { echo "::error::the expected success line is absent — either the architecture check did not arch-check any darwin .node files, or its wording changed"; exit 1; }
+
+      # The bundle contains onnxruntime prebuilds for platforms this app will
+      # never run on. Under the old arch-only rule the Windows ones were skipped
+      # in silence, because nothing could read a PE header — this asserts they
+      # are now measured and classified, on real binaries rather than fixtures.
+      #
+      # Match on "for another platform (" and not on "files are": the script
+      # pluralises, so a single foreign file prints "1 bundled .node file IS for
+      # another platform" and a grep pinned to the plural would report a wording
+      # change where there was none. The count is four today and falls as the
+      # payload-trimming ticket lands.
+      #
+      # THAT TICKET WILL TURN THIS STEP RED, and correctly so. The win32 tally
+      # below exists only because build.mac has no files key; trimming the dead
+      # weight is the fix, and on the build after it there is no win32 binary
+      # left for the PE branch to classify. Whoever lands it should expect to
+      # delete this assertion rather than debug the verifier — by then this
+      # whole file should be gone anyway.
+      - name: Assert foreign-platform payload is classified, not silently skipped
+        run: |
+          set -euo pipefail
+          grep -E "for another platform \(" /tmp/verify.out \
+            || { echo "::error::no foreign-platform report — either none was produced, or its wording changed"; exit 1; }
+          grep -qE "another platform \(.*win32" /tmp/verify.out \
+            || { echo "::error::no win32 in the foreign-platform tally — either the PE branch never ran on a real file, or the tally wording changed"; exit 1; }
 
   negative-wrong-arch:
     runs-on: macos-14
@@ -91,28 +135,78 @@ jobs:
       - name: Package (no publish, no signing)
         run: npm run package -- --publish never
 
+      # Without this, the job cannot tell a planted failure from a build that was
+      # already failing, and "the verifier exited non-zero" would be evidence of
+      # nothing. The negative only means something as a DIFFERENCE from here.
+      - name: Baseline — the unmodified build MUST pass
+        run: |
+          set -euo pipefail
+          node scripts/verify-package.mjs "dist/mac-arm64/KYBER Studio.app" 2>&1 | tee /tmp/baseline.out
+          # Exit 0 alone would also be satisfied by a check that examined nothing.
+          # Asserting the same line verify-mac asserts makes the baseline visibly
+          # non-vacuous, and makes a red baseline say "the build is broken, this
+          # is not the plant" rather than dumping the verifier's output under a
+          # step name that invites misattribution.
+          grep -E "^✓ all bundled darwin \.node files are arm64 \([1-9][0-9]* checked\)" /tmp/baseline.out \
+            || { echo "::error::baseline ran but arch-checked nothing — the plant below would prove nothing"; exit 1; }
+
       # A real x86_64 Mach-O from the registry, not a hand-edited header: the
       # bundle this simulates is the one npm itself produces when the install
       # host disagrees with the build target, so the planted file should be the
       # very artefact npm would have installed.
-      - name: Plant a genuine x86_64 .node where the arm64 one lives
+      #
+      # The subject is NAMED, not whichever file `find | head -n1` returns first:
+      # directory order is not a promise, and on a tree where it returned an ELF
+      # this step would have died in `lipo` for a reason unrelated to the check.
+      - name: Plant a genuine x86_64 .node where an arm64 one lives
         run: |
           set -euo pipefail
           app="dist/mac-arm64/KYBER Studio.app"
-          target="$(find "$app/Contents/Resources/app.asar.unpacked" -name '*.node' | head -n1)"
-          echo "target: ${target:-<nothing>}"
-          test -n "${target}"
+
+          matches="$(find "$app/Contents/Resources/app.asar.unpacked" -path '*@img/sharp-darwin-arm64/*' -name '*.node' | sort)"
+          count="$(printf '%s' "$matches" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one @img/sharp-darwin-arm64 .node to plant over, found $count"
+            printf '%s\n' "$matches"
+            exit 1
+          fi
+          target="$matches"
+          echo "target: $target"
+
           # Assert it is arm64 BEFORE touching it, so a green run cannot come
           # from planting a foreign binary on top of another foreign binary.
-          lipo -archs "${target}" | tee /tmp/before
+          lipo -archs "$target" | tee /tmp/before
           grep -qw arm64 /tmp/before
 
-          npm pack @img/sharp-darwin-x64 --silent
-          tar xzf img-sharp-darwin-x64-*.tgz
-          cp package/lib/sharp-darwin-x64-*.node "${target}"
-          lipo -archs "${target}"
+          # Matched to the INSTALLED sharp, not @latest: section 2 exits before
+          # anything is loaded, so a version skew cannot mislead today — but if
+          # that ordering ever changes, a mismatched build would fail dressed as
+          # an architecture error, which is the one diagnosis this file must not
+          # get wrong.
+          manifest="node_modules/@img/sharp-darwin-arm64/package.json"
+          test -f "$manifest" || { echo "::error::$manifest not found — cannot match the planted x64 build to the installed arm64 one"; exit 1; }
+          version="$(node -p "require('./$manifest').version")"
+          case "$version" in
+            ""|undefined) echo "::error::$manifest has no version field — the manifest is broken, not the dist-tag"; exit 1 ;;
+          esac
+          echo "planting @img/sharp-darwin-x64@$version"
 
-      - name: The verifier MUST fail, and MUST name the file
+          npm pack "@img/sharp-darwin-x64@$version" --silent
+          tar xzf "img-sharp-darwin-x64-$version.tgz"
+          cp package/lib/sharp-darwin-x64-*.node "$target"
+          # Assert what was planted, not just what was replaced. If this package
+          # ever shipped a universal binary, its arm64 slice would satisfy the
+          # check and the job would fail saying the verifier is a comment —
+          # blaming the script for a bad plant.
+          lipo -archs "$target" | tee /tmp/after
+          grep -qx x86_64 /tmp/after \
+            || { echo "::error::planted file is not thin x86_64 — the negative control would be testing nothing"; exit 1; }
+
+          # The path as the verifier prints it, so the assertion below is about
+          # the file we planted rather than about any file at all.
+          echo "PLANTED=${target#"$app/"}" >> "$GITHUB_ENV"
+
+      - name: The verifier MUST fail, and MUST name the file we planted
         run: |
           set -uo pipefail
           out="$(node scripts/verify-package.mjs "dist/mac-arm64/KYBER Studio.app" 2>&1)" && status=0 || status=$?
@@ -123,6 +217,8 @@ jobs:
           fi
           echo "$out" | grep -q "wrong architecture" \
             || { echo "::error::it failed, but not on the architecture check"; exit 1; }
+          echo "$out" | grep -qF "${PLANTED}" \
+            || { echo "::error::the failure did not name ${PLANTED} — it failed on something else"; exit 1; }
           echo "$out" | grep -q "found x64, expected arm64" \
             || { echo "::error::the failure did not report found/expected"; exit 1; }
-          echo "verifier failed as intended, naming the file and both architectures"
+          echo "verifier failed as intended, naming the planted file and both architectures"

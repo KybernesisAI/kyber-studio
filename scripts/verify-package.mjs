@@ -234,7 +234,7 @@ if (missing.size > 0) {
 }
 console.log(`✓ module graph closes (${packages.length} packages)`);
 
-// ── 2. Is every native binary built for the arch being shipped? ────────
+// ── 2. Is every native binary the (platform, arch) being shipped? ─────
 /**
  * Every other check in this file catches a MISSING package. None of them
  * catches a present-but-wrong-architecture one, and before this section nothing
@@ -260,14 +260,49 @@ console.log(`✓ module graph closes (${packages.length} packages)`);
  * wrong CPU, "wrong architecture in <file>" is the diagnosis; the loader error
  * the next sections would produce instead is a symptom several layers
  * downstream, and on a cross-arch runner it never even gets that far.
+ *
+ * THE INVARIANT IS (PLATFORM, ARCH), NOT ARCH.
+ *
+ * An arch-only predicate gives three different verdicts to three files of the
+ * same kind. onnxruntime-node's fat npm package ships a prebuild per platform
+ * per arch, and a macOS bundle carries all of them: under an arch-only rule
+ * `linux/x64` fails the build, `linux/arm64` PASSES and is counted as proof
+ * that the bundle is arm64, and `win32/x64` is skipped in silence because
+ * nothing here could read a PE header. None of those three is a binary this app
+ * will ever load, and nothing distinguishes them but the arch byte and the
+ * container format — neither of which is what makes any of them right or wrong.
+ *
+ * So each file is classified by the format it is MEASURED to be — Mach-O means
+ * darwin, ELF means linux, PE means win32 — and only the files whose platform
+ * matches the target's are arch-checked. The rest are foreign-platform payload:
+ * counted and named, never arch-checked, and never fatal. They are dead weight
+ * in the artefact rather than a fault in it, and trimming them is a packaging
+ * question with its own ticket.
+ *
+ * ONE VERDICT CHANGES, and it is the point of the change rather than a cost of
+ * it: foreign-platform payload stops being fatal. The linux/x64 prebuild in a
+ * macOS bundle failed the build under the arch-only rule and is now reported and
+ * passed over. Saying "this is not a loosening" would be false, and false in the
+ * direction a future reader most needs to be able to trust.
+ *
+ * Nothing else moves. Same-platform mismatches are untouched — `@img/sharp-linux-x64`
+ * in a linux-arm64 build still fails, and a darwin x64 Mach-O in a mac-arm64 app
+ * still fails — and win32 payload stops being skipped in silence, which is
+ * coverage gained rather than given up. Classified, not supported: there is no
+ * Windows target, and the PE branch exists to name dead weight, not to verify a
+ * build we do not make.
+ *
+ * Classification is by measured format and NEVER by directory name. A path
+ * containing `linux/arm64/` is a convention; an x64 binary sitting in that
+ * directory is precisely the bug this section exists to catch.
  */
 
 /**
  * The machine identifiers, per executable format, for the arches
- * electron-builder can name. ELF `e_machine` (2 bytes at 0x12) and Mach-O
- * `cputype` (4 bytes at 0x04); Mach-O sets bit 24 (0x01000000) for the 64-bit
- * variant of a CPU family, which is why arm64 is 0x0100000C and 32-bit arm is
- * 0x0000000C.
+ * electron-builder can name. ELF `e_machine` (2 bytes at 0x12), Mach-O
+ * `cputype` (4 bytes at 0x04), PE `Machine` (2 bytes at the start of the COFF
+ * header); Mach-O sets bit 24 (0x01000000) for the 64-bit variant of a CPU
+ * family, which is why arm64 is 0x0100000C and 32-bit arm is 0x0000000C.
  */
 const ELF_MACHINES = new Map([
   [0x03, "ia32"],
@@ -281,8 +316,17 @@ const MACHO_CPUTYPES = new Map([
   [0x01000007, "x64"],
   [0x0100000c, "arm64"],
 ]);
+const PE_MACHINES = new Map([
+  [0x014c, "ia32"],
+  [0x01c4, "armv7l"], // IMAGE_FILE_MACHINE_ARMNT. The older ARM (0x1c0, Windows CE
+                      // and Phone 7) is left out deliberately: it degrades to the
+                      // named measurement "PE machine 0x1c0", which is the right
+                      // treatment for payload we do not ship.
+  [0x8664, "x64"],
+  [0xaa64, "arm64"],
+]);
 
-/** electron-builder, Node, ELF and Mach-O all spell the same arches differently. */
+/** electron-builder, Node, ELF, Mach-O and PE all spell the same arches differently. */
 function normaliseArch(name) {
   return (
     {
@@ -308,18 +352,36 @@ function normaliseArch(name) {
  * for it would reintroduce the blind spot this section exists to remove: on an
  * x64 runner, an all-x64 bundle destined for arm64 would pass.
  *
+ * Only the ARCH is taken from the path. The target PLATFORM is never taken from
+ * it: that is `found.layout.platform`, measured from the shape of the tree — a
+ * `Contents/Resources/app.asar` is a macOS bundle and a `resources/app.asar` is
+ * not — because a measurement beats a naming convention.
+ *
+ * Be precise about what that does and does not guarantee. The regex below still
+ * READS a platform token, as the gate that locates the arch segment; it just
+ * never becomes the target platform. A path whose token disagrees with the
+ * measured layout — `dist/linux-arm64-unpacked` pointed at a `.app` — is not
+ * detected here, and the arch is taken from it anyway. That costs nothing in
+ * normal use and it is not an invariant anyone should lean on.
+ *
  * electron-builder names its output directory `<platform>[-<arch>][-unpacked]`:
  * `dist/mac-arm64/KYBER Studio.app`, `dist/linux-arm64-unpacked`,
- * `dist/win-unpacked`. Segments are searched from the end so that an absolute
+ * `dist/linux-unpacked`, and `dist/win-unpacked` — which this parses on the same
+ * "classified, not supported" footing as the PE branch: there is no Windows
+ * target, and a path we can read the arch out of is not a build we verify.
+ * Segments are searched from the end so that an absolute
  * path through a directory called `linux-x64` upstream cannot outvote the real
  * output directory.
  *
  * THE INFERENCE WORTH STATING: electron-builder OMITS the arch segment for its
- * default arch, x64. So a plain `dist/linux-unpacked`, `dist/win-unpacked` or
- * `dist/mac` means x64 — it does not mean "unknown". That is a convention rather
- * than a measurement, and it is the one line here that could go stale: if
- * electron-builder ever changes that default, this function is where it is
- * wrong, and `--arch=` is the way past it in the meantime.
+ * default arch. So a plain `dist/linux-unpacked` or `dist/mac` means x64 — it
+ * does not mean "unknown". That is a convention rather than a measurement, and
+ * it is the one line here that could go stale. The default it depends on is
+ * LOCAL, not an upstream constant: builder-util omits the suffix when the arch
+ * equals `build.<platform>.defaultArch`, which resolves to x64 only while that
+ * key is unset, as it is in this package.json today. Set it, and an arm64 bundle
+ * lands in `dist/mac` and is checked against x64 — a loud wrong failure rather
+ * than a silent pass, and `--arch=` is the way past it.
  */
 function archFromPath(app) {
   for (const segment of resolve(app).split(sep).reverse()) {
@@ -343,7 +405,7 @@ if (archArgument !== null) {
   if (!EXPECTED) {
     console.error(`\n✗ --arch=${archArgument || "<nothing>"} is not an architecture this script knows.`);
     console.error(`\n  Known: x64 (x86_64, amd64), arm64 (aarch64), armv7l, ia32, universal.`);
-    console.error(`  Add it to normaliseArch and to the ELF/Mach-O tables above if it is real.\n`);
+    console.error(`  Add it to normaliseArch and to the ELF/Mach-O/PE tables above if it is real.\n`);
     process.exit(1);
   }
 } else {
@@ -365,6 +427,26 @@ if (archArgument !== null) {
   }
 }
 
+/** Measured from the tree's own shape in section 0, never parsed from the path. */
+const TARGET_PLATFORM = found.layout.platform;
+
+/**
+ * The PLATFORM-SPECIFIC `files` key for this build, named so the remediation text
+ * points at one a reader can actually edit. It was hard-coded to
+ * build.linux.files, which is how a macOS failure came to be explained by globs
+ * that were not involved in it.
+ *
+ * It does not own the glob set and the message below does not claim it does:
+ * app-builder-lib applies the top-level `build.files` first and APPENDS the
+ * platform key to it. So the effective set is the union, and on a platform whose
+ * key is absent — build.mac has none today, which is why the macOS bundle keeps
+ * four foreign onnxruntime directories where Linux keeps none — the top-level
+ * key is the whole of it. Both are named at the point of failure for that reason.
+ */
+const FILES_KEY =
+  { darwin: "build.mac.files", linux: "build.linux.files", win32: "build.win.files" }[TARGET_PLATFORM] ??
+  `build.${TARGET_PLATFORM}.files`;
+
 /**
  * A universal macOS app is the one target that is not a single architecture:
  * @electron/universal keeps an x64 slice and an arm64 slice side by side, so a
@@ -376,18 +458,23 @@ const ACCEPTABLE = EXPECTED === "universal" ? new Set(["x64", "arm64"]) : new Se
 const EXPECTED_LABEL = [...ACCEPTABLE].join(" or ");
 
 /**
- * Read the architecture out of a file's own header.
+ * Read the platform and architecture out of a file's own header.
+ *
+ * The FORMAT is the platform: ELF is linux, Mach-O is darwin, PE is win32. That
+ * is a measurement of the bytes, which is the whole point — a `.node` under a
+ * directory called `linux/arm64` is only evidence of what somebody named it.
  *
  * No new dependency, and deliberately not `file(1)`: it is not guaranteed to be
  * installed on a runner, and a check that silently does not run is worse than no
  * check. Returns null for anything that is not an object file we recognise —
- * a `.node` that is not ELF or Mach-O is a different bug and must not be
+ * a `.node` that is not ELF, Mach-O or PE is a different bug and must not be
  * reported as an architecture mismatch.
  */
-function archesOf(file) {
+function identify(file) {
   // Never read the whole file: a bundled .node can be hundreds of megabytes.
-  // 4 KiB covers an ELF header (0x34/0x40 bytes) and a fat header with a longer
-  // arch list than any real binary carries.
+  // 4 KiB covers an ELF header (0x34/0x40 bytes), a PE header at any e_lfanew a
+  // real linker emits, and a fat header with a longer arch list than any real
+  // binary carries.
   const buffer = Buffer.alloc(4096);
   const fd = openSync(file, "r");
   let read;
@@ -411,7 +498,7 @@ function archesOf(file) {
     // A machine we have no name for is still a measurement, so it is reported
     // as one ("found ELF machine 0x2b") rather than skipped: the file IS an
     // object file, and it is provably not the arch we are shipping.
-    return { arches: [ELF_MACHINES.get(machine) ?? `ELF machine 0x${machine.toString(16)}`] };
+    return { platform: "linux", format: "ELF", arches: [ELF_MACHINES.get(machine) ?? `ELF machine 0x${machine.toString(16)}`] };
   }
 
   // Mach-O, thin — macOS. MH_MAGIC_64 0xFEEDFACF (and the 32-bit 0xFEEDFACE),
@@ -420,7 +507,7 @@ function archesOf(file) {
   if (asLE === 0xfeedfacf || asLE === 0xfeedface || asBE === 0xfeedfacf || asBE === 0xfeedface) {
     const bigEndian = asBE === 0xfeedfacf || asBE === 0xfeedface;
     const cputype = bigEndian ? buffer.readUInt32BE(4) : buffer.readUInt32LE(4);
-    return { arches: [MACHO_CPUTYPES.get(cputype) ?? `Mach-O cputype 0x${cputype.toString(16)}`] };
+    return { platform: "darwin", format: "Mach-O", arches: [MACHO_CPUTYPES.get(cputype) ?? `Mach-O cputype 0x${cputype.toString(16)}`] };
   }
 
   // Mach-O, universal/fat — a legitimate shape for a macOS build, and one that
@@ -431,15 +518,45 @@ function archesOf(file) {
     const stride = wide ? 32 : 20;
     const count = buffer.readUInt32BE(4);
     // 0xCAFEBABE is also the Java class-file magic, and a class file puts its
-    // version where nfat_arch goes. A bound is the whole difference between
-    // reading arch entries and reading "Java 8" as 52 architectures.
-    if (count < 1 || count > 64 || read < 8 + count * stride) return null;
+    // major version where nfat_arch goes. The bound is what rejects those, and
+    // it has to be BELOW 45: 45 is the lowest major version that exists (Java
+    // 1.1), so any bound of 44 or less excludes every class file that will ever
+    // be written. A bound of 64 did not — it stopped Java 21 (65) and let Java
+    // 1.1 through 20 read as 45 to 64 architectures, needing only 8 + major*20
+    // bytes of file to get past the length check too. 16 is chosen with room to
+    // spare in the other direction: slices are keyed on (cputype, cpusubtype)
+    // rather than on architecture — arm64 and arm64e are two of them — and
+    // @electron/universal merges exactly two inputs, so the only fat .node this
+    // script can meet has 2 slices. A file holding every architecture Apple has
+    // ever shipped would be about twelve. Do not let this number drift upward:
+    // too high admits junk as fake architectures and fails loudly and wrongly,
+    // where too low only drops coverage quietly.
+    if (count < 1 || count > 16 || read < 8 + count * stride) return null;
     const arches = [];
     for (let i = 0; i < count; i += 1) {
       const cputype = buffer.readUInt32BE(8 + i * stride);
       arches.push(MACHO_CPUTYPES.get(cputype) ?? `Mach-O cputype 0x${cputype.toString(16)}`);
     }
-    return { arches };
+    return { platform: "darwin", format: "Mach-O (universal)", arches };
+  }
+
+  // PE — Windows. "MZ", then a 4-byte offset at 0x3C to the "PE\0\0" signature,
+  // with the COFF Machine field 4 bytes after it. Every field is little-endian.
+  //
+  // There is NO Windows target: this branch is here so that the win32 prebuilds
+  // onnxruntime-node's fat npm package drags into every bundle are classified
+  // as foreign payload instead of vanishing into a silent skip. It is not
+  // Windows support and does not imply any.
+  if (buffer[0] === 0x4d && buffer[1] === 0x5a) {
+    if (read < 0x40) return null;
+    const peOffset = buffer.readUInt32LE(0x3c);
+    // A DOS stub is ~0x80 bytes and no linker puts the PE header near the file
+    // start; an offset outside what we read is a file we cannot judge, not a
+    // Windows binary we can lie about.
+    if (peOffset < 0x40 || peOffset + 6 > read) return null;
+    if (buffer.readUInt32LE(peOffset) !== 0x00004550) return null; // "PE\0\0"
+    const machine = buffer.readUInt16LE(peOffset + 4);
+    return { platform: "win32", format: "PE", arches: [PE_MACHINES.get(machine) ?? `PE machine 0x${machine.toString(16)}`] };
   }
 
   return null;
@@ -475,10 +592,21 @@ function nodeFilesIn(root, shownAs) {
  * OUTSIDE it is the one dlopen actually gets — so checking only inside app.asar
  * would carefully check the copies that nothing loads.
  *
- * The unpacked directory is not per-layout knowledge: electron-builder always
- * writes it beside the archive with a `.unpacked` suffix, on every platform.
- * Deriving it keeps the promise LAYOUTS makes above — Windows is one more entry
- * and nothing else — instead of a third field repeating the same string thrice.
+ * The `.unpacked` SUFFIX is not per-layout knowledge: electron-builder always
+ * writes that directory beside the archive, on every platform. Deriving it saves
+ * a third field repeating the same string thrice.
+ *
+ * The ARCHIVE NAME is a narrower assumption, and it is worth stating rather than
+ * generalising: this resolves exactly one archive, called `app.asar`. A universal
+ * macOS build with `mergeASARs: false` does not have one — @electron/universal
+ * renames the archives to `app-x64.asar` and `app-arm64.asar`, renames their
+ * payloads to match, and leaves a shim `app.asar` holding only an entry stub. The
+ * walk below would then open the shim, find nothing, and have no
+ * `app.asar.unpacked` to look in. We do not build that way — build.mac targets
+ * arm64 alone — and the guard for it is that finding NO native binaries at all is
+ * now reported differently from finding none for this platform, so the case says
+ * something instead of passing quietly. Resolving `app*.asar` is the fuller fix,
+ * for whoever turns universal on.
  */
 const UNPACKED = `${asar}.unpacked`;
 const unpackedNatives = nodeFilesIn(UNPACKED, `${found.layout.asar}.unpacked`);
@@ -500,16 +628,22 @@ const natives = [
 ];
 
 const wrongArch = [];
+const foreignPlatform = [];
 let checked = 0;
 let unrecognised = 0;
 
 for (const native of natives) {
   let header;
   try {
-    header = archesOf(native.file);
+    header = identify(native.file);
   } catch (error) {
     // An unreadable .node inside a bundle we are about to ship is not something
     // to shrug at, but it is not a mismatch either — so it gets its own words.
+    //
+    // Deliberately WITHOUT the foreign/skipped counts the other failing path
+    // prints: this exits mid-walk, so those counts cover only the files reached
+    // before this one. A partial count presented as a count is worse than none,
+    // and the file named here is the diagnosis anyway.
     console.error(`\n✗ could not read the header of a bundled native binary:\n  ${native.shown}`);
     console.error(`  ${error.message}\n`);
     process.exit(1);
@@ -518,27 +652,69 @@ for (const native of natives) {
     unrecognised += 1;
     continue;
   }
+  // A binary for another platform cannot be the wrong arch for THIS one: it is
+  // not going to be loaded here at all. Arch-checking it would fail the build
+  // over a file whose arch is irrelevant, and passing it would count it as
+  // evidence the bundle is correct. It is neither.
+  if (header.platform !== TARGET_PLATFORM) {
+    foreignPlatform.push({ ...native, ...header });
+    continue;
+  }
   checked += 1;
   if (!header.arches.some((arch) => ACCEPTABLE.has(arch))) {
     wrongArch.push({ ...native, arches: header.arches });
   }
 }
 
+/** "linux ×2, win32 ×2" — what the foreign payload is, before naming every file. */
+function tallyPlatforms(entries) {
+  const counts = new Map();
+  for (const { platform } of entries) counts.set(platform, (counts.get(platform) ?? 0) + 1);
+  return [...counts]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([platform, n]) => `${platform} ×${n}`)
+    .join(", ");
+}
+
+/**
+ * What was NOT arch-checked, and why — printed on the failing path as well as
+ * the passing one. A count that only appears on success is a count nobody reads
+ * at the moment it matters: the first failure of this check was diagnosed
+ * without knowing that two files had been skipped in silence.
+ */
+function reportUncheckedFiles(print) {
+  if (foreignPlatform.length > 0) {
+    print(`\n  ${foreignPlatform.length} bundled .node ${foreignPlatform.length === 1 ? "file is" : "files are"} for another platform (${tallyPlatforms(foreignPlatform)}), not arch-checked:`);
+    for (const { shown, format, arches } of foreignPlatform) {
+      print(`    ${shown}`);
+      print(`        ${format}, ${arches.join(" + ")}`);
+    }
+    print(`  Nothing here loads them; they are dead weight in the artefact rather than a`);
+    print(`  fault in it. Trimming them is a packaging change with its own ticket.`);
+  }
+  if (unrecognised > 0) {
+    print(`\n  ${unrecognised} bundled .node ${unrecognised === 1 ? "file was" : "files were"} skipped: not an ELF, Mach-O or PE object.`);
+  }
+}
+
 if (wrongArch.length > 0) {
   const plural = wrongArch.length === 1 ? "binary is" : "binaries are";
-  console.error(`\n✗ ${wrongArch.length} bundled native ${plural} built for the wrong architecture:\n`);
+  console.error(`\n✗ ${wrongArch.length} bundled ${TARGET_PLATFORM} native ${plural} built for the wrong architecture:\n`);
   for (const { shown, arches } of wrongArch) {
     console.error(`  ${shown}`);
     console.error(`      found ${arches.join(" + ")}, expected ${EXPECTED_LABEL}`);
   }
+  reportUncheckedFiles(console.error);
   console.error(`\n  A bundle like this installs, starts, and then dies at dlopen on a user's`);
   console.error(`  machine rather than on this runner. The two ways it happens:`);
   console.error(`\n  - @img/sharp-* and onnxruntime-node ship per-platform binaries, picked by`);
   console.error(`    whichever machine ran npm install. Install on the target architecture, or`);
   console.error(`    pass --cpu/--os to npm install, and package again.`);
-  console.error(`\n  - build.linux.files keeps exactly one`);
-  console.error(`    onnxruntime-node/bin/napi-v6/linux/<arch> directory and excludes the others.`);
-  console.error(`    If the kept one is not ${EXPECTED_LABEL}, those globs are what to fix.`);
+  console.error(`\n  - onnxruntime-node ships one prebuild directory per platform and arch, and`);
+  console.error(`    the packager's files globs decide which of them survive. If a ${TARGET_PLATFORM}`);
+  console.error(`    directory that is not ${EXPECTED_LABEL} is being kept, those globs are what to fix:`);
+  console.error(`    build.files, plus ${FILES_KEY} if it exists — the platform key is appended to the`);
+  console.error(`    top-level one rather than replacing it, so the effective set is both.`);
   console.error(`\n  "Expected ${EXPECTED_LABEL}" came from ${ARCH_SOURCE}. If THAT is what is wrong,`);
   console.error(`  say which arch the build is for: --arch=<x64|arm64|…>\n`);
   process.exit(1);
@@ -547,12 +723,24 @@ if (wrongArch.length > 0) {
 // Zero is not a failure here, and not this section's call to make: a bundle
 // with no native binaries at all is what sections 1 and 4 are for. Say what was
 // seen rather than printing a reassuring "all of nothing is correct".
-if (checked === 0) {
-  console.log(`✓ no bundled .node files to check for architecture (expected ${EXPECTED_LABEL})`);
+//
+// The two zeroes are different and must not print the same line. "No .node files
+// anywhere" can mean the trees this section searched are not the trees the
+// binaries are in — a universal build with renamed archives does exactly that —
+// and that is indistinguishable from a genuinely native-free app unless the roots
+// are named. "None for this platform" is a real measurement of a real inventory.
+if (natives.length === 0) {
+  console.log(`✓ no bundled .node files found at all, under either of:`);
+  console.log(`    ${found.layout.asar}`);
+  console.log(`    ${found.layout.asar}.unpacked`);
+  console.log(`  Nothing was arch-checked. If this bundle is supposed to contain native binaries,`);
+  console.log(`  they are not in the trees this check searched.`);
+} else if (checked === 0) {
+  console.log(`✓ no bundled ${TARGET_PLATFORM} .node files to check for architecture (expected ${EXPECTED_LABEL})`);
 } else {
-  const skipped = unrecognised > 0 ? `, ${unrecognised} skipped: not an ELF or Mach-O object` : "";
-  console.log(`✓ all bundled .node files are ${EXPECTED_LABEL} (${checked} checked${skipped})`);
+  console.log(`✓ all bundled ${TARGET_PLATFORM} .node files are ${EXPECTED_LABEL} (${checked} checked)`);
 }
+reportUncheckedFiles(console.log);
 
 // ── 3. Can the app's runtime import the paths that matter? ─────────────
 /**
