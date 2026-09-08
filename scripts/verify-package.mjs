@@ -620,12 +620,24 @@ const unpackedNatives = nodeFilesIn(UNPACKED, `${found.layout.asar}.unpacked`);
  * copy dlopen is actually handed. A `.node` that is genuinely IN the archive has
  * no counterpart here and is still checked, under its app.asar path.
  */
-const natives = [
-  ...nodeFilesIn(extracted, found.layout.asar).filter(
-    ({ file }) => !existsSync(join(UNPACKED, relative(extracted, file))),
-  ),
-  ...unpackedNatives,
-];
+const archiveNatives = nodeFilesIn(extracted, found.layout.asar);
+const archiveOnly = archiveNatives.filter(
+  ({ file }) => !existsSync(join(UNPACKED, relative(extracted, file))),
+);
+const natives = [...archiveOnly, ...unpackedNatives];
+
+/**
+ * What each tree contributed, printed on both paths.
+ *
+ * Without this the two walks are indistinguishable in the output from one walk:
+ * every file this bundle carries is lifted out by asarUnpack, so the archive's
+ * contribution after de-duplication is zero and the printed set is exactly the
+ * unpacked set. A walk that found nothing inside the archive and a walk that
+ * found seven and de-duplicated all seven produce identical verdict lines, and
+ * `find` cannot tell them apart either — it cannot read inside an asar. The
+ * pre-de-duplication count can, so it is what gets printed.
+ */
+const INVENTORY = `.node inventory: app.asar ${archiveNatives.length} (${archiveNatives.length - archiveOnly.length} also unpacked, counted once) + app.asar.unpacked ${unpackedNatives.length} = ${natives.length} unique`;
 
 const wrongArch = [];
 const foreignPlatform = [];
@@ -696,6 +708,8 @@ function reportUncheckedFiles(print) {
     print(`\n  ${unrecognised} bundled .node ${unrecognised === 1 ? "file was" : "files were"} skipped: not an ELF, Mach-O or PE object.`);
   }
 }
+
+console.log(`  ${INVENTORY}`);
 
 if (wrongArch.length > 0) {
   const plural = wrongArch.length === 1 ? "binary is" : "binaries are";

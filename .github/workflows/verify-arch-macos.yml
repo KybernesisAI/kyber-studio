@@ -90,7 +90,7 @@ jobs:
       - name: Assert the architecture check really ran, on real files
         run: |
           set -euo pipefail
-          grep -E "^✓ all bundled darwin \.node files are arm64 \([1-9][0-9]* checked\)" /tmp/verify.out \
+          grep -E "^✓ all bundled darwin \.node files are arm64 \(3 checked\)" /tmp/verify.out \
             || { echo "::error::the expected success line is absent — either the architecture check did not arch-check any darwin .node files, or its wording changed"; exit 1; }
 
       # The bundle contains onnxruntime prebuilds for platforms this app will
@@ -117,6 +117,58 @@ jobs:
             || { echo "::error::no foreign-platform report — either none was produced, or its wording changed"; exit 1; }
           grep -qE "another platform \(.*win32" /tmp/verify.out \
             || { echo "::error::no win32 in the foreign-platform tally — either the PE branch never ran on a real file, or the tally wording changed"; exit 1; }
+
+      # BOTH trees, provably. Every .node this bundle carries is lifted out by
+      # asarUnpack, so the archive contributes nothing to the final set after
+      # de-duplication — which means the passing output looks the same whether
+      # the archive walk read seven files and de-duplicated all seven, or read
+      # none because it was pointed at the wrong tree. `find` cannot settle it
+      # either: it cannot see inside an asar. The pre-de-duplication count can,
+      # and this asserts it is not zero.
+      #
+      # Then the same question is put to a tool that is not the thing under
+      # test: @electron/asar's own listing of the archive, counted independently
+      # and required to agree.
+      - name: Assert both trees were walked, and de-duplicated
+        run: |
+          set -euo pipefail
+          grep -E "\.node inventory: app\.asar [0-9]+ \([0-9]+ also unpacked, counted once\) \+ app\.asar\.unpacked [0-9]+ = [0-9]+ unique" /tmp/verify.out \
+            || { echo "::error::no inventory line — either the walk stopped reporting provenance, or its wording changed"; exit 1; }
+          grep -qE "\.node inventory: app\.asar 0 " /tmp/verify.out \
+            && { echo "::error::the app.asar walk found nothing — it is looking at the wrong tree, and the unpacked walk has been carrying the whole check in silence"; exit 1; }
+          in_archive="$(node_modules/.bin/asar list "dist/mac-arm64/KYBER Studio.app/Contents/Resources/app.asar" | grep -c '\.node$' || true)"
+          reported="$(sed -n 's/.*\.node inventory: app\.asar \([0-9]*\) .*/\1/p' /tmp/verify.out)"
+          echo "@electron/asar lists $in_archive .node in the archive; the check reports $reported"
+          [ "$in_archive" = "$reported" ] \
+            || { echo "::error::the check says it walked $reported .node files in app.asar, @electron/asar lists $in_archive"; exit 1; }
+
+      # THE ONE THING A GREEN RUN ON THIS RUNNER CANNOT OTHERWISE SHOW.
+      #
+      # Host arch, target arch and any --arch= value are all arm64 here, so
+      # "expected arm64" is consistent with the check having read the artefact
+      # path, the flag, or process.arch — and a process.arch fallback is exactly
+      # the blind spot this ticket exists to remove: on the KYB-500 Linux port
+      # the builder's arch need not be the target's, and a check that quietly
+      # measures the builder passes while shipping the wrong CPU.
+      #
+      # Running the UNTOUCHED arm64 app with --arch=x64 discriminates in one
+      # step. If the expectation comes from the flag, this fails with
+      # "found arm64, expected x64". If it comes from process.arch or the path,
+      # it passes — on this runner that outcome is impossible to explain away.
+      - name: Assert the expected arch comes from the flag, never from the runner
+        run: |
+          set -uo pipefail
+          out="$(node scripts/verify-package.mjs "dist/mac-arm64/KYBER Studio.app" --arch=x64 2>&1)" && status=0 || status=$?
+          printf '%s\n' "$out"
+          if [ "${status}" -eq 0 ]; then
+            echo "::error::--arch=x64 passed against an arm64 app — the expected architecture is not coming from the flag, and on an arm64 runner that means it is coming from process.arch or the path"
+            exit 1
+          fi
+          echo "$out" | grep -q "found arm64, expected x64" \
+            || { echo "::error::it failed, but not with 'found arm64, expected x64' — the flag was read, or not, in some other way"; exit 1; }
+          echo "$out" | grep -q -- "--arch=x64" \
+            || { echo "::error::the failure did not attribute the expectation to --arch=x64"; exit 1; }
+          echo "the expectation follows --arch=, not the runner"
 
   negative-wrong-arch:
     runs-on: macos-14
@@ -147,7 +199,7 @@ jobs:
           # non-vacuous, and makes a red baseline say "the build is broken, this
           # is not the plant" rather than dumping the verifier's output under a
           # step name that invites misattribution.
-          grep -E "^✓ all bundled darwin \.node files are arm64 \([1-9][0-9]* checked\)" /tmp/baseline.out \
+          grep -E "^✓ all bundled darwin \.node files are arm64 \(3 checked\)" /tmp/baseline.out \
             || { echo "::error::baseline ran but arch-checked nothing — the plant below would prove nothing"; exit 1; }
 
       # A real x86_64 Mach-O from the registry, not a hand-edited header: the
