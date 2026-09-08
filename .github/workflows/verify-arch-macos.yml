@@ -193,7 +193,21 @@ jobs:
 
           npm pack "@img/sharp-darwin-x64@$version" --silent
           tar xzf "img-sharp-darwin-x64-$version.tgz"
-          cp package/lib/sharp-darwin-x64-*.node "$target"
+
+          # Locate the binary rather than assuming its name. lib/sharp-darwin-x64-<version>.node
+          # is the 0.35.x layout; 0.34.5, which is what this repo installs, does not use it, and
+          # a hard-coded glob turned that into "cp: No such file or directory". Same exactly-one
+          # discipline as the target above: a tarball with two .node files, or none, is not
+          # something to guess at.
+          planted="$(find package -type f -name '*.node' | sort)"
+          found="$(printf '%s' "$planted" | grep -c . || true)"
+          if [ "$found" -ne 1 ]; then
+            echo "::error::expected exactly one .node in the @img/sharp-darwin-x64@$version tarball, found $found"
+            find package -type f | sed 's|^|  |'
+            exit 1
+          fi
+          echo "planting from: $planted"
+          cp "$planted" "$target"
           # Assert what was planted, not just what was replaced. If this package
           # ever shipped a universal binary, its arm64 slice would satisfy the
           # check and the job would fail saying the verifier is a comment —
