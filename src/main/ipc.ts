@@ -211,6 +211,7 @@ export function registerIpc(): void {
     "studio:watch",
     (e, input: { url: string; sessionId: string; streamIndex: number; streamId: string }) => {
       const sender: WebContents = e.sender;
+      console.log(`[watch] asked for ${input.streamId} on ${input.sessionId.slice(0, 18)} from ${input.streamIndex}`);
       watchers.get(input.streamId)?.abort();
       const ctrl = new AbortController();
       watchers.set(input.streamId, ctrl);

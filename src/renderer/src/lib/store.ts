@@ -235,6 +235,7 @@ function ensureListeners(
    */
   window.studio.onLive(({ streamId, kind }) => {
     const agentId = streamOwners.get(streamId);
+    console.log(`[live] ${kind} on ${streamId} → ${agentId ?? "NO OWNER"}`);
     if (!agentId) return;
     if (kind === "boundary" || kind === "ended") {
       set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
@@ -1038,7 +1039,12 @@ export const useStore = create<State>((set, get) => ({
     get().stopWatching();
     if (!wanted || !agent?.url || !window.studio) return;
     const streamId = `w${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
+    // The stream listeners were registered lazily by the first SEND from this
+    // window. A watch started before any send had nobody listening, so a turn
+    // driven from the phone arrived in main and went nowhere.
+    ensureListeners(get, set);
     streamOwners.set(streamId, agent.id);
+    console.log(`[live] watching ${agent.name} ${wanted.sessionId.slice(0, 18)} as ${streamId} from ${streamIndexes[agent.id] ?? 0}`);
     set({ watching: { agentId: agent.id, sessionId: wanted.sessionId, streamId } });
     void window.studio.watch({ url: agent.url, sessionId: wanted.sessionId, streamIndex: streamIndexes[agent.id] ?? 0, streamId });
   },

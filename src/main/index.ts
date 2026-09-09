@@ -43,6 +43,12 @@ function createWindow(): void {
       sandbox: false,
     },
   });
+  // The renderer's console, in the same log as main's: a live-thread event that
+  // reaches preload and dies in the store is invisible otherwise.
+  win.webContents.on("console-message", (_e, _level, message) => {
+    if (message.startsWith("[")) console.log(`[renderer] ${message}`);
+  });
+
 
   win.on("ready-to-show", () => {
     win.show();

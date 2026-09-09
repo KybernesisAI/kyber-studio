@@ -1303,11 +1303,14 @@ export async function watchSession(input: {
   const memo = { lastTool: null as string | null };
   const peerState: PeerState = { pending: new Map(), last: null };
   let sawSpecific = false;
+  let seen = 0;
+  console.log(`[watch] start ${input.sessionId.slice(0, 18)} at ${input.startIndex}`);
   try {
     for await (const raw of session.stream({ follow: true, startIndex: input.startIndex, signal: input.signal })) {
       const type = String((raw as { type?: unknown }).type ?? "");
       const data = ((raw as { data?: unknown }).data ?? {}) as Record<string, unknown>;
       index += 1;
+      seen += 1;
       input.onCursor(index);
 
       const nextLabel = activityLabel(type, data, memo);
@@ -1367,6 +1370,8 @@ export async function watchSession(input: {
     }
   } catch (error) {
     if (!input.signal.aborted) throw describeClientError(error, base);
+  } finally {
+    console.log(`[watch] end ${input.sessionId.slice(0, 18)} after ${seen} event(s)${input.signal.aborted ? " (stopped)" : " (stream closed)"}`);
   }
 }
 
