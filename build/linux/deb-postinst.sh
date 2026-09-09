@@ -138,16 +138,24 @@ APPARMOR_PROFILE
         # without us.
         #
         # The parser's reason is CAPTURED rather than discarded, and the temp
-        # path is rewritten out of it: the parser names the file it read, and the
-        # trap above deletes that file moments later, so an operator would be
-        # handed a filename and a line number pointing at nothing.
+        # path is rewritten to the DESTINATION path: the parser names the file it
+        # read, and the trap above deletes that file moments later, so an
+        # operator would otherwise be handed a filename and a line number
+        # pointing at nothing.
+        #
+        # Rewritten to the path rather than to a noun phrase, because the parser
+        # says "error for FILE in profile FILE at line N" and substituting prose
+        # produced "error for the AppArmor profile in profile the AppArmor
+        # profile at line 4" on Ubuntu 22.04 — readable, but visibly broken, and
+        # the destination is already named on the line above so it reads as one
+        # sentence.
         if PARSER_REASON="$(apparmor_parser --skip-kernel-load "$PROFILE_TMP" 2>&1)"; then
             # A parser that WARNS and exits 0 is the case this guard's premise
             # does not cover: the profile installs, and the one signal that the
             # premise did not hold would otherwise sit unread in the variable.
             if [ -n "$PARSER_REASON" ]; then
                 echo "${sanitizedProductName}: apparmor_parser accepted the profile with output:" >&2
-                printf '%s\n' "$PARSER_REASON" | sed "s|$PROFILE_TMP|the AppArmor profile|g; s|^|  |" >&2 || :
+                printf '%s\n' "$PARSER_REASON" | sed "s|$PROFILE_TMP|$PROFILE_PATH|g; s|^|  |" >&2 || :
             fi
             if install -m 0644 "$PROFILE_TMP" "$PROFILE_PATH"; then
                 # Load it now so the app works before the next reboot. A running
@@ -162,7 +170,7 @@ APPARMOR_PROFILE
         else
             echo "${sanitizedProductName}: this system's apparmor_parser rejected the profile, so it was not installed." >&2
             echo "${sanitizedProductName}: it would have been $PROFILE_PATH. The parser said:" >&2
-            printf '%s\n' "$PARSER_REASON" | sed "s|$PROFILE_TMP|the AppArmor profile|g; s|^|  |" >&2 || :
+            printf '%s\n' "$PARSER_REASON" | sed "s|$PROFILE_TMP|$PROFILE_PATH|g; s|^|  |" >&2 || :
         fi
     fi
 fi
