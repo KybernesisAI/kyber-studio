@@ -826,8 +826,22 @@ export const useStore = create<State>((set, get) => ({
       return local.length ? Math.max(...local.map((b) => b.at)) : 0;
     };
 
-    const seen = new Set<string>();
+    // Only the NEWEST row per agent is a candidate. The directory keeps every
+    // thread a person has had with an agent; walking all of them adopted one,
+    // then the next, on every tick — a conversation that emptied and refilled
+    // itself every thirty seconds.
+    const newest = new Map<string, (typeof indexed)[number]>();
     for (const entry of indexed) {
+      const agent = resolve(entry.agent);
+      if (!agent) continue;
+      const at = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
+      const held = newest.get(agent.id);
+      const heldAt = held?.lastMessageAt ? Date.parse(held.lastMessageAt) : 0;
+      if (!held || at > heldAt) newest.set(agent.id, entry);
+    }
+
+    const seen = new Set<string>();
+    for (const entry of newest.values()) {
       const agent = resolve(entry.agent);
       if (!agent) continue;
       seen.add(agent.id);
