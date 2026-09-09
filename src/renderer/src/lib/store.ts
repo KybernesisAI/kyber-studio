@@ -1410,11 +1410,11 @@ export const useStore = create<State>((set, get) => ({
     }));
     get().persist();
 
-    // The picture, the name and the colour are the account's, not this
-    // machine's: the phone draws the same agent. Sent as a patch — absent
+    // The picture, the name, the colour and the arrangement are the account's,
+    // not this machine's: the phone draws the same list. Sent as a patch — absent
     // leaves a field alone, null clears it — so changing one never clobbers
     // another chosen elsewhere.
-    if ("name" in patch || "accent" in patch || "avatar" in patch) {
+    if ("name" in patch || "accent" in patch || "avatar" in patch || "pinned" in patch || "hidden" in patch) {
       const agent = get().agents.find((a) => a.id === id);
       if (agent) {
         void window.studio?.saveAgentProfile({
@@ -1422,6 +1422,8 @@ export const useStore = create<State>((set, get) => ({
           ...("name" in patch ? { displayName: patch.name?.trim() || null } : {}),
           ...("accent" in patch ? { accent: patch.accent ?? null } : {}),
           ...("avatar" in patch ? { avatar: patch.avatar ?? null } : {}),
+          ...("pinned" in patch ? { pinned: patch.pinned ?? null } : {}),
+          ...("hidden" in patch ? { hidden: patch.hidden ?? null } : {}),
         });
       }
     }
@@ -1669,8 +1671,8 @@ export const useStore = create<State>((set, get) => ({
             // the agent list synced — which reads as the app losing it at
             // random rather than as a missing line here.
             avatar: (profile ? profile.avatar : chosen.avatar ?? prior?.avatar) ?? undefined,
-            pinned: chosen.pinned ?? prior?.pinned,
-            hidden: chosen.hidden ?? prior?.hidden,
+            pinned: (profile ? profile.pinned : chosen.pinned) ?? prior?.pinned ?? undefined,
+            hidden: (profile ? profile.hidden : chosen.hidden) ?? prior?.hidden ?? undefined,
             unread: prior?.unread,
             notifications: chosen.notifications ?? prior?.notifications ?? true,
             // "unknown" until something asks the agent itself. Holding an
@@ -1692,12 +1694,14 @@ export const useStore = create<State>((set, get) => ({
       // carried up once, so a picture chosen last month is on the phone today.
       for (const r of remote) {
         const chosen = get().prefs[r.id] ?? {};
-        if (r.profile || !(chosen.avatar || chosen.name || chosen.accent)) continue;
+        if (r.profile || !(chosen.avatar || chosen.name || chosen.accent || chosen.pinned != null || chosen.hidden != null)) continue;
         void window.studio.saveAgentProfile({
           agent: r.name,
           ...(chosen.name ? { displayName: chosen.name } : {}),
           ...(chosen.accent ? { accent: chosen.accent } : {}),
           ...(chosen.avatar ? { avatar: chosen.avatar } : {}),
+          ...(chosen.pinned != null ? { pinned: chosen.pinned } : {}),
+          ...(chosen.hidden != null ? { hidden: chosen.hidden } : {}),
         });
       }
 

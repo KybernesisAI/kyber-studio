@@ -338,6 +338,8 @@ export async function saveAgentProfile(input: {
   displayName?: string | null;
   accent?: string | null;
   avatar?: string | null;
+  pinned?: boolean | null;
+  hidden?: boolean | null;
 }): Promise<void> {
   const s = await activeSession();
   if (!s) return;

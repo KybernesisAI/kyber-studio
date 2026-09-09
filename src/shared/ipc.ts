@@ -90,6 +90,9 @@ export interface AgentProfile {
   accent: string | null;
   /** A small data URL, or null for the lettered mark. */
   avatar: string | null;
+  /** Where it sits in the person's list. Null means never chosen. */
+  pinned?: boolean | null;
+  hidden?: boolean | null;
   updatedAt: string;
 }
 
@@ -144,7 +147,7 @@ export interface StudioApi {
   signOut(): Promise<void>;
   listAgents(): Promise<RemoteAgent[]>;
   /** Save how this person shows an agent, for every device they sign in to. Absent leaves a field alone; null clears it. */
-  saveAgentProfile(input: { agent: string; displayName?: string | null; accent?: string | null; avatar?: string | null }): Promise<void>;
+  saveAgentProfile(input: { agent: string; displayName?: string | null; accent?: string | null; avatar?: string | null; pinned?: boolean | null; hidden?: boolean | null }): Promise<void>;
   send(input: {
     url: string;
     text: string;
