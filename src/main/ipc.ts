@@ -34,6 +34,7 @@ import {
   revokeLocalAccess,
   currentSession,
   listAgents,
+  saveAgentProfile,
   pollDeviceAuth,
   resetSession,
   sendTurn,
@@ -79,6 +80,10 @@ export function registerIpc(): void {
   });
 
   ipcMain.handle("studio:listAgents", () => listAgents());
+  ipcMain.handle(
+    "studio:saveAgentProfile",
+    (_e, input: Parameters<typeof saveAgentProfile>[0]) => saveAgentProfile(input),
+  );
 
   ipcMain.handle("studio:agentInfo", (_e, url: string) => agentInfo(url));
 

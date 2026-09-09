@@ -1409,6 +1409,22 @@ export const useStore = create<State>((set, get) => ({
       },
     }));
     get().persist();
+
+    // The picture, the name and the colour are the account's, not this
+    // machine's: the phone draws the same agent. Sent as a patch — absent
+    // leaves a field alone, null clears it — so changing one never clobbers
+    // another chosen elsewhere.
+    if ("name" in patch || "accent" in patch || "avatar" in patch) {
+      const agent = get().agents.find((a) => a.id === id);
+      if (agent) {
+        void window.studio?.saveAgentProfile({
+          agent: agent.registeredName ?? agent.name,
+          ...("name" in patch ? { displayName: patch.name?.trim() || null } : {}),
+          ...("accent" in patch ? { accent: patch.accent ?? null } : {}),
+          ...("avatar" in patch ? { avatar: patch.avatar ?? null } : {}),
+        });
+      }
+    }
   },
 
   loadCatalog: async (agentId) => {
@@ -1630,19 +1646,29 @@ export const useStore = create<State>((set, get) => ({
         agents: remote.map((r, i) => {
           const prior = existing.get(r.id);
           const chosen = get().prefs[r.id] ?? {};
+          // The account's choice — picture, name, colour — wins over this
+          // machine's, because it is the one the phone also sees. A null in
+          // it means "cleared somewhere", and this machine follows. Only when
+          // the account has never chosen do the local prefs apply.
+          const profile = r.profile ?? null;
           return {
             id: r.id,
+            registeredName: r.name,
             // The user's name for it, if they gave one. The control plane's
             // name is the default, not the authority.
-            name: chosen.name ?? r.name,
+            name: (profile ? profile.displayName : chosen.name) ?? r.name,
             url: r.url ?? "",
             peers: r.peers ?? [],
-            accent: chosen.accent ?? prior?.accent ?? palette[i % palette.length] ?? "#2ec4a6",
+            accent:
+              (profile ? profile.accent : chosen.accent) ??
+              prior?.accent ??
+              palette[i % palette.length] ??
+              "#2ec4a6",
             // Restored on every refresh, like the name and the accent. Left out,
             // a picture would survive a relaunch and then vanish the next time
             // the agent list synced — which reads as the app losing it at
             // random rather than as a missing line here.
-            avatar: chosen.avatar ?? prior?.avatar,
+            avatar: (profile ? profile.avatar : chosen.avatar ?? prior?.avatar) ?? undefined,
             pinned: chosen.pinned ?? prior?.pinned,
             hidden: chosen.hidden ?? prior?.hidden,
             unread: prior?.unread,
@@ -1661,6 +1687,19 @@ export const useStore = create<State>((set, get) => ({
         }),
         activeAgentId: remote[0]?.id ?? get().activeAgentId,
       });
+
+      // Choices made on this machine before the account could hold them are
+      // carried up once, so a picture chosen last month is on the phone today.
+      for (const r of remote) {
+        const chosen = get().prefs[r.id] ?? {};
+        if (r.profile || !(chosen.avatar || chosen.name || chosen.accent)) continue;
+        void window.studio.saveAgentProfile({
+          agent: r.name,
+          ...(chosen.name ? { displayName: chosen.name } : {}),
+          ...(chosen.accent ? { accent: chosen.accent } : {}),
+          ...(chosen.avatar ? { avatar: chosen.avatar } : {}),
+        });
+      }
 
       // Then ask the agents themselves. Deliberately after the list is already
       // on screen and deliberately not awaited into it: liveness is worth

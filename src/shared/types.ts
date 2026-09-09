@@ -19,6 +19,8 @@ export interface Agent {
   id: string;
   /** Display name in the sidebar and header. */
   name: string;
+  /** The control plane's name for it, which the account-wide profile is keyed by. */
+  registeredName?: string;
   /** One-line role, shown under the name in Settings. */
   title?: string;
   description?: string;

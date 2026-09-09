@@ -78,6 +78,19 @@ export interface RemoteAgent {
    * rows the admin edits, so revoking an edge there empties this here.
    */
   peers?: { id: string; name: string; purpose?: string }[];
+  /**
+   * How THIS person shows the agent, kept with the account so the phone and
+   * the desktop draw the same picture. Null when they have never chosen.
+   */
+  profile?: AgentProfile | null;
+}
+
+export interface AgentProfile {
+  displayName: string | null;
+  accent: string | null;
+  /** A small data URL, or null for the lettered mark. */
+  avatar: string | null;
+  updatedAt: string;
 }
 
 export type LocalAction = "run-command" | "read-file" | "write-file" | "list-directory";
@@ -130,6 +143,8 @@ export interface StudioApi {
   awaitSignIn(): Promise<Session>;
   signOut(): Promise<void>;
   listAgents(): Promise<RemoteAgent[]>;
+  /** Save how this person shows an agent, for every device they sign in to. Absent leaves a field alone; null clears it. */
+  saveAgentProfile(input: { agent: string; displayName?: string | null; accent?: string | null; avatar?: string | null }): Promise<void>;
   send(input: {
     url: string;
     text: string;
