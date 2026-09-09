@@ -13,6 +13,7 @@ const studio: StudioApi = {
   awaitSignIn: () => ipcRenderer.invoke("studio:awaitSignIn"),
   signOut: () => ipcRenderer.invoke("studio:signOut"),
   listAgents: () => ipcRenderer.invoke("studio:listAgents"),
+  saveAgentProfile: (input) => ipcRenderer.invoke("studio:saveAgentProfile", input),
   send: (input) => ipcRenderer.invoke("studio:send", input),
   fileExists: (path) => ipcRenderer.invoke("studio:fileExists", path),
   dictationAvailable: () => ipcRenderer.invoke("studio:dictationAvailable"),

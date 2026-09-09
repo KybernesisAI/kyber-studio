@@ -645,7 +645,7 @@ function Settings(): ReactNode {
         </div>
 
         <div className="field">
-          <div className="field__label">Display name (this app only)</div>
+          <div className="field__label">Display name</div>
           <input
             className="input"
             value={agent.name}

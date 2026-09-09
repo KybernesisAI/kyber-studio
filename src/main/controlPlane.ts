@@ -329,6 +329,32 @@ export async function listAgents(): Promise<RemoteAgent[]> {
   return body.agents ?? [];
 }
 
+/**
+ * Best effort, and quiet about it: a picture that did not reach the control
+ * plane is still on this machine, and the next change will carry it again.
+ */
+export async function saveAgentProfile(input: {
+  agent: string;
+  displayName?: string | null;
+  accent?: string | null;
+  avatar?: string | null;
+  pinned?: boolean | null;
+  hidden?: boolean | null;
+}): Promise<void> {
+  const s = await activeSession();
+  if (!s) return;
+  try {
+    await fetch(`${ISSUER}/api/me/agents/profile`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${s.token}` },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch {
+    /* best effort */
+  }
+}
+
 
 /**
  * Turn an HTTP failure into a sentence that names the actual cause.
