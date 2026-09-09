@@ -14,8 +14,13 @@
 #
 #   => Shell variables in this file must be $BARE or ${UPPER_SNAKE_CASE}.
 #      Underscores and digits are outside [a-zA-Z], so those forms are invisible
-#      to the substitution. A lowercase a lowercase macro would be eaten, or would fail the
-#      package build outright.
+#      to the substitution. A lowercase name would be substituted away, or would
+#      fail the package build outright.
+#
+#      This comment block is subject to its own rule, which is not a joke: an
+#      earlier draft of it demonstrated the trap with a literal lowercase
+#      example, and would have failed the package build on its own
+#      documentation.
 #
 # That is also why the install path is interpolated at package time rather than
 # reconstructed at run time: '/opt/${sanitizedProductName}' arrives here already
