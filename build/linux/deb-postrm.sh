@@ -36,6 +36,12 @@ fi
 # grant for the window between this script and the new postinst, and if the
 # upgrade then failed part-way it would leave a machine that had the profile
 # before and does not now. On remove and purge there is nothing left to grant.
+#
+# abort-install, abort-upgrade and failed-upgrade are deliberately no-ops: in all
+# three the package is either never unpacked or is being restored to installed,
+# so the profile should stay. The one case not handled is `disappear`, where the
+# profile would be orphaned on disk and loaded at boot for a package that is
+# gone — rare enough to leave, named so it is a decision rather than an omission.
 case "$1" in
     remove|purge)
         if [ -f "$PROFILE_PATH" ]; then

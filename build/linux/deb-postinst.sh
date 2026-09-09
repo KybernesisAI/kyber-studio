@@ -38,6 +38,12 @@ PROFILE_PATH='/etc/apparmor.d/${executable}'
 # prints on every install. Left exactly as it is — a "reproduced verbatim" claim
 # that quietly improves one line is not reproduced verbatim, and fixing it here
 # would be scope creep. Noted so the next reader does not re-raise it.
+#
+# One honest qualification on "verbatim": `set -e` above is NOT stock — neither
+# upstream template has it. So the unguarded `rm -f` and `ln -sf` in this block,
+# survivable upstream, now abort. They run as root against paths root owns, so
+# in practice they do not fail; the text is identical, the surrounding
+# semantics are not, and that is worth knowing rather than glossing.
 if type update-alternatives 2>/dev/null >&1; then
     # Remove previous link if it doesn't use update-alternatives
     if [ -L '/usr/bin/${executable}' -a -e '/usr/bin/${executable}' -a "`readlink '/usr/bin/${executable}'`" != '/etc/alternatives/${executable}' ]; then
@@ -114,7 +120,13 @@ if command -v apparmor_parser >/dev/null 2>&1; then
     if [ -z "$PROFILE_TMP" ]; then
         echo "${sanitizedProductName}: could not create a temporary file, so the AppArmor profile was not installed." >&2
     else
-        cat > "$PROFILE_TMP" <<'APPARMOR_PROFILE'
+        # The write is guarded too. It was not, for three revisions, while the
+        # comment above claimed it was — ENOSPC or a read-only /tmp would have
+        # aborted the postinst here and half-configured dpkg, which is the exact
+        # outcome this block exists to prevent. Found by review, on the third
+        # pass over the same paragraph.
+        PROFILE_WRITTEN=1
+        cat > "$PROFILE_TMP" <<'APPARMOR_PROFILE' || PROFILE_WRITTEN=0
 # Managed by the ${sanitizedProductName} package (KYB-543). Local changes belong
 # in /etc/apparmor.d/local/${executable}, which is included below and is never
 # touched by this package.
@@ -149,7 +161,9 @@ APPARMOR_PROFILE
         # profile at line 4" on Ubuntu 22.04 — readable, but visibly broken, and
         # the destination is already named on the line above so it reads as one
         # sentence.
-        if PARSER_REASON="$(apparmor_parser --skip-kernel-load "$PROFILE_TMP" 2>&1)"; then
+        if [ "$PROFILE_WRITTEN" = 0 ]; then
+            echo "${sanitizedProductName}: could not write the profile to a temporary file, so it was not installed." >&2
+        elif PARSER_REASON="$(apparmor_parser --skip-kernel-load "$PROFILE_TMP" 2>&1)"; then
             # A parser that WARNS and exits 0 is the case this guard's premise
             # does not cover: the profile installs, and the one signal that the
             # premise did not hold would otherwise sit unread in the variable.
@@ -160,8 +174,16 @@ APPARMOR_PROFILE
             if install -m 0644 "$PROFILE_TMP" "$PROFILE_PATH"; then
                 # Load it now so the app works before the next reboot. A running
                 # kernel without AppArmor enabled will refuse; not a failure.
-                apparmor_parser --replace --write-cache "$PROFILE_PATH" >/dev/null 2>&1 \
-                    || echo "${sanitizedProductName}: AppArmor profile installed but not loaded; it will apply after a reboot." >&2
+                # This is the one branch that used to discard its reason while
+                # every other one captures it — and it promised the profile
+                # "will apply after a reboot", which is false in the most likely
+                # case for reaching it: AppArmor disabled in the running kernel,
+                # where no reboot helps until that changes.
+                if ! LOAD_REASON="$(apparmor_parser --replace --write-cache "$PROFILE_PATH" 2>&1)"; then
+                    echo "${sanitizedProductName}: the AppArmor profile is installed at $PROFILE_PATH but could not be loaded now." >&2
+                    echo "${sanitizedProductName}: it will be loaded at boot if AppArmor is enabled on this system. The parser said:" >&2
+                    printf '%s\n' "$LOAD_REASON" | sed 's|^|  |' >&2 || :
+                fi
             else
                 echo "${sanitizedProductName}: could not write $PROFILE_PATH, so the AppArmor profile was not installed." >&2
                 echo "${sanitizedProductName}: the package is installed and usable, but Chromium's sandbox may not start" >&2
