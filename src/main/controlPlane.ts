@@ -1270,6 +1270,106 @@ export async function sendTurn(input: {
  * Both outcomes are success: `accepted` means the turn took the signal, and
  * `no_active_turn` means it had already settled.
  */
+/**
+ * Follow a session that something ELSE is driving — the phone, a workspace,
+ * a schedule — and report it through the same callbacks a turn of our own
+ * uses, so the renderer draws it with the same code.
+ *
+ * Without this the desktop learned about a message sent from the phone on
+ * its next thirty-second tick, while the phone saw the desktop's the moment
+ * it landed. Starts at the index after the last event this window consumed;
+ * ends only when the caller stops it or the connection is given up on. A
+ * turn boundary is reported so the caller can re-read the transcript from
+ * the agent, which is the one copy that cannot drift.
+ */
+export async function watchSession(input: {
+  url: string;
+  sessionId: string;
+  startIndex: number;
+  signal: AbortSignal;
+  onDelta: (text: string) => void;
+  onReset: () => void;
+  onActivity: (label: string | null) => void;
+  onCursor: (index: number) => void;
+  onPeer: (event: { direction: "inbound" | "outbound"; peer: string; text: string }) => void;
+  onAuthorization: (event: { name: string; description?: string; url?: string; userCode?: string; instructions?: string; expiresAt?: string; outcome?: string }) => void;
+  onQuestion: (request: { requestId: string; prompt: string; options?: { id: string; label: string; description?: string; style?: string }[]; allowFreeform?: boolean }) => void;
+  /** The other device's message landed, or its turn ended: time to re-read the thread. */
+  onLive: (kind: "received" | "boundary") => void;
+}): Promise<void> {
+  const base = input.url.replace(/\/$/, "");
+  const session = clientFor(base).sessions.attach(input.sessionId, { streamIndex: input.startIndex });
+  let index = input.startIndex;
+  const memo = { lastTool: null as string | null };
+  const peerState: PeerState = { pending: new Map(), last: null };
+  let sawSpecific = false;
+  try {
+    for await (const raw of session.stream({ follow: true, startIndex: input.startIndex, signal: input.signal })) {
+      const type = String((raw as { type?: unknown }).type ?? "");
+      const data = ((raw as { data?: unknown }).data ?? {}) as Record<string, unknown>;
+      index += 1;
+      input.onCursor(index);
+
+      const nextLabel = activityLabel(type, data, memo);
+      if (nextLabel) {
+        if (nextLabel.specific) {
+          sawSpecific = true;
+          input.onActivity(nextLabel.label);
+        } else if (!sawSpecific) {
+          input.onActivity(nextLabel.label);
+        }
+      }
+      for (const peerEvent of readPeerEvents(type, data, peerState)) input.onPeer(peerEvent);
+
+      if (type === "message.received") {
+        input.onLive("received");
+      } else if (type === "message.appended" && typeof data.messageDelta === "string") {
+        sawSpecific = false;
+        memo.lastTool = null;
+        input.onActivity(null);
+        input.onDelta(data.messageDelta);
+      } else if (type === "message.completed" && typeof data.message === "string") {
+        if (data.finishReason === "tool-calls") {
+          const narration = data.message.trim();
+          if (narration) input.onActivity(narration.slice(0, 120));
+          input.onReset();
+        } else {
+          input.onReset();
+          input.onDelta(data.message);
+        }
+      } else if (type === "authorization.required" || type === "authorization.completed") {
+        const challenge = (data.authorization ?? {}) as Record<string, unknown>;
+        input.onAuthorization({
+          name: (typeof data.name === "string" && data.name) || (typeof data.connection === "string" && data.connection) || "a connection",
+          description: typeof data.description === "string" ? data.description : undefined,
+          url: typeof challenge.url === "string" ? challenge.url : undefined,
+          userCode: typeof challenge.userCode === "string" ? challenge.userCode : undefined,
+          instructions: typeof challenge.instructions === "string" ? challenge.instructions : undefined,
+          expiresAt: typeof challenge.expiresAt === "string" ? challenge.expiresAt : undefined,
+          outcome: typeof data.outcome === "string" ? data.outcome : undefined,
+        });
+      } else if (type === "input.requested") {
+        for (const r0 of Array.isArray(data.requests) ? data.requests : []) {
+          // Both shapes, as the turn reader reads them.
+          const r = r0 as Record<string, unknown>;
+          const action = (r.action ?? {}) as Record<string, unknown>;
+          const inner = (action.input ?? {}) as Record<string, unknown>;
+          const requestId = (typeof r.requestId === "string" && r.requestId) || (typeof action.callId === "string" && action.callId) || "";
+          const prompt = (typeof r.prompt === "string" && r.prompt) || (typeof inner.prompt === "string" && inner.prompt) || (typeof inner.question === "string" && inner.question) || "";
+          if (!requestId || !prompt) continue;
+          const options = Array.isArray(r.options) ? r.options : Array.isArray(inner.options) ? inner.options : undefined;
+          input.onQuestion({ requestId, prompt, options: options as never, allowFreeform: r.allowFreeform === true || inner.allowFreeform === true });
+        }
+      } else if (type === "session.waiting" || type === "session.completed" || type === "session.failed" || type === "turn.failed") {
+        input.onActivity(null);
+        input.onLive("boundary");
+      }
+    }
+  } catch (error) {
+    if (!input.signal.aborted) throw describeClientError(error, base);
+  }
+}
+
 export async function cancelTurn(input: {
   url: string;
   sessionId: string;

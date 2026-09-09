@@ -14,6 +14,18 @@ export function App(): ReactNode {
     void bootstrap();
   }, [bootstrap]);
 
+  // Follow the open thread live while nothing of ours is in flight in it.
+  const activeAgentId = useStore((s) => s.activeAgentId);
+  const activeSession = useStore((s) => (s.activeAgentId ? s.sessions[s.activeAgentId] : undefined));
+  const activeInflight = useStore((s) => (s.activeAgentId ? Boolean(s.inflight[s.activeAgentId]) : false));
+  const watchActive = useStore((s) => s.watchActive);
+  const stopWatching = useStore((s) => s.stopWatching);
+  useEffect(() => {
+    if (authState !== "signed-in") return;
+    watchActive();
+  }, [authState, activeAgentId, activeSession, activeInflight, watchActive]);
+  useEffect(() => () => stopWatching(), [stopWatching]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {

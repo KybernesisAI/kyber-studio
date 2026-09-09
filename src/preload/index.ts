@@ -89,6 +89,13 @@ const studio: StudioApi = {
     ipcRenderer.on('studio:peer', listener);
     return () => ipcRenderer.off('studio:peer', listener);
   },
+  watch: (input) => ipcRenderer.invoke("studio:watch", input),
+  unwatch: (streamId) => ipcRenderer.invoke("studio:unwatch", streamId),
+  onLive: (handler) => {
+    const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);
+    ipcRenderer.on("studio:live", listener);
+    return () => ipcRenderer.off("studio:live", listener);
+  },
   onQuestion: (handler) => {
     const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);
     ipcRenderer.on("studio:question", listener);

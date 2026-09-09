@@ -228,6 +228,23 @@ function ensureListeners(
     get().persist();
   });
 
+  /**
+   * The other device's message landed, or its turn ended. Re-read the thread
+   * from the agent — the one copy that cannot drift — and, at a boundary,
+   * start a fresh watch so the next reply gets a bubble of its own.
+   */
+  window.studio.onLive(({ streamId, kind }) => {
+    const agentId = streamOwners.get(streamId);
+    if (!agentId) return;
+    if (kind === "boundary" || kind === "ended") {
+      set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
+      get().stopWatching();
+    }
+    if (!get().inflight[agentId]) {
+      void get().hydrate(agentId, "merge").then(() => get().watchActive());
+    }
+  });
+
   window.studio.onQuestion(({ streamId, request }) => {
     const agentId = streamOwners.get(streamId);
     if (!agentId) return;
@@ -721,6 +738,11 @@ interface State {
   syncSessions(): Promise<void>;
   /** Pick up turns that happened on another device. Cheap; safe to call often. */
   refreshFromOthers(): Promise<void>;
+  /** The thread being followed live, if this device is not the one talking in it. */
+  watching: { agentId: string; sessionId: string; streamId: string } | null;
+  /** Follow the active agent's thread while nothing of ours is in flight there; stop any other. */
+  watchActive(): void;
+  stopWatching(): void;
   setQuery(q: string): void;
   setPanel(v: PanelView): void;
   openRoutine(id: string): void;
@@ -1005,6 +1027,34 @@ export const useStore = create<State>((set, get) => ({
    * minute is a battery cost paid for nothing: nobody is reading it, and the
    * moment they look, focus fires.
    */
+  watching: null,
+
+  watchActive: () => {
+    const { activeAgentId, watching, agents, sessions, inflight, streamIndexes } = get();
+    const agent = activeAgentId && !isRoomId(activeAgentId) ? agents.find((a) => a.id === activeAgentId) : undefined;
+    const sessionId = agent ? sessions[agent.id] : undefined;
+    const wanted = agent && agent.url && sessionId && !inflight[agent.id] ? { agentId: agent.id, sessionId } : null;
+    if (watching && wanted && watching.agentId === wanted.agentId && watching.sessionId === wanted.sessionId) return;
+    get().stopWatching();
+    if (!wanted || !agent?.url || !window.studio) return;
+    const streamId = `w${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
+    streamOwners.set(streamId, agent.id);
+    set({ watching: { agentId: agent.id, sessionId: wanted.sessionId, streamId } });
+    void window.studio.watch({ url: agent.url, sessionId: wanted.sessionId, streamIndex: streamIndexes[agent.id] ?? 0, streamId });
+  },
+
+  stopWatching: () => {
+    const { watching } = get();
+    if (!watching) return;
+    streamOwners.delete(watching.streamId);
+    set((s) => {
+      const streaming = { ...s.streaming };
+      delete streaming[watching.streamId];
+      return { watching: null, streaming };
+    });
+    void window.studio?.unwatch(watching.streamId);
+  },
+
   refreshFromOthers: async () => {
     if (!window.studio) return;
     await get().syncSessions();
