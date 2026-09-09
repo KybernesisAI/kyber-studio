@@ -19,7 +19,12 @@ PROFILE_PATH='/etc/apparmor.d/${executable}'
 # re-creates this link — so removing it unconditionally is safe, and diverging
 # from stock here would be an unrelated behaviour change riding in this ticket.
 if type update-alternatives >/dev/null 2>&1; then
-    update-alternatives --remove '${executable}' '/usr/bin/${executable}'
+    # `|| true` is the one deviation from stock, and it is structural rather
+    # than a fix for an observed failure: this runs BEFORE the AppArmor teardown
+    # under `set -e`, so a non-zero here would leave the profile loaded and on
+    # disk. (--remove of an unregistered name prints an error and exits 0, so
+    # the hazard is latent — one character makes it impossible.)
+    update-alternatives --remove '${executable}' '/usr/bin/${executable}' || true
 else
     rm -f '/usr/bin/${executable}'
 fi
@@ -44,7 +49,15 @@ case "$1" in
         fi
         # The cache entry, if the parser wrote one. Left behind it would be
         # loaded at boot by a package that is no longer installed.
-        rm -f /etc/apparmor.d/cache/${executable} 2>/dev/null || true
-        rm -f /var/cache/apparmor/*/${executable} 2>/dev/null || true
+        #
+        # The macro is QUOTED and the wildcard is not. ${executable} is
+        # space-free today only because linux.executableName is unset and it
+        # falls back to the npm name — but sanitizeFileName preserves spaces, so
+        # the day someone sets it to "KYBER Studio" an unquoted form here would
+        # become `rm -f .../KYBER Studio`: deleting .../KYBER, then Studio
+        # relative to the working directory, which for a maintainer script is /,
+        # as root. One character each.
+        rm -f "/etc/apparmor.d/cache/${executable}" 2>/dev/null || true
+        rm -f /var/cache/apparmor/*/"${executable}" 2>/dev/null || true
         ;;
 esac

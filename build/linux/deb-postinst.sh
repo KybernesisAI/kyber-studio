@@ -32,6 +32,12 @@ APP_DIR='/opt/${sanitizedProductName}'
 PROFILE_PATH='/etc/apparmor.d/${executable}'
 
 # ── stock after-install.tpl, reproduced ────────────────────────────────────
+#
+# Byte-for-byte upstream, including `2>/dev/null >&1`, which is upstream's bug:
+# `>&1` duplicates stdout onto itself and silences nothing, so the `type` output
+# prints on every install. Left exactly as it is — a "reproduced verbatim" claim
+# that quietly improves one line is not reproduced verbatim, and fixing it here
+# would be scope creep. Noted so the next reader does not re-raise it.
 if type update-alternatives 2>/dev/null >&1; then
     # Remove previous link if it doesn't use update-alternatives
     if [ -L '/usr/bin/${executable}' -a -e '/usr/bin/${executable}' -a "`readlink '/usr/bin/${executable}'`" != '/etc/alternatives/${executable}' ]; then
@@ -68,6 +74,13 @@ fi
 # So the profile below has to make user namespaces WORK. There is no fallback to
 # fall back to, and 0755 is the honest mode to ship: not a probe result, a
 # consequence of the profile.
+#
+# ONE CASE DOES LOSE SOMETHING, and it is recorded rather than glossed. The
+# stock probe also tests `[[ -L /proc/self/ns/user ]]`, which fails outright on
+# a kernel built without CONFIG_USER_NS — the one situation where stock really
+# did ship 4755, and really did give those users a working SUID sandbox. They
+# now get neither. This .deb is scoped to Ubuntu, where that kernel does not
+# occur, so it is a deliberate trade rather than an oversight.
 chmod 0755 "$APP_DIR/chrome-sandbox" || true
 
 # ── AppArmor profile ───────────────────────────────────────────────────────
@@ -81,6 +94,10 @@ chmod 0755 "$APP_DIR/chrome-sandbox" || true
 # at package time, so it cannot drift from where fpm actually installs the app.
 if command -v apparmor_parser >/dev/null 2>&1; then
     PROFILE_TMP="$(mktemp)"
+    # Cleanup on EVERY path, not just the happy one. This script runs as root,
+    # so a temp file leaked on a failed install is a root-owned file left in
+    # /tmp, once per attempt.
+    trap 'rm -f "$PROFILE_TMP"' EXIT
     cat > "$PROFILE_TMP" <<'APPARMOR_PROFILE'
 # Managed by the ${sanitizedProductName} package (KYB-543). Local changes belong
 # in /etc/apparmor.d/local/${executable}, which is included below and is never
@@ -104,17 +121,34 @@ APPARMOR_PROFILE
     # leaves dpkg half-configured, which is a worse failure than having no
     # profile at all. On such a machine the userns restriction is generally not
     # in force either, so the sandbox works without us.
-    if apparmor_parser --skip-kernel-load --quiet "$PROFILE_TMP" 2>/dev/null; then
-        install -m 0644 "$PROFILE_TMP" "$PROFILE_PATH"
-        # Load it now so the app works before the next reboot. A running kernel
-        # without AppArmor enabled will refuse; that is not a packaging failure.
-        apparmor_parser --replace --write-cache "$PROFILE_PATH" >/dev/null 2>&1 \
-            || echo "${sanitizedProductName}: AppArmor profile installed but not loaded; it will apply after a reboot." >&2
+    #
+    # The parser's own reason is CAPTURED rather than discarded. An earlier
+    # draft ran it with --quiet and 2>/dev/null, which meant the one message an
+    # operator gets on this path — "your parser rejected it" — arrived with the
+    # explanation thrown away.
+    if PARSER_REASON="$(apparmor_parser --skip-kernel-load "$PROFILE_TMP" 2>&1)"; then
+        # NOTHING BELOW MAY ABORT THE SCRIPT. Everything from here is best
+        # effort: the dry run only proves the profile parses, and the write can
+        # still fail — a read-only or image-based /etc, no space, no inodes, or
+        # no /etc/apparmor.d at all. Under `set -e` an unguarded `install` there
+        # exits non-zero and produces exactly the half-configured dpkg this
+        # block exists to avoid, and it would also skip the two stock sections
+        # below, leaving the mime and desktop databases unrefreshed.
+        if install -m 0644 "$PROFILE_TMP" "$PROFILE_PATH"; then
+            # Load it now so the app works before the next reboot. A running
+            # kernel without AppArmor enabled will refuse; not a packaging failure.
+            apparmor_parser --replace --write-cache "$PROFILE_PATH" >/dev/null 2>&1 \
+                || echo "${sanitizedProductName}: AppArmor profile installed but not loaded; it will apply after a reboot." >&2
+        else
+            echo "${sanitizedProductName}: could not write $PROFILE_PATH, so the AppArmor profile was not installed." >&2
+            echo "${sanitizedProductName}: the package is installed and usable, but Chromium's sandbox may not start" >&2
+            echo "${sanitizedProductName}: until the profile is in place. See KYB-543." >&2
+        fi
     else
         echo "${sanitizedProductName}: this system's apparmor_parser rejected the profile, so it was not installed." >&2
-        echo "${sanitizedProductName}: if the app cannot start its sandbox, see /usr/share/doc/${executable}." >&2
+        echo "${sanitizedProductName}: the parser said:" >&2
+        printf '%s\n' "$PARSER_REASON" | sed 's/^/  /' >&2
     fi
-    rm -f "$PROFILE_TMP"
 fi
 
 # ── stock after-install.tpl, reproduced ────────────────────────────────────
