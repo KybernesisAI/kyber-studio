@@ -340,7 +340,7 @@ export interface AgentSummary {
   model?: string;
   schedules: { name: string; cron?: string; hasRun?: boolean; markdown?: string }[];
   connections: { name: string; description?: string }[];
-  channels: { name: string; urlPath?: string }[];
+  channels: { name: string; urlPath?: string; /** Set for a surface beside the agent, which has a heartbeat; absent for an eve route. */ live?: boolean }[];
   skills: { name: string; description?: string }[];
   tools: { name: string; description?: string }[];
   subagents: { name: string; description?: string }[];

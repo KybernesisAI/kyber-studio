@@ -1748,6 +1748,18 @@ export const useStore = create<State>((set, get) => ({
     // Flatten eve's nested payload once, here, so no component has to know its
     // shape — and so a change in that shape breaks one function, not five views.
     const info = summarize(raw);
+    // The bridges beside the agent that eve does not know about. A workspace
+    // surface is as much a channel as Slack is, and without this the panel
+    // called an agent answering in a workspace all day "reachable only
+    // through this app". Read from the management routes; absent when the
+    // agent has none.
+    const surfaces = await window.studio.manage({ url: agent.url, path: "/surfaces" });
+    const extra = (surfaces.ok ? (surfaces.data as { surfaces?: { name: string; detail: string; live: boolean; conversations?: number }[] }).surfaces ?? [] : []).map((x) => ({
+      name: x.name,
+      urlPath: `${x.detail}${x.conversations ? ` · ${x.conversations} conversation${x.conversations === 1 ? "" : "s"}` : ""}${x.live ? "" : " · not answering"}`,
+      live: x.live,
+    }));
+    info.channels = [...info.channels, ...extra];
     set((s) => ({
       details: { ...s.details, [agentId]: info },
       models: info.model ? { ...s.models, [agentId]: info.model } : s.models,
