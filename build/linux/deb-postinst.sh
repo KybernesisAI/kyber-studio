@@ -93,12 +93,28 @@ chmod 0755 "$APP_DIR/chrome-sandbox" || true
 # The attachment path is quoted because it contains a space. It is interpolated
 # at package time, so it cannot drift from where fpm actually installs the app.
 if command -v apparmor_parser >/dev/null 2>&1; then
-    PROFILE_TMP="$(mktemp)"
-    # Cleanup on EVERY path, not just the happy one. This script runs as root,
-    # so a temp file leaked on a failed install is a root-owned file left in
-    # /tmp, once per attempt.
-    trap 'rm -f "$PROFILE_TMP"' EXIT
-    cat > "$PROFILE_TMP" <<'APPARMOR_PROFILE'
+    # EVERY STEP FROM HERE IS BEST EFFORT. The rule for this whole block is that
+    # it may fail to install a profile but may never fail the package: a
+    # postinst that exits non-zero leaves dpkg half-configured, which is worse
+    # than having no profile at all, and it would also skip the two stock
+    # sections below and leave the mime and desktop databases unrefreshed.
+    #
+    # `set -e` makes that a property of every single command here, not of the
+    # risky-looking ones. mktemp, the write, the load, the cleanup trap and even
+    # the pipeline that prints an error are each guarded for that reason.
+    PROFILE_TMP="$(mktemp 2>/dev/null)" || PROFILE_TMP=""
+
+    # Cleanup on EVERY path, not just the happy one: this runs as root, so a
+    # leaked temp file is a root-owned file left in /tmp, once per attempt.
+    # The body is guarded because a failing command inside an EXIT trap sets the
+    # script's exit status under `set -e` — which would turn a completely
+    # successful install into a half-configured one at the very last moment.
+    trap 'rm -f "$PROFILE_TMP" 2>/dev/null || :' EXIT
+
+    if [ -z "$PROFILE_TMP" ]; then
+        echo "${sanitizedProductName}: could not create a temporary file, so the AppArmor profile was not installed." >&2
+    else
+        cat > "$PROFILE_TMP" <<'APPARMOR_PROFILE'
 # Managed by the ${sanitizedProductName} package (KYB-543). Local changes belong
 # in /etc/apparmor.d/local/${executable}, which is included below and is never
 # touched by this package.
@@ -113,41 +129,41 @@ profile ${executable} "/opt/${sanitizedProductName}/${executable}" flags=(unconf
 }
 APPARMOR_PROFILE
 
-    # DRY RUN FIRST, and this is load-bearing rather than defensive.
-    #
-    # `abi <abi/4.0>` is AppArmor 4 syntax. A machine with an older parser — or
-    # one where this profile is rejected for any other reason — must still end
-    # up with a working installation, because a postinst that exits non-zero
-    # leaves dpkg half-configured, which is a worse failure than having no
-    # profile at all. On such a machine the userns restriction is generally not
-    # in force either, so the sandbox works without us.
-    #
-    # The parser's own reason is CAPTURED rather than discarded. An earlier
-    # draft ran it with --quiet and 2>/dev/null, which meant the one message an
-    # operator gets on this path — "your parser rejected it" — arrived with the
-    # explanation thrown away.
-    if PARSER_REASON="$(apparmor_parser --skip-kernel-load "$PROFILE_TMP" 2>&1)"; then
-        # NOTHING BELOW MAY ABORT THE SCRIPT. Everything from here is best
-        # effort: the dry run only proves the profile parses, and the write can
-        # still fail — a read-only or image-based /etc, no space, no inodes, or
-        # no /etc/apparmor.d at all. Under `set -e` an unguarded `install` there
-        # exits non-zero and produces exactly the half-configured dpkg this
-        # block exists to avoid, and it would also skip the two stock sections
-        # below, leaving the mime and desktop databases unrefreshed.
-        if install -m 0644 "$PROFILE_TMP" "$PROFILE_PATH"; then
-            # Load it now so the app works before the next reboot. A running
-            # kernel without AppArmor enabled will refuse; not a packaging failure.
-            apparmor_parser --replace --write-cache "$PROFILE_PATH" >/dev/null 2>&1 \
-                || echo "${sanitizedProductName}: AppArmor profile installed but not loaded; it will apply after a reboot." >&2
+        # DRY RUN FIRST, and this is load-bearing rather than defensive.
+        #
+        # `abi <abi/4.0>` is AppArmor 4 syntax. A machine with an older parser —
+        # or one where this profile is rejected for any other reason — must still
+        # end up with a working installation. On such a machine the userns
+        # restriction is generally not in force either, so the sandbox works
+        # without us.
+        #
+        # The parser's reason is CAPTURED rather than discarded, and the temp
+        # path is rewritten out of it: the parser names the file it read, and the
+        # trap above deletes that file moments later, so an operator would be
+        # handed a filename and a line number pointing at nothing.
+        if PARSER_REASON="$(apparmor_parser --skip-kernel-load "$PROFILE_TMP" 2>&1)"; then
+            # A parser that WARNS and exits 0 is the case this guard's premise
+            # does not cover: the profile installs, and the one signal that the
+            # premise did not hold would otherwise sit unread in the variable.
+            if [ -n "$PARSER_REASON" ]; then
+                echo "${sanitizedProductName}: apparmor_parser accepted the profile with output:" >&2
+                printf '%s\n' "$PARSER_REASON" | sed "s|$PROFILE_TMP|the AppArmor profile|g; s|^|  |" >&2 || :
+            fi
+            if install -m 0644 "$PROFILE_TMP" "$PROFILE_PATH"; then
+                # Load it now so the app works before the next reboot. A running
+                # kernel without AppArmor enabled will refuse; not a failure.
+                apparmor_parser --replace --write-cache "$PROFILE_PATH" >/dev/null 2>&1 \
+                    || echo "${sanitizedProductName}: AppArmor profile installed but not loaded; it will apply after a reboot." >&2
+            else
+                echo "${sanitizedProductName}: could not write $PROFILE_PATH, so the AppArmor profile was not installed." >&2
+                echo "${sanitizedProductName}: the package is installed and usable, but Chromium's sandbox may not start" >&2
+                echo "${sanitizedProductName}: until the profile is in place. See KYB-543." >&2
+            fi
         else
-            echo "${sanitizedProductName}: could not write $PROFILE_PATH, so the AppArmor profile was not installed." >&2
-            echo "${sanitizedProductName}: the package is installed and usable, but Chromium's sandbox may not start" >&2
-            echo "${sanitizedProductName}: until the profile is in place. See KYB-543." >&2
+            echo "${sanitizedProductName}: this system's apparmor_parser rejected the profile, so it was not installed." >&2
+            echo "${sanitizedProductName}: it would have been $PROFILE_PATH. The parser said:" >&2
+            printf '%s\n' "$PARSER_REASON" | sed "s|$PROFILE_TMP|the AppArmor profile|g; s|^|  |" >&2 || :
         fi
-    else
-        echo "${sanitizedProductName}: this system's apparmor_parser rejected the profile, so it was not installed." >&2
-        echo "${sanitizedProductName}: the parser said:" >&2
-        printf '%s\n' "$PARSER_REASON" | sed 's/^/  /' >&2
     fi
 fi
 

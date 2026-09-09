@@ -50,7 +50,9 @@ case "$1" in
         # The cache entry, if the parser wrote one. Left behind it would be
         # loaded at boot by a package that is no longer installed.
         #
-        # The macro is QUOTED and the wildcard is not. ${executable} is
+        # The macro is QUOTED and the wildcard is not. The executable macro
+        # (written without braces here, so this comment survives substitution
+        # and still names its own subject in the installed postrm) is
         # space-free today only because linux.executableName is unset and it
         # falls back to the npm name — but sanitizeFileName preserves spaces, so
         # the day someone sets it to "KYBER Studio" an unquoted form here would
