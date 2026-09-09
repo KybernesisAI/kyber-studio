@@ -289,6 +289,14 @@ export interface StudioApi {
       };
     }) => void,
   ): () => void;
+  /**
+   * Follow a thread something else is driving. Events arrive on the same
+   * channels a turn's do, under this streamId; `onLive` marks the other
+   * device's message landing and its turn ending.
+   */
+  watch(input: { url: string; sessionId: string; streamIndex: number; streamId: string }): Promise<void>;
+  unwatch(streamId: string): Promise<void>;
+  onLive(handler: (payload: { streamId: string; kind: "received" | "boundary" | "ended" }) => void): () => void;
   agentInfo(url: string): Promise<AgentInfo | null>;
   /** Whether the agent itself answers right now. See `agentHealth` in main. */
   agentHealth(url: string): Promise<boolean>;

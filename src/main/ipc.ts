@@ -35,6 +35,7 @@ import {
   currentSession,
   listAgents,
   saveAgentProfile,
+  watchSession,
   pollDeviceAuth,
   resetSession,
   sendTurn,
@@ -203,6 +204,46 @@ export function registerIpc(): void {
     (_e, input: { url: string; sessionId?: string }) =>
       resetSession(input),
   );
+
+  /** One watcher per stream id; stopping one aborts its follower. */
+  const watchers = new Map<string, AbortController>();
+  ipcMain.handle(
+    "studio:watch",
+    (e, input: { url: string; sessionId: string; streamIndex: number; streamId: string }) => {
+      const sender: WebContents = e.sender;
+      watchers.get(input.streamId)?.abort();
+      const ctrl = new AbortController();
+      watchers.set(input.streamId, ctrl);
+      const send = (channel: string, payload: unknown): void => {
+        if (!sender.isDestroyed() && !ctrl.signal.aborted) sender.send(channel, payload);
+      };
+      void watchSession({
+        url: input.url,
+        sessionId: input.sessionId,
+        startIndex: input.streamIndex,
+        signal: ctrl.signal,
+        onDelta: (text) => send("studio:delta", { streamId: input.streamId, text }),
+        onReset: () => send("studio:reset", { streamId: input.streamId }),
+        onActivity: (label) => send("studio:activity", { streamId: input.streamId, label }),
+        onCursor: (index) => send("studio:cursor", { streamId: input.streamId, index }),
+        onPeer: (event) => send("studio:peer", { streamId: input.streamId, event }),
+        onAuthorization: (event) => send("studio:authorization", { streamId: input.streamId, event }),
+        onQuestion: (request) => send("studio:question", { streamId: input.streamId, request }),
+        onLive: (kind) => send("studio:live", { streamId: input.streamId, kind }),
+      })
+        .catch((error: unknown) => {
+          console.log(`[watch] ${input.streamId} ended: ${(error as Error).message}`);
+          send("studio:live", { streamId: input.streamId, kind: "ended" });
+        })
+        .finally(() => {
+          if (watchers.get(input.streamId) === ctrl) watchers.delete(input.streamId);
+        });
+    },
+  );
+  ipcMain.handle("studio:unwatch", (_e, streamId: string) => {
+    watchers.get(streamId)?.abort();
+    watchers.delete(streamId);
+  });
 
   ipcMain.handle(
     "studio:send",
