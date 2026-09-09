@@ -701,8 +701,12 @@ function reportUncheckedFiles(print) {
       print(`    ${shown}`);
       print(`        ${format}, ${arches.join(" + ")}`);
     }
-    print(`  Nothing here loads them; they are dead weight in the artefact rather than a`);
-    print(`  fault in it. Trimming them is a packaging change with its own ticket.`);
+    print(`  Their platform is not this build's, so the per-platform resolution these`);
+    print(`  packages use does not select them here. That is a property of the files`);
+    print(`  measured above, NOT a load path this check traced — a foreign-container`);
+    print(`  file sitting at a path this target does resolve would still land here.`);
+    print(`  Dead weight in the artefact rather than a fault in it, and trimming them`);
+    print(`  is a packaging change with its own ticket.`);
   }
   if (unrecognised > 0) {
     print(`\n  ${unrecognised} bundled .node ${unrecognised === 1 ? "file was" : "files were"} skipped: not an ELF, Mach-O or PE object.`);

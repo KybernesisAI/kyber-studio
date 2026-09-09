@@ -170,6 +170,41 @@ jobs:
             || { echo "::error::the failure did not attribute the expectation to --arch=x64"; exit 1; }
           echo "the expectation follows --arch=, not the runner"
 
+      # AND THE DEFAULT PATH, which is the one release-mac and release-linux
+      # actually use — no flag at all.
+      #
+      # The step above proves the flag beats process.arch. It does not, on its
+      # own, rule out `expected = flag ?? process.arch`: every run so far has
+      # had artefact arch and host arch both arm64, so a check that quietly
+      # measured the host would have produced identical output. That is the
+      # direction that fails SILENTLY, and it is the one KYB-500 walks into —
+      # an x64 builder packaging for arm64, npm install having pulled x64
+      # binaries, no flag, expected silently x64, found x64, green.
+      #
+      # Renaming the directory is enough to discriminate, because the expected
+      # arch is parsed from electron-builder's <platform>[-<arch>] output
+      # directory and nothing else. The .app inside is untouched and still
+      # arm64, so on this arm64 runner: expectation from the path -> x64 ->
+      # fails; expectation from process.arch -> arm64 -> passes. Only one of
+      # those outcomes is possible if the parse is real.
+      - name: Assert the default, no-flag expectation is parsed from the path, not the host
+        run: |
+          set -uo pipefail
+          mkdir -p dist/mac-x64
+          cp -R "dist/mac-arm64/KYBER Studio.app" "dist/mac-x64/KYBER Studio.app"
+          out="$(node scripts/verify-package.mjs "dist/mac-x64/KYBER Studio.app" 2>&1)" && status=0 || status=$?
+          printf '%s\n' "$out"
+          if [ "${status}" -eq 0 ]; then
+            echo "::error::an arm64 app under a mac-x64 path passed with NO flag — the expected architecture is not being parsed from the path, and on an arm64 runner that means it fell back to process.arch"
+            exit 1
+          fi
+          echo "$out" | grep -q "found arm64, expected x64" \
+            || { echo "::error::it failed, but not with 'found arm64, expected x64'"; exit 1; }
+          echo "$out" | grep -q "came from the app path (dist/mac-x64/KYBER Studio.app)" \
+            || { echo "::error::the failure did not attribute the expectation to the app path"; exit 1; }
+          rm -rf dist/mac-x64
+          echo "with no flag, the expectation follows the artefact path, not the runner"
+
   negative-wrong-arch:
     runs-on: macos-14
     timeout-minutes: 60
