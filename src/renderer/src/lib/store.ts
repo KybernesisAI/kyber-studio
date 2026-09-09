@@ -815,47 +815,76 @@ export const useStore = create<State>((set, get) => ({
   syncSessions: async () => {
     if (!window.studio) return;
     const indexed = await window.studio.listSessions();
-    if (indexed.length === 0) return;
 
+    // Directory rows name the agent by its registered name; older rows from
+    // this app carry its id. Resolve either to the local agent, and skip what
+    // is not one of ours (a room, an agent no longer granted).
+    const resolve = (name: string): Agent | undefined =>
+      get().agents.find((a) => a.registeredName === name || a.id === name || a.name === name);
+    const localLastAt = (agentId: string): number => {
+      const local = get().conversations[agentId] ?? [];
+      return local.length ? Math.max(...local.map((b) => b.at)) : 0;
+    };
+
+    const seen = new Set<string>();
     for (const entry of indexed) {
-      const localSession = get().sessions[entry.agent];
+      const agent = resolve(entry.agent);
+      if (!agent) continue;
+      seen.add(agent.id);
+      const localSession = get().sessions[agent.id];
+      const localAt = localLastAt(agent.id);
+      const remoteAt = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
       if (localSession === entry.sessionId) continue;
 
       /**
-       * Adopt the account's thread when it is the more recent one.
+       * Two-way. The account's thread is adopted when it is the newer one;
+       * when THIS machine's is newer, it is published so the other devices
+       * adopt it instead. Without the second half a desktop that had been
+       * talking all afternoon lost to a phone that said one thing later, and
+       * a thread this app had never recorded under the shared name was
+       * invisible everywhere else.
        *
-       * The first version only filled in agents this device had never used —
-       * which sounds conservative and is useless: every device that has ever
-       * talked to an agent already has a session for it, so the directory was
-       * fetched, read, and ignored. Sync appeared to do nothing at all unless
-       * you were on a fresh install, which was the only case ever tested.
-       *
-       * Worse, each device MINTED ITS OWN session on first message, so two
-       * machines held two threads with the same agent and neither would ever
-       * converge. Continuing the same conversation somewhere else — the whole
-       * point — requires actually taking the other session over.
-       *
-       * The trade: this device's view of the older thread is replaced. Nothing
-       * is destroyed, because that session is still durable on the agent, but
-       * it is no longer what this agent's chat shows.
+       * Adopting replaces this device's view of the older thread. Nothing is
+       * destroyed — that session is still durable on the agent — but it is no
+       * longer what this agent's chat shows.
        */
-      const local = get().conversations[entry.agent] ?? [];
-      const localAt = local.length ? Math.max(...local.map((b) => b.at)) : 0;
-      const remoteAt = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
-      if (localSession && localAt >= remoteAt) continue;
+      if (localSession && localAt >= remoteAt) {
+        void window.studio.recordSession({
+          agent: agent.registeredName ?? agent.id,
+          sessionId: localSession,
+          label: agent.id,
+          lastMessageAt: localAt || Date.now(),
+          lastMessagePreview: [...(get().conversations[agent.id] ?? [])].reverse().find((b) => b.kind === "text")?.["text" as never] ?? undefined,
+        });
+        continue;
+      }
 
       set((s) => {
         const streamIndexes = { ...s.streamIndexes };
         // The cursor belongs to the session being replaced; carrying it over
         // would post the next message into a thread this device is no longer on.
-        delete streamIndexes[entry.agent];
+        delete streamIndexes[agent.id];
         return {
-          sessions: { ...s.sessions, [entry.agent]: entry.sessionId },
-          conversations: { ...s.conversations, [entry.agent]: [] },
+          sessions: { ...s.sessions, [agent.id]: entry.sessionId },
+          conversations: { ...s.conversations, [agent.id]: [] },
           streamIndexes,
         };
       });
-      await get().hydrate(entry.agent);
+      await get().hydrate(agent.id);
+    }
+
+    // Threads this machine holds that the directory has never heard of.
+    for (const agent of get().agents) {
+      const localSession = get().sessions[agent.id];
+      if (!localSession || seen.has(agent.id) || isRoomId(agent.id)) continue;
+      const localAt = localLastAt(agent.id);
+      if (!localAt) continue;
+      void window.studio.recordSession({
+        agent: agent.registeredName ?? agent.id,
+        sessionId: localSession,
+        label: agent.id,
+        lastMessageAt: localAt,
+      });
     }
     get().persist();
   },
@@ -1201,7 +1230,11 @@ export const useStore = create<State>((set, get) => ({
          * than a reply that waits on a call to a third service.
          */
         void window.studio?.recordSession({
-          agent: agentId,
+          // The agent's REGISTERED name, not this app's id for it: the directory
+          // is shared with the phone and the terminal client, which know the
+          // agent by name. Recording the id here meant each device only ever
+          // saw its own rows and "continue on your phone" silently never did.
+          agent: get().agents.find((a) => a.id === agentId)?.registeredName ?? agentId,
           sessionId: res.sessionId ?? "",
           label: agentId,
           lastMessageAt: Date.now(),
