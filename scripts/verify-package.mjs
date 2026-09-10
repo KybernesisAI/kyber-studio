@@ -51,10 +51,13 @@ import { execFileSync } from "node:child_process";
  * scripts/lib/native-arch.mjs and test/native-arch.test.mjs.
  */
 import {
+  acceptableFor,
   archFromPath,
+  expectedLabel,
   identify,
   normaliseArch,
   tallyPlatforms,
+  verdictFor,
 } from "./lib/native-arch.mjs";
 
 // ── 0. Where is the app, and what shape is it? ─────────────────────────
@@ -357,15 +360,8 @@ const FILES_KEY =
   { darwin: "build.mac.files", linux: "build.linux.files", win32: "build.win.files" }[TARGET_PLATFORM] ??
   `build.${TARGET_PLATFORM}.files`;
 
-/**
- * A universal macOS app is the one target that is not a single architecture:
- * @electron/universal keeps an x64 slice and an arm64 slice side by side, so a
- * THIN .node of either arch is correct in one. The per-file check degrades to
- * "one of the two" there rather than pretending to a precision it does not have.
- */
-const ACCEPTABLE = EXPECTED === "universal" ? new Set(["x64", "arm64"]) : new Set([EXPECTED]);
-/** "x64", or "x64 or arm64" for a universal build — "expected universal" is not an architecture. */
-const EXPECTED_LABEL = [...ACCEPTABLE].join(" or ");
+const ACCEPTABLE = acceptableFor(EXPECTED);
+const EXPECTED_LABEL = expectedLabel(ACCEPTABLE);
 
 /**
  * Every `*.node` under a root, depth-first.
@@ -465,21 +461,28 @@ for (const native of natives) {
     console.error(`  ${error.message}\n`);
     process.exit(1);
   }
-  if (!header) {
-    unrecognised += 1;
-    continue;
-  }
-  // A binary for another platform cannot be the wrong arch for THIS one: it is
-  // not going to be loaded here at all. Arch-checking it would fail the build
-  // over a file whose arch is irrelevant, and passing it would count it as
-  // evidence the bundle is correct. It is neither.
-  if (header.platform !== TARGET_PLATFORM) {
-    foreignPlatform.push({ ...native, ...header });
-    continue;
-  }
-  checked += 1;
-  if (!header.arches.some((arch) => ACCEPTABLE.has(arch))) {
-    wrongArch.push({ ...native, arches: header.arches });
+  // The verdict itself lives in scripts/lib/native-arch.mjs so that it can be
+  // tested without a packaged app; what stays here is the bookkeeping, and the
+  // rule that `foreign` and `unrecognised` do NOT count as checked.
+  switch (verdictFor(header, TARGET_PLATFORM, ACCEPTABLE)) {
+    case "unrecognised":
+      unrecognised += 1;
+      break;
+    case "foreign":
+      foreignPlatform.push({ ...native, ...header });
+      break;
+    case "wrong-arch":
+      checked += 1;
+      wrongArch.push({ ...native, arches: header.arches });
+      break;
+    case "correct":
+      checked += 1;
+      break;
+    default:
+      // Named rather than left to `default`, so that a fifth verdict added later
+      // cannot land here and be silently counted as a file verified — which is
+      // the exact failure the checked/foreign asymmetry exists to prevent.
+      throw new Error(`unhandled verdict for ${native.shown}`);
   }
 }
 

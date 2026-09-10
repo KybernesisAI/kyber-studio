@@ -241,3 +241,51 @@ export function tallyPlatforms(entries) {
     .map(([platform, n]) => `${platform} ×${n}`)
     .join(", ");
 }
+
+/**
+ * A universal macOS app is the one target that is not a single architecture:
+ * @electron/universal keeps an x64 slice and an arm64 slice side by side, so a
+ * THIN .node of either arch is correct in one. The per-file check degrades to
+ * "one of the two" there rather than pretending to a precision it does not have.
+ */
+export function acceptableFor(expected) {
+  return expected === "universal" ? new Set(["x64", "arm64"]) : new Set([expected]);
+}
+
+/** "x64", or "x64 or arm64" for a universal build — "expected universal" is not an architecture. */
+export function expectedLabel(acceptable) {
+  return [...acceptable].join(" or ");
+}
+
+/**
+ * THE DECISION THAT FAILS A BUILD. Everything above this measures; this is the
+ * part that says yes or no, and it is the reason the measuring is done at all.
+ *
+ * Four verdicts, and the distinction between the middle two is the whole point:
+ *
+ * - `unrecognised` — not an ELF, Mach-O or PE object. Counted and named, never
+ *   fatal: a `.node` that is not an object file is a different bug, and
+ *   reporting it as an architecture mismatch sends the reader to the wrong place.
+ * - `foreign` — an object file for another platform. A binary for another
+ *   platform CANNOT be the wrong arch for this one, because it is never going to
+ *   be loaded here. Failing the build over its arch would fail over a file whose
+ *   arch is irrelevant; counting it as correct would let it stand as evidence the
+ *   bundle is right. It is neither, so it gets its own bucket.
+ * - `wrong-arch` — same platform, and none of its slices is acceptable. FATAL.
+ *   This is the failure the whole section exists to produce.
+ * - `correct` — same platform, at least one acceptable slice.
+ *
+ * `wrong-arch` and `correct` both count as CHECKED by the caller; `foreign` and
+ * `unrecognised` do not. That asymmetry is what stops a bundle full of foreign
+ * payload reporting a reassuring number of files checked.
+ *
+ * A measurement we have no name for — "ELF machine 0x2b" — is not in any
+ * acceptable set, so on the target platform it lands on `wrong-arch` and fails
+ * loudly. That is deliberate: it is provably not what we ship.
+ */
+export function verdictFor(header, targetPlatform, acceptable) {
+  if (!header) return "unrecognised";
+  if (header.platform !== targetPlatform) return "foreign";
+  if (!header.arches.some((arch) => acceptable.has(arch))) return "wrong-arch";
+  return "correct";
+}

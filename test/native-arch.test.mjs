@@ -5,10 +5,13 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  acceptableFor,
   archFromPath,
+  expectedLabel,
   identify,
   normaliseArch,
   tallyPlatforms,
+  verdictFor,
 } from "../scripts/lib/native-arch.mjs";
 
 /**
@@ -405,4 +408,106 @@ test("foreign payload is tallied per platform, in a stable order", () => {
   );
   assert.equal(tallyPlatforms([{ platform: "linux" }]), "linux ×1");
   assert.equal(tallyPlatforms([]), "");
+});
+
+// ── the decision that fails a build ────────────────────────────────────
+
+test("what counts as the right architecture, including the universal case", () => {
+  assert.deepEqual(acceptableFor("x64"), new Set(["x64"]));
+  assert.deepEqual(acceptableFor("arm64"), new Set(["arm64"]));
+  // A universal macOS app is the one target that is not a single architecture.
+  assert.deepEqual(acceptableFor("universal"), new Set(["x64", "arm64"]));
+  // And "universal" must never reach the reader as though it were an arch.
+  assert.equal(expectedLabel(acceptableFor("universal")), "x64 or arm64");
+  assert.equal(expectedLabel(acceptableFor("x64")), "x64");
+});
+
+test("a same-platform binary of the expected architecture is correct", () => {
+  const acceptable = acceptableFor("x64");
+  assert.equal(verdictFor({ platform: "linux", arches: ["x64"] }, "linux", acceptable), "correct");
+});
+
+test("a same-platform binary of the wrong architecture is fatal", () => {
+  // The failure the whole section exists to produce.
+  const acceptable = acceptableFor("arm64");
+  assert.equal(verdictFor({ platform: "linux", arches: ["x64"] }, "linux", acceptable), "wrong-arch");
+});
+
+test("a foreign-platform binary is never fatal, whatever architecture it is", () => {
+  // It is not going to be loaded here, so its arch is irrelevant. Failing the
+  // build over it would fail over a file that cannot matter.
+  const acceptable = acceptableFor("arm64");
+  assert.equal(verdictFor({ platform: "win32", arches: ["x64"] }, "linux", acceptable), "foreign");
+  assert.equal(verdictFor({ platform: "darwin", arches: ["ia32"] }, "linux", acceptable), "foreign");
+});
+
+test("a foreign-platform binary is not evidence the bundle is right either", () => {
+  // The other half, and the easier one to get wrong: a win32 x64 binary in an
+  // x64 linux bundle matches the expected arch exactly, and must STILL be
+  // foreign — otherwise foreign payload inflates the checked count and a bundle
+  // full of the wrong platform reports a reassuring number of files verified.
+  // (No `notEqual(..., "correct")` beside it: the assertion above already
+  // excludes every other verdict, so a second one could never fail and would be
+  // coverage in appearance only — which this ticket has been bitten by once.)
+  const acceptable = acceptableFor("x64");
+  assert.equal(verdictFor({ platform: "win32", arches: ["x64"] }, "linux", acceptable), "foreign");
+});
+
+test("the set of verdicts is closed at four", () => {
+  // What makes the caller's `default: throw` safe rather than merely unreached.
+  const verdicts = new Set();
+  for (const platform of ["linux", "darwin", "win32"]) {
+    for (const arches of [["x64"], ["arm64"], ["ia32"], [], ["ELF machine 0x2b"], ["x64", "arm64"]]) {
+      for (const expected of ["x64", "arm64", "ia32", "universal"]) {
+        for (const target of ["linux", "darwin", "win32"]) {
+          verdicts.add(verdictFor({ platform, arches }, target, acceptableFor(expected)));
+        }
+      }
+    }
+  }
+  verdicts.add(verdictFor(null, "linux", acceptableFor("x64")));
+  assert.deepEqual([...verdicts].sort(), ["correct", "foreign", "unrecognised", "wrong-arch"]);
+});
+
+test("a file that is not an object file is unrecognised, not a mismatch", () => {
+  assert.equal(verdictFor(null, "linux", acceptableFor("x64")), "unrecognised");
+});
+
+test("a universal target accepts either slice and still rejects a third", () => {
+  const acceptable = acceptableFor("universal");
+  assert.equal(verdictFor({ platform: "darwin", arches: ["x64"] }, "darwin", acceptable), "correct");
+  assert.equal(verdictFor({ platform: "darwin", arches: ["arm64"] }, "darwin", acceptable), "correct");
+  assert.equal(verdictFor({ platform: "darwin", arches: ["ia32"] }, "darwin", acceptable), "wrong-arch");
+});
+
+test("a fat binary passes on any one acceptable slice and fails on none", () => {
+  const acceptable = acceptableFor("arm64");
+  assert.equal(verdictFor({ platform: "darwin", arches: ["x64", "arm64"] }, "darwin", acceptable), "correct");
+  assert.equal(verdictFor({ platform: "darwin", arches: ["x64", "ia32"] }, "darwin", acceptable), "wrong-arch");
+  // A fat header we could read but whose slices we cannot name is still not ours.
+  assert.equal(
+    verdictFor({ platform: "darwin", arches: ["Mach-O cputype 0x100000f"] }, "darwin", acceptable),
+    "wrong-arch",
+  );
+});
+
+test("a measurement with no name fails loudly on the target platform", () => {
+  // "ELF machine 0x2b" is in no acceptable set, so it lands on wrong-arch rather
+  // than being quietly skipped. It is provably not what we ship.
+  assert.equal(
+    verdictFor({ platform: "linux", arches: ["ELF machine 0x2b"] }, "linux", acceptableFor("x64")),
+    "wrong-arch",
+  );
+});
+
+test("measuring and deciding join up, from bytes to verdict", () => {
+  // The two halves of the check against one real header, so a change that makes
+  // the classifier and the decision disagree cannot pass both suites.
+  const linuxX64 = identify(binaryFile(elf({ machine: 0x3e })));
+  assert.equal(verdictFor(linuxX64, "linux", acceptableFor("x64")), "correct");
+  assert.equal(verdictFor(linuxX64, "linux", acceptableFor("arm64")), "wrong-arch");
+  assert.equal(verdictFor(linuxX64, "darwin", acceptableFor("x64")), "foreign");
+
+  const notAnObject = identify(binaryFile(Buffer.from("#!/bin/sh\n")));
+  assert.equal(verdictFor(notAnObject, "linux", acceptableFor("x64")), "unrecognised");
 });
