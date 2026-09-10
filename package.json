@@ -1,6 +1,6 @@
 {
   "name": "kyber-studio",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "KYBER Studio — the desktop door to your Kybernesis agents.",
   "homepage": "https://github.com/KybernesisAI/kyber-studio",
   "main": "./out/main/index.js",
