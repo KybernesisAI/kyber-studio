@@ -196,6 +196,8 @@ export interface StudioApi {
       /** This agent has this server, whatever state its sign-in is in. */
       present?: boolean;
       scope: string;
+      /** The endpoint of a server added by URL, so a card can be changed rather than re-added. */
+      url?: string;
       needsAdmin: boolean;
       mark?: string;
       logo?: string;
