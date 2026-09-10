@@ -95,6 +95,7 @@ const studio: StudioApi = {
     ipcRenderer.on("studio:open-agent", listener);
     return () => ipcRenderer.off("studio:open-agent", listener);
   },
+  claimDriver: (sessionId) => ipcRenderer.invoke("studio:claimDriver", sessionId),
   watch: (input) => ipcRenderer.invoke("studio:watch", input),
   unwatch: (streamId) => ipcRenderer.invoke("studio:unwatch", streamId),
   onLive: (handler) => {
