@@ -250,9 +250,12 @@ export function registerIpc(): void {
    * Clicking brings the window forward and opens the agent it came from.
    */
   ipcMain.handle("studio:notify", (e, input: { title: string; body: string; agentId: string }) => {
+    console.log(`[notify] main: supported=${Notification.isSupported()} "${input.title}"`);
     if (!Notification.isSupported()) return;
     const sender: WebContents = e.sender;
     const n = new Notification({ title: input.title, body: input.body });
+    n.on("show", () => console.log("[notify] main: shown"));
+    n.on("failed", (_ev, error) => console.log(`[notify] main: failed ${error}`));
     n.on("click", () => {
       const win = BrowserWindow.fromWebContents(sender);
       if (win) {
