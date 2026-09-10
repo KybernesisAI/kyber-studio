@@ -676,7 +676,7 @@ function Settings(): ReactNode {
         <div className="card stack-row">
           <div style={{ flex: 1 }}>
             <div>Notifications</div>
-            <div className="muted">Not wired up yet</div>
+            <div className="muted">When it needs your answer, or finishes while you are elsewhere.</div>
           </div>
           <Toggle
             on={agent.notifications ?? false}
