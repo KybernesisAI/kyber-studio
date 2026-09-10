@@ -5,7 +5,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, safeStorage, shell } from "electron";
-import type { RemoteAgent, Session } from "@shared/ipc";
+import type { RemoteAgent,
+  RemoteRoom, Session } from "@shared/ipc";
 import { readPeerEvents, type PeerState } from "./peerEvents";
 
 /**
@@ -327,6 +328,44 @@ export async function listAgents(): Promise<RemoteAgent[]> {
   if (!res.ok) throw new Error(`Could not list agents (HTTP ${res.status}).`);
   const body = (await res.json()) as { agents?: RemoteAgent[] };
   return body.agents ?? [];
+}
+
+export async function listRooms(): Promise<RemoteRoom[]> {
+  const s = await activeSession();
+  if (!s) return [];
+  try {
+    const res = await fetch(`${ISSUER}/api/rooms`, {
+      headers: { authorization: `Bearer ${s.token}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return [];
+    return ((await res.json()) as { rooms?: RemoteRoom[] }).rooms ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Best effort: the room exists here already; the account learns of it on the next try if not now. */
+export async function saveRoom(input: {
+  id: string;
+  name?: string | null;
+  members?: string[];
+  policy?: "all" | "lead" | "silent";
+  pinned?: boolean | null;
+  archived?: boolean;
+}): Promise<void> {
+  const s = await activeSession();
+  if (!s) return;
+  try {
+    await fetch(`${ISSUER}/api/rooms`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${s.token}` },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    /* best effort */
+  }
 }
 
 /**
