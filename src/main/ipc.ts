@@ -35,6 +35,7 @@ import {
   currentSession,
   listAgents,
   saveAgentProfile,
+  claimDriver,
   watchSession,
   pollDeviceAuth,
   resetSession,
@@ -263,6 +264,7 @@ export function registerIpc(): void {
     });
     n.show();
   });
+  ipcMain.handle("studio:claimDriver", (_e, sessionId: string) => claimDriver(sessionId));
   ipcMain.handle("studio:unwatch", (_e, streamId: string) => {
     watchers.get(streamId)?.abort();
     watchers.delete(streamId);

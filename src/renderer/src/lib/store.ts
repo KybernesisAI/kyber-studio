@@ -92,9 +92,12 @@ function ensureListeners(
   window.studio.onTurn(({ streamId, sessionId, turnId }) => {
     const agentId = streamOwners.get(streamId);
     if (!agentId) return;
+    const first = get().inflight[agentId]?.sessionId !== sessionId;
     set((s) => ({
       inflight: { ...s.inflight, [agentId]: { streamId, sessionId, turnId } },
     }));
+    // Our turn, our notifications: the phone stays quiet for it.
+    if (first && sessionId) void window.studio?.claimDriver(sessionId);
   });
 
   window.studio.onReset(({ streamId }) => {
@@ -243,10 +246,7 @@ function ensureListeners(
     if (!agentId) return;
     if (kind === "boundary" || kind === "ended") {
       set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
-      const last = [...(get().conversations[agentId] ?? [])].reverse().find((b) => b.kind === "text" && b.role === "agent");
-      if (kind === "boundary" && last && last.kind === "text" && last.text.trim()) {
-        alertIfAway(get, agentId, get().agents.find((a) => a.id === agentId)?.name ?? "An agent", last.text);
-      }
+      // A watched turn was started elsewhere; that device owns its notification.
       get().stopWatching();
     }
     if (!get().inflight[agentId]) {
@@ -258,7 +258,9 @@ function ensureListeners(
     const agentId = streamOwners.get(streamId);
     if (!agentId) return;
     const id = `q${request.requestId}`;
-    if (!(get().conversations[agentId] ?? []).some((b) => b.id === id)) {
+    // Only for a turn this desktop started. A question in a turn the phone is
+    // driving is the phone's to raise; notifications never cross devices.
+    if (streamId.startsWith("s") && !(get().conversations[agentId] ?? []).some((b) => b.id === id)) {
       alertIfAway(get, agentId, `${get().agents.find((a) => a.id === agentId)?.name ?? "An agent"} needs you`, request.prompt);
     }
     set((s) => {
@@ -477,8 +479,10 @@ async function deliverToMember(
 function alertIfAway(get: () => State, agentId: string, title: string, body: string): void {
   const s = get();
   const agent = s.agents.find((a) => a.id === agentId);
-  if (!agent || agent.notifications === false) return;
-  if (document.hasFocus() && s.activeAgentId === agentId) return;
+  const looking = document.hasFocus() && s.activeAgentId === agentId;
+  const why = !agent ? "unknown agent" : agent.notifications === false ? "off for this agent" : looking ? "looking" : null;
+  console.log(`[notify] ${agent?.name ?? agentId}: ${why ?? "shown"}`);
+  if (why) return;
   void window.studio?.notify({ title, body: body.replace(/\s+/g, " ").trim().slice(0, 160), agentId });
 }
 

@@ -1375,6 +1375,27 @@ export async function watchSession(input: {
   }
 }
 
+/**
+ * "This desktop is driving this session." Sent as a turn begins so the control
+ * plane rings no phone for it: the device that asked owns the notification,
+ * and this one tells its own screen. Best effort; a missed claim costs one
+ * extra buzz, not a turn.
+ */
+export async function claimDriver(sessionId: string): Promise<void> {
+  const s = await activeSession();
+  if (!s) return;
+  try {
+    await fetch(`${ISSUER}/api/sessions/driver`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${s.token}` },
+      body: JSON.stringify({ sessionId, deviceId: deviceId(), platform: "desktop" }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    /* best effort */
+  }
+}
+
 export async function cancelTurn(input: {
   url: string;
   sessionId: string;

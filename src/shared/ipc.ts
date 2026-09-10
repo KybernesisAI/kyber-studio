@@ -299,6 +299,8 @@ export interface StudioApi {
   /** A native notification; clicking it brings the window forward and opens the agent. */
   notify(input: { title: string; body: string; agentId: string }): Promise<void>;
   onOpenAgent(handler: (payload: { agentId: string }) => void): () => void;
+  /** This desktop is driving this session: the control plane rings no phone for it. */
+  claimDriver(sessionId: string): Promise<void>;
   watch(input: { url: string; sessionId: string; streamIndex: number; streamId: string }): Promise<void>;
   unwatch(streamId: string): Promise<void>;
   onLive(handler: (payload: { streamId: string; kind: "received" | "boundary" | "ended" }) => void): () => void;
