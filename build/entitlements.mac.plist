@@ -13,6 +13,13 @@
     <!-- The app spawns child processes (eve dev, vercel CLI, gh). -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
+    <!-- Dictation records from the microphone. Under the hardened runtime the
+         OS refuses getUserMedia without this, and the refusal reaches the
+         renderer as an ordinary media error, so a signed build looked like a
+         machine with no microphone (KYB-540). Unsigned dev builds never showed
+         it, because the hardened runtime is only applied when packaging. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
     <key>com.apple.security.inherit</key>
     <true/>
   </dict>
