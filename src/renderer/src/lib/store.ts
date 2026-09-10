@@ -437,6 +437,15 @@ async function deliverToMember(
       sessions: { ...s.sessions, [key]: res.sessionId },
       streamIndexes: { ...s.streamIndexes, [key]: res.streamIndex },
     }));
+    // Filed under the room, by the member's registered name: the phone reads
+    // the room's transcript from each member's own session.
+    void window.studio.recordSession({
+      agent: member.registeredName ?? member.id,
+      sessionId: res.sessionId ?? "",
+      label: room.id,
+      lastMessageAt: Date.now(),
+      lastMessagePreview: (res.reply ?? "").slice(0, 200),
+    });
     const reply = res.reply?.trim();
     if (reply) {
       write(reply);
@@ -771,6 +780,8 @@ interface State {
   syncSessions(): Promise<void>;
   /** Pick up turns that happened on another device. Cheap; safe to call often. */
   refreshFromOthers(): Promise<void>;
+  /** Rooms from the account: adopt what other devices made, publish what this one has. */
+  refreshRooms(): Promise<void>;
   /** The thread being followed live, if this device is not the one talking in it. */
   watching: { agentId: string; sessionId: string; streamId: string } | null;
   /** Follow the active agent's thread while nothing of ours is in flight there; stop any other. */
@@ -885,8 +896,24 @@ export const useStore = create<State>((set, get) => ({
     // thread a person has had with an agent; walking all of them adopted one,
     // then the next, on every tick — a conversation that emptied and refilled
     // itself every thirty seconds.
+    /**
+     * A member's session in a room is filed under the room id as its label.
+     * It is adopted only where this machine has none — a room's transcript is
+     * assembled here from what each member said, so replacing a member's
+     * session would orphan the part of the transcript that came from it.
+     */
+    for (const entry of indexed) {
+      if (!entry.label || !isRoomId(entry.label)) continue;
+      const roomHere = get().rooms.find((r) => r.id === entry.label);
+      const agent = resolve(entry.agent);
+      if (!roomHere || !agent) continue;
+      const key = `${roomHere.id}::${agent.id}`;
+      if (!get().sessions[key]) set((s) => ({ sessions: { ...s.sessions, [key]: entry.sessionId } }));
+    }
+
     const newest = new Map<string, (typeof indexed)[number]>();
     for (const entry of indexed) {
+      if (entry.label && isRoomId(entry.label)) continue;
       const agent = resolve(entry.agent);
       if (!agent) continue;
       const at = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
@@ -1062,6 +1089,40 @@ export const useStore = create<State>((set, get) => ({
    */
   watching: null,
 
+  refreshRooms: async () => {
+    if (!window.studio) return;
+    const remote = await window.studio.listRooms();
+    const agents = get().agents;
+    const byName = (name: string): Agent | undefined =>
+      agents.find((a) => a.registeredName === name || a.name === name || a.id === name);
+    const nameOf = (id: string): string => agents.find((a) => a.id === id)?.registeredName ?? id;
+
+    set((s) => {
+      const local = new Map(s.rooms.map((r) => [r.id, r]));
+      const merged: Room[] = s.rooms.map((r) => {
+        const rr = remote.find((x) => x.id === r.id);
+        if (!rr) return r;
+        // The account's arrangement wins: name, members, policy, pinned.
+        const memberIds = rr.members.map((m) => byName(m)?.id).filter((id): id is string => Boolean(id));
+        return { ...r, name: rr.name ?? undefined, memberIds: memberIds.length ? memberIds : r.memberIds, policy: rr.policy, pinned: rr.pinned ?? r.pinned };
+      });
+      for (const rr of remote) {
+        if (local.has(rr.id)) continue;
+        const memberIds = rr.members.map((m) => byName(m)?.id).filter((id): id is string => Boolean(id));
+        if (memberIds.length === 0) continue;
+        merged.push({ id: rr.id, memberIds, createdAt: Date.parse(rr.createdAt) || Date.now(), name: rr.name ?? undefined, policy: rr.policy, pinned: rr.pinned ?? undefined });
+      }
+      return { rooms: merged };
+    });
+
+    // Rooms this machine made before the account held them are carried up once.
+    for (const r of get().rooms) {
+      if (remote.some((x) => x.id === r.id)) continue;
+      void window.studio.saveRoom({ id: r.id, name: r.name ?? null, members: r.memberIds.map(nameOf), policy: r.policy ?? "lead", pinned: r.pinned ?? null });
+    }
+    get().persist();
+  },
+
   watchActive: () => {
     const { activeAgentId, watching, agents, sessions, inflight, streamIndexes } = get();
     const agent = activeAgentId && !isRoomId(activeAgentId) ? agents.find((a) => a.id === activeAgentId) : undefined;
@@ -1096,6 +1157,7 @@ export const useStore = create<State>((set, get) => ({
   refreshFromOthers: async () => {
     if (!window.studio) return;
     ensureListeners(get, set);
+    await get().refreshRooms();
     await get().syncSessions();
     const active = get().activeAgentId;
     // The open conversation only. Refreshing every thread would multiply the
@@ -1117,6 +1179,7 @@ export const useStore = create<State>((set, get) => ({
       activeAgentId: id,
     }));
     get().persist();
+    void window.studio?.saveRoom({ id, members: memberIds.map((m) => get().agents.find((a) => a.id === m)?.registeredName ?? m), policy: "lead" });
     return id;
   },
   setRoomMembers: (roomId, memberIds) => {
@@ -1124,6 +1187,7 @@ export const useStore = create<State>((set, get) => ({
       rooms: s.rooms.map((r) => (r.id === roomId ? { ...r, memberIds } : r)),
     }));
     get().persist();
+    void window.studio?.saveRoom({ id: roomId, members: memberIds.map((m) => get().agents.find((a) => a.id === m)?.registeredName ?? m) });
   },
   deleteRoom: (roomId) => {
     set((s) => {
@@ -1136,6 +1200,7 @@ export const useStore = create<State>((set, get) => ({
       };
     });
     get().persist();
+    void window.studio?.saveRoom({ id: roomId, archived: true });
   },
   openExchange: (agentId, blockId) => set({ exchange: { agentId, blockId } }),
   closeExchange: () => set({ exchange: null }),
@@ -1378,11 +1443,20 @@ export const useStore = create<State>((set, get) => ({
 
   patchRoom: (roomId, patch) => {
     set((s) => ({ rooms: s.rooms.map((r) => (r.id === roomId ? { ...r, ...patch } : r)) }));
+    if ("name" in patch || "pinned" in patch || "policy" in patch) {
+      void window.studio?.saveRoom({
+        id: roomId,
+        ...("name" in patch ? { name: patch.name ?? null } : {}),
+        ...("pinned" in patch ? { pinned: patch.pinned ?? null } : {}),
+        ...("policy" in patch ? { policy: patch.policy } : {}),
+      });
+    }
     get().persist();
   },
 
   setRoomPolicy: (roomId, policy) => {
     set((s) => ({ rooms: s.rooms.map((r) => (r.id === roomId ? { ...r, policy } : r)) }));
+    void window.studio?.saveRoom({ id: roomId, policy });
     get().persist();
   },
 
@@ -1841,6 +1915,9 @@ export const useStore = create<State>((set, get) => ({
           ...(chosen.hidden != null ? { hidden: chosen.hidden } : {}),
         });
       }
+
+      // Rooms need the agent list to map names to ids, so they come after it.
+      void get().refreshRooms();
 
       // Then ask the agents themselves. Deliberately after the list is already
       // on screen and deliberately not awaited into it: liveness is worth

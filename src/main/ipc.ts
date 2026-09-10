@@ -35,6 +35,8 @@ import {
   currentSession,
   listAgents,
   saveAgentProfile,
+  listRooms,
+  saveRoom,
   claimDriver,
   watchSession,
   pollDeviceAuth,
@@ -82,6 +84,8 @@ export function registerIpc(): void {
   });
 
   ipcMain.handle("studio:listAgents", () => listAgents());
+  ipcMain.handle("studio:listRooms", () => listRooms());
+  ipcMain.handle("studio:saveRoom", (_e, input: Parameters<typeof saveRoom>[0]) => saveRoom(input));
   ipcMain.handle(
     "studio:saveAgentProfile",
     (_e, input: Parameters<typeof saveAgentProfile>[0]) => saveAgentProfile(input),

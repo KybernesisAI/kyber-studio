@@ -85,6 +85,17 @@ export interface RemoteAgent {
   profile?: AgentProfile | null;
 }
 
+/** A room as the control plane holds it: members by registered name. */
+export interface RemoteRoom {
+  id: string;
+  name: string | null;
+  members: string[];
+  policy: "all" | "lead" | "silent";
+  pinned: boolean | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AgentProfile {
   displayName: string | null;
   accent: string | null;
@@ -146,6 +157,10 @@ export interface StudioApi {
   awaitSignIn(): Promise<Session>;
   signOut(): Promise<void>;
   listAgents(): Promise<RemoteAgent[]>;
+  /** This person's rooms, from the account. */
+  listRooms(): Promise<RemoteRoom[]>;
+  /** Create or update a room on the account; `archived` hides it. */
+  saveRoom(input: { id: string; name?: string | null; members?: string[]; policy?: "all" | "lead" | "silent"; pinned?: boolean | null; archived?: boolean }): Promise<void>;
   /** Save how this person shows an agent, for every device they sign in to. Absent leaves a field alone; null clears it. */
   saveAgentProfile(input: { agent: string; displayName?: string | null; accent?: string | null; avatar?: string | null; pinned?: boolean | null; hidden?: boolean | null }): Promise<void>;
   send(input: {
