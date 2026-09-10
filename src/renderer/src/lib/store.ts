@@ -233,12 +233,20 @@ function ensureListeners(
    * from the agent — the one copy that cannot drift — and, at a boundary,
    * start a fresh watch so the next reply gets a bubble of its own.
    */
+  window.studio.onOpenAgent(({ agentId }) => {
+    if (get().agents.some((a) => a.id === agentId)) get().select(agentId);
+  });
+
   window.studio.onLive(({ streamId, kind }) => {
     const agentId = streamOwners.get(streamId);
     console.log(`[live] ${kind} on ${streamId} → ${agentId ?? "NO OWNER"}`);
     if (!agentId) return;
     if (kind === "boundary" || kind === "ended") {
       set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
+      const last = [...(get().conversations[agentId] ?? [])].reverse().find((b) => b.kind === "text" && b.role === "agent");
+      if (kind === "boundary" && last && last.kind === "text" && last.text.trim()) {
+        alertIfAway(get, agentId, get().agents.find((a) => a.id === agentId)?.name ?? "An agent", last.text);
+      }
       get().stopWatching();
     }
     if (!get().inflight[agentId]) {
@@ -250,6 +258,9 @@ function ensureListeners(
     const agentId = streamOwners.get(streamId);
     if (!agentId) return;
     const id = `q${request.requestId}`;
+    if (!(get().conversations[agentId] ?? []).some((b) => b.id === id)) {
+      alertIfAway(get, agentId, `${get().agents.find((a) => a.id === agentId)?.name ?? "An agent"} needs you`, request.prompt);
+    }
     set((s) => {
       const conv = s.conversations[agentId] ?? [];
       // A resumed turn can re-emit a request it already asked; keep one card.
@@ -452,6 +463,23 @@ async function deliverToMember(
     get().persist();
     flushRoomQueue(get, set, room, member);
   }
+}
+
+/**
+ * Tell the person, if they are not already looking.
+ *
+ * Looking means the window has focus AND this agent's thread is the one on
+ * screen; anything else — another agent open, the window behind something,
+ * the person on their phone — gets a notification. Off per agent from its
+ * Settings; on by default, because the question an agent asks while nobody
+ * is watching is the one that stalls it for an hour.
+ */
+function alertIfAway(get: () => State, agentId: string, title: string, body: string): void {
+  const s = get();
+  const agent = s.agents.find((a) => a.id === agentId);
+  if (!agent || agent.notifications === false) return;
+  if (document.hasFocus() && s.activeAgentId === agentId) return;
+  void window.studio?.notify({ title, body: body.replace(/\s+/g, " ").trim().slice(0, 160), agentId });
 }
 
 function upsertBlock(
@@ -1063,6 +1091,7 @@ export const useStore = create<State>((set, get) => ({
 
   refreshFromOthers: async () => {
     if (!window.studio) return;
+    ensureListeners(get, set);
     await get().syncSessions();
     const active = get().activeAgentId;
     // The open conversation only. Refreshing every thread would multiply the
@@ -1313,6 +1342,7 @@ export const useStore = create<State>((set, get) => ({
         if (res.reply) {
           if (!res.askedQuestion) retireStaleQuestions(get, set, agentId);
           upsertBlock(get, set, agentId, bubbleId, res.reply);
+          alertIfAway(get, agentId, get().agents.find((a) => a.id === agentId)?.name ?? "An agent", res.reply);
         } else if (!res.askedQuestion) {
           upsertBlock(get, set, agentId, bubbleId, "(the agent returned no text for this turn)");
         }

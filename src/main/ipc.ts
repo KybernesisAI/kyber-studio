@@ -1,4 +1,4 @@
-import { ipcMain, shell, type WebContents } from "electron";
+import { BrowserWindow, Notification, ipcMain, shell, type WebContents } from "electron";
 import type { Attachment } from "../shared/ipc";
 import { loadState, pickFolder, saveState } from "./store";
 import { dictationAvailable, transcribe } from "./dictation";
@@ -241,6 +241,28 @@ export function registerIpc(): void {
         });
     },
   );
+  /**
+   * A native notification, when the person is elsewhere.
+   *
+   * The renderer decides whether one is warranted — it knows whether the
+   * window is focused and which thread is open — and main only shows it.
+   * Clicking brings the window forward and opens the agent it came from.
+   */
+  ipcMain.handle("studio:notify", (e, input: { title: string; body: string; agentId: string }) => {
+    if (!Notification.isSupported()) return;
+    const sender: WebContents = e.sender;
+    const n = new Notification({ title: input.title, body: input.body });
+    n.on("click", () => {
+      const win = BrowserWindow.fromWebContents(sender);
+      if (win) {
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+      }
+      if (!sender.isDestroyed()) sender.send("studio:open-agent", { agentId: input.agentId });
+    });
+    n.show();
+  });
   ipcMain.handle("studio:unwatch", (_e, streamId: string) => {
     watchers.get(streamId)?.abort();
     watchers.delete(streamId);
