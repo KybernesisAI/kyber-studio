@@ -33,20 +33,32 @@
  * fail at dlopen on the first machine that is not the one that built it.
  */
 import {
-  closeSync,
   existsSync,
   mkdtempSync,
-  openSync,
   readFileSync,
-  readSync,
   readdirSync,
   rmSync,
   statSync,
 } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+
+/**
+ * The measuring half of section 2, in its own module so that it can be tested
+ * without building an artefact. Same functions, unchanged — see
+ * scripts/lib/native-arch.mjs and test/native-arch.test.mjs.
+ */
+import {
+  acceptableFor,
+  archFromPath,
+  expectedLabel,
+  identify,
+  normaliseArch,
+  tallyPlatforms,
+  verdictFor,
+} from "./lib/native-arch.mjs";
 
 // ── 0. Where is the app, and what shape is it? ─────────────────────────
 /**
@@ -297,105 +309,6 @@ console.log(`✓ module graph closes (${packages.length} packages)`);
  * directory is precisely the bug this section exists to catch.
  */
 
-/**
- * The machine identifiers, per executable format, for the arches
- * electron-builder can name. ELF `e_machine` (2 bytes at 0x12), Mach-O
- * `cputype` (4 bytes at 0x04), PE `Machine` (2 bytes at the start of the COFF
- * header); Mach-O sets bit 24 (0x01000000) for the 64-bit variant of a CPU
- * family, which is why arm64 is 0x0100000C and 32-bit arm is 0x0000000C.
- */
-const ELF_MACHINES = new Map([
-  [0x03, "ia32"],
-  [0x28, "armv7l"],
-  [0x3e, "x64"],
-  [0xb7, "arm64"],
-]);
-const MACHO_CPUTYPES = new Map([
-  [0x00000007, "ia32"],
-  [0x0000000c, "armv7l"],
-  [0x01000007, "x64"],
-  [0x0100000c, "arm64"],
-]);
-const PE_MACHINES = new Map([
-  [0x014c, "ia32"],
-  [0x01c4, "armv7l"], // IMAGE_FILE_MACHINE_ARMNT. The older ARM (0x1c0, Windows CE
-                      // and Phone 7) is left out deliberately: it degrades to the
-                      // named measurement "PE machine 0x1c0", which is the right
-                      // treatment for payload we do not ship.
-  [0x8664, "x64"],
-  [0xaa64, "arm64"],
-]);
-
-/** electron-builder, Node, ELF, Mach-O and PE all spell the same arches differently. */
-function normaliseArch(name) {
-  return (
-    {
-      x64: "x64",
-      x86_64: "x64",
-      amd64: "x64",
-      arm64: "arm64",
-      aarch64: "arm64",
-      arm: "armv7l",
-      armv7l: "armv7l",
-      ia32: "ia32",
-      x86: "ia32",
-      universal: "universal",
-    }[String(name).trim().toLowerCase()] ?? null
-  );
-}
-
-/**
- * What architecture is this artefact FOR?
- *
- * Deliberately NOT process.arch. The verifying machine is not necessarily the
- * target — that is the entire premise of the check — and taking the host's word
- * for it would reintroduce the blind spot this section exists to remove: on an
- * x64 runner, an all-x64 bundle destined for arm64 would pass.
- *
- * Only the ARCH is taken from the path. The target PLATFORM is never taken from
- * it: that is `found.layout.platform`, measured from the shape of the tree — a
- * `Contents/Resources/app.asar` is a macOS bundle and a `resources/app.asar` is
- * not — because a measurement beats a naming convention.
- *
- * Be precise about what that does and does not guarantee. The regex below still
- * READS a platform token, as the gate that locates the arch segment; it just
- * never becomes the target platform. A path whose token disagrees with the
- * measured layout — `dist/linux-arm64-unpacked` pointed at a `.app` — is not
- * detected here, and the arch is taken from it anyway. That costs nothing in
- * normal use and it is not an invariant anyone should lean on.
- *
- * electron-builder names its output directory `<platform>[-<arch>][-unpacked]`:
- * `dist/mac-arm64/KYBER Studio.app`, `dist/linux-arm64-unpacked`,
- * `dist/linux-unpacked`, and `dist/win-unpacked` — which this parses on the same
- * "classified, not supported" footing as the PE branch: there is no Windows
- * target, and a path we can read the arch out of is not a build we verify.
- * Segments are searched from the end so that an absolute
- * path through a directory called `linux-x64` upstream cannot outvote the real
- * output directory.
- *
- * THE INFERENCE WORTH STATING: electron-builder OMITS the arch segment for its
- * default arch. So a plain `dist/linux-unpacked` or `dist/mac` means x64 — it
- * does not mean "unknown". That is a convention rather than a measurement, and
- * it is the one line here that could go stale. The default it depends on is
- * LOCAL, not an upstream constant: builder-util omits the suffix when the arch
- * equals `build.<platform>.defaultArch`, which resolves to x64 only while that
- * key is unset, as it is in this package.json today. Set it, and an arm64 bundle
- * lands in `dist/mac` and is checked against x64 — a loud wrong failure rather
- * than a silent pass, and `--arch=` is the way past it.
- */
-function archFromPath(app) {
-  for (const segment of resolve(app).split(sep).reverse()) {
-    const named = segment.endsWith("-unpacked") ? segment.slice(0, -"-unpacked".length) : segment;
-    const match = /^(?:mac|darwin|linux|win|windows)(?:-(.+))?$/.exec(named);
-    if (!match) continue;
-    // A segment that names a platform but an arch we have no machine table for
-    // (say linux-riscv64) must fail loudly, not fall through to a later segment
-    // and certainly not to the host: return null and let the caller say so.
-    return match[1] ? normaliseArch(match[1]) : "x64";
-  }
-  return null;
-}
-
 let EXPECTED;
 let ARCH_SOURCE;
 
@@ -405,7 +318,7 @@ if (archArgument !== null) {
   if (!EXPECTED) {
     console.error(`\n✗ --arch=${archArgument || "<nothing>"} is not an architecture this script knows.`);
     console.error(`\n  Known: x64 (x86_64, amd64), arm64 (aarch64), armv7l, ia32, universal.`);
-    console.error(`  Add it to normaliseArch and to the ELF/Mach-O/PE tables above if it is real.\n`);
+    console.error(`  Add it to normaliseArch and to the ELF/Mach-O/PE tables in scripts/lib/native-arch.mjs.\n`);
     process.exit(1);
   }
 } else {
@@ -447,120 +360,8 @@ const FILES_KEY =
   { darwin: "build.mac.files", linux: "build.linux.files", win32: "build.win.files" }[TARGET_PLATFORM] ??
   `build.${TARGET_PLATFORM}.files`;
 
-/**
- * A universal macOS app is the one target that is not a single architecture:
- * @electron/universal keeps an x64 slice and an arm64 slice side by side, so a
- * THIN .node of either arch is correct in one. The per-file check degrades to
- * "one of the two" there rather than pretending to a precision it does not have.
- */
-const ACCEPTABLE = EXPECTED === "universal" ? new Set(["x64", "arm64"]) : new Set([EXPECTED]);
-/** "x64", or "x64 or arm64" for a universal build — "expected universal" is not an architecture. */
-const EXPECTED_LABEL = [...ACCEPTABLE].join(" or ");
-
-/**
- * Read the platform and architecture out of a file's own header.
- *
- * The FORMAT is the platform: ELF is linux, Mach-O is darwin, PE is win32. That
- * is a measurement of the bytes, which is the whole point — a `.node` under a
- * directory called `linux/arm64` is only evidence of what somebody named it.
- *
- * No new dependency, and deliberately not `file(1)`: it is not guaranteed to be
- * installed on a runner, and a check that silently does not run is worse than no
- * check. Returns null for anything that is not an object file we recognise —
- * a `.node` that is not ELF, Mach-O or PE is a different bug and must not be
- * reported as an architecture mismatch.
- */
-function identify(file) {
-  // Never read the whole file: a bundled .node can be hundreds of megabytes.
-  // 4 KiB covers an ELF header (0x34/0x40 bytes), a PE header at any e_lfanew a
-  // real linker emits, and a fat header with a longer arch list than any real
-  // binary carries.
-  const buffer = Buffer.alloc(4096);
-  const fd = openSync(file, "r");
-  let read;
-  try {
-    read = readSync(fd, buffer, 0, buffer.length, 0);
-  } finally {
-    closeSync(fd);
-  }
-  if (read < 8) return null;
-
-  const asBE = buffer.readUInt32BE(0);
-  const asLE = buffer.readUInt32LE(0);
-
-  // ELF — Linux. \x7fELF, then EI_DATA at byte 5 says how the rest is written.
-  // Honouring it rather than assuming little-endian costs one branch; assuming
-  // would read e_machine byte-swapped on the first big-endian target and report
-  // a confident wrong answer, which is this file's least acceptable failure.
-  if (asBE === 0x7f454c46) {
-    if (read < 0x14) return null;
-    const machine = buffer[5] === 2 ? buffer.readUInt16BE(0x12) : buffer.readUInt16LE(0x12);
-    // A machine we have no name for is still a measurement, so it is reported
-    // as one ("found ELF machine 0x2b") rather than skipped: the file IS an
-    // object file, and it is provably not the arch we are shipping.
-    return { platform: "linux", format: "ELF", arches: [ELF_MACHINES.get(machine) ?? `ELF machine 0x${machine.toString(16)}`] };
-  }
-
-  // Mach-O, thin — macOS. MH_MAGIC_64 0xFEEDFACF (and the 32-bit 0xFEEDFACE),
-  // either byte order; cputype is the next 4 bytes, read the same way round as
-  // the magic that identified the file.
-  if (asLE === 0xfeedfacf || asLE === 0xfeedface || asBE === 0xfeedfacf || asBE === 0xfeedface) {
-    const bigEndian = asBE === 0xfeedfacf || asBE === 0xfeedface;
-    const cputype = bigEndian ? buffer.readUInt32BE(4) : buffer.readUInt32LE(4);
-    return { platform: "darwin", format: "Mach-O", arches: [MACHO_CPUTYPES.get(cputype) ?? `Mach-O cputype 0x${cputype.toString(16)}`] };
-  }
-
-  // Mach-O, universal/fat — a legitimate shape for a macOS build, and one that
-  // must PASS when it contains the expected arch. Always big-endian on disk:
-  // magic, nfat_arch, then nfat_arch entries whose first field is the cputype.
-  if (asBE === 0xcafebabe || asBE === 0xcafebabf) {
-    const wide = asBE === 0xcafebabf; // fat_arch_64: 64-bit offset and size
-    const stride = wide ? 32 : 20;
-    const count = buffer.readUInt32BE(4);
-    // 0xCAFEBABE is also the Java class-file magic, and a class file puts its
-    // major version where nfat_arch goes. The bound is what rejects those, and
-    // it has to be BELOW 45: 45 is the lowest major version that exists (Java
-    // 1.1), so any bound of 44 or less excludes every class file that will ever
-    // be written. A bound of 64 did not — it stopped Java 21 (65) and let Java
-    // 1.1 through 20 read as 45 to 64 architectures, needing only 8 + major*20
-    // bytes of file to get past the length check too. 16 is chosen with room to
-    // spare in the other direction: slices are keyed on (cputype, cpusubtype)
-    // rather than on architecture — arm64 and arm64e are two of them — and
-    // @electron/universal merges exactly two inputs, so the only fat .node this
-    // script can meet has 2 slices. A file holding every architecture Apple has
-    // ever shipped would be about twelve. Do not let this number drift upward:
-    // too high admits junk as fake architectures and fails loudly and wrongly,
-    // where too low only drops coverage quietly.
-    if (count < 1 || count > 16 || read < 8 + count * stride) return null;
-    const arches = [];
-    for (let i = 0; i < count; i += 1) {
-      const cputype = buffer.readUInt32BE(8 + i * stride);
-      arches.push(MACHO_CPUTYPES.get(cputype) ?? `Mach-O cputype 0x${cputype.toString(16)}`);
-    }
-    return { platform: "darwin", format: "Mach-O (universal)", arches };
-  }
-
-  // PE — Windows. "MZ", then a 4-byte offset at 0x3C to the "PE\0\0" signature,
-  // with the COFF Machine field 4 bytes after it. Every field is little-endian.
-  //
-  // There is NO Windows target: this branch is here so that the win32 prebuilds
-  // onnxruntime-node's fat npm package drags into every bundle are classified
-  // as foreign payload instead of vanishing into a silent skip. It is not
-  // Windows support and does not imply any.
-  if (buffer[0] === 0x4d && buffer[1] === 0x5a) {
-    if (read < 0x40) return null;
-    const peOffset = buffer.readUInt32LE(0x3c);
-    // A DOS stub is ~0x80 bytes and no linker puts the PE header near the file
-    // start; an offset outside what we read is a file we cannot judge, not a
-    // Windows binary we can lie about.
-    if (peOffset < 0x40 || peOffset + 6 > read) return null;
-    if (buffer.readUInt32LE(peOffset) !== 0x00004550) return null; // "PE\0\0"
-    const machine = buffer.readUInt16LE(peOffset + 4);
-    return { platform: "win32", format: "PE", arches: [PE_MACHINES.get(machine) ?? `PE machine 0x${machine.toString(16)}`] };
-  }
-
-  return null;
-}
+const ACCEPTABLE = acceptableFor(EXPECTED);
+const EXPECTED_LABEL = expectedLabel(ACCEPTABLE);
 
 /**
  * Every `*.node` under a root, depth-first.
@@ -660,32 +461,29 @@ for (const native of natives) {
     console.error(`  ${error.message}\n`);
     process.exit(1);
   }
-  if (!header) {
-    unrecognised += 1;
-    continue;
+  // The verdict itself lives in scripts/lib/native-arch.mjs so that it can be
+  // tested without a packaged app; what stays here is the bookkeeping, and the
+  // rule that `foreign` and `unrecognised` do NOT count as checked.
+  switch (verdictFor(header, TARGET_PLATFORM, ACCEPTABLE)) {
+    case "unrecognised":
+      unrecognised += 1;
+      break;
+    case "foreign":
+      foreignPlatform.push({ ...native, ...header });
+      break;
+    case "wrong-arch":
+      checked += 1;
+      wrongArch.push({ ...native, arches: header.arches });
+      break;
+    case "correct":
+      checked += 1;
+      break;
+    default:
+      // Named rather than left to `default`, so that a fifth verdict added later
+      // cannot land here and be silently counted as a file verified — which is
+      // the exact failure the checked/foreign asymmetry exists to prevent.
+      throw new Error(`unhandled verdict for ${native.shown}`);
   }
-  // A binary for another platform cannot be the wrong arch for THIS one: it is
-  // not going to be loaded here at all. Arch-checking it would fail the build
-  // over a file whose arch is irrelevant, and passing it would count it as
-  // evidence the bundle is correct. It is neither.
-  if (header.platform !== TARGET_PLATFORM) {
-    foreignPlatform.push({ ...native, ...header });
-    continue;
-  }
-  checked += 1;
-  if (!header.arches.some((arch) => ACCEPTABLE.has(arch))) {
-    wrongArch.push({ ...native, arches: header.arches });
-  }
-}
-
-/** "linux ×2, win32 ×2" — what the foreign payload is, before naming every file. */
-function tallyPlatforms(entries) {
-  const counts = new Map();
-  for (const { platform } of entries) counts.set(platform, (counts.get(platform) ?? 0) + 1);
-  return [...counts]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([platform, n]) => `${platform} ×${n}`)
-    .join(", ");
 }
 
 /**
