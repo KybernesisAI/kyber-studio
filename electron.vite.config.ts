@@ -17,5 +17,13 @@ export default defineConfig({
       alias: { "@": resolve("src/renderer/src"), "@shared": resolve("src/shared") },
     },
     plugins: [react()],
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve("src/renderer/index.html"),
+          orb: resolve("src/renderer/orb.html"),
+        },
+      },
+    },
   },
 });

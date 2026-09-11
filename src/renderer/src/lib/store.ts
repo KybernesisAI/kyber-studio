@@ -678,6 +678,8 @@ interface State {
       accent?: string;
       /** The picture chosen for this agent, as a data URL. */
       avatar?: string;
+      /** Spoken voice for this agent's voice orb. Local-only, like notifications. */
+      voice?: string;
     }
   >;
   /**
@@ -1616,6 +1618,7 @@ export const useStore = create<State>((set, get) => ({
           ...("notifications" in patch ? { notifications: patch.notifications } : {}),
           ...("accent" in patch ? { accent: patch.accent } : {}),
           ...("avatar" in patch ? { avatar: patch.avatar } : {}),
+          ...("voice" in patch ? { voice: patch.voice } : {}),
         },
       },
     }));
@@ -1886,6 +1889,7 @@ export const useStore = create<State>((set, get) => ({
             hidden: (profile ? profile.hidden : chosen.hidden) ?? prior?.hidden ?? undefined,
             unread: prior?.unread,
             notifications: chosen.notifications ?? prior?.notifications ?? true,
+            voice: chosen.voice ?? prior?.voice ?? undefined,
             // "unknown" until something asks the agent itself. Holding an
             // address is not being alive, and calling it "online" here is what
             // made a registration whose machine was long gone look healthy.
