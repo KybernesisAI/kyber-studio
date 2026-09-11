@@ -36,6 +36,17 @@ const studio: StudioApi = {
   pickFolder: () => ipcRenderer.invoke("studio:pickFolder"),
   manage: (input) => ipcRenderer.invoke("studio:manage", input),
   setLocalPermission: (input) => ipcRenderer.invoke("studio:setLocalPermission", input),
+  openOrb: (input) => ipcRenderer.invoke("studio:openOrb", input),
+  closeOrb: () => ipcRenderer.invoke("studio:closeOrb"),
+  voiceConnect: (input) => ipcRenderer.invoke("studio:voiceConnect", input),
+  voiceManifest: (url) => ipcRenderer.invoke("studio:voiceManifest", url),
+  voiceContext: () => ipcRenderer.invoke("studio:voiceContext"),
+  voiceAsk: (input) => ipcRenderer.invoke("studio:voiceAsk", input),
+  onVoiceActivity: (handler) => {
+    const listener = (_e: unknown, label: string | null): void => handler(label);
+    ipcRenderer.on("studio:voice-activity", listener);
+    return () => ipcRenderer.off("studio:voice-activity", listener);
+  },
   onLocalAsk: (handler) => {
     const listener = (_e: unknown, ask: Parameters<typeof handler>[0]): void => handler(ask);
     ipcRenderer.on("studio:local-ask", listener);

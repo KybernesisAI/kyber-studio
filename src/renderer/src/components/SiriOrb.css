@@ -1,0 +1,168 @@
+@property --angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.siri-orb-wrapper {
+  position: relative;
+  cursor: pointer;
+  transition: transform 0.3s ease;
+}
+
+.siri-orb-wrapper:hover {
+  transform: scale(1.05);
+}
+
+/* Invisible click target that sits on top of everything */
+.siri-orb-click-target {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  cursor: pointer;
+  border-radius: 50%;
+}
+
+.siri-orb {
+  display: grid;
+  grid-template-areas: "stack";
+  overflow: hidden;
+  border-radius: 50%;
+  position: relative;
+}
+
+.siri-orb::before,
+.siri-orb::after {
+  content: "";
+  display: block;
+  grid-area: stack;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  transform: translateZ(0);
+  pointer-events: none;
+}
+
+.siri-orb::before {
+  background:
+    conic-gradient(from calc(var(--angle) * 2) at 25% 70%, var(--c3), transparent 20% 80%, var(--c3)),
+    conic-gradient(from calc(var(--angle) * 2) at 45% 75%, var(--c2), transparent 30% 60%, var(--c2)),
+    conic-gradient(from calc(var(--angle) * -3) at 80% 20%, var(--c1), transparent 40% 60%, var(--c1)),
+    conic-gradient(from calc(var(--angle) * 2) at 15% 5%, var(--c2), transparent 10% 90%, var(--c2)),
+    conic-gradient(from calc(var(--angle) * 1) at 20% 80%, var(--c1), transparent 10% 90%, var(--c1)),
+    conic-gradient(from calc(var(--angle) * -2) at 85% 10%, var(--c3), transparent 20% 80%, var(--c3));
+  box-shadow: inset var(--bg) 0 0 2px 0.4px;
+  filter: blur(var(--blur-amount)) contrast(var(--contrast-amount));
+  animation: rotate var(--animation-duration) linear infinite;
+}
+
+.siri-orb::after {
+  background-image: radial-gradient(circle at center, var(--bg) 0.1px, transparent 0.1px);
+  background-size: 0.2px 0.2px;
+  backdrop-filter: blur(calc(var(--blur-amount) * 2)) contrast(calc(var(--contrast-amount) * 2));
+  mix-blend-mode: overlay;
+  mask-image: radial-gradient(black 15%, transparent 75%);
+}
+
+@keyframes rotate {
+  to {
+    --angle: 360deg;
+  }
+}
+
+/* Overlays (ported from Tailwind utilities to plain CSS) */
+.orb-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.orb-ring--ping {
+  border: 2px solid rgba(192, 132, 252, 0.3);
+  animation: orb-ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.orb-ring--pulse {
+  border: 1px solid rgba(216, 180, 254, 0.2);
+  animation: orb-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.orb-ring--error {
+  border: 2px solid rgba(248, 113, 113, 0.5);
+  animation: orb-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.orb-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.orb-bars {
+  display: flex;
+  gap: 4px;
+}
+
+.orb-bar {
+  width: 3px;
+  height: 16px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.4);
+  animation: orb-pulse 0.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.orb-dots {
+  display: flex;
+  gap: 4px;
+}
+
+.orb-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #facc15;
+  animation: orb-bounce 1s infinite;
+}
+
+@keyframes orb-ping {
+  75%,
+  100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}
+
+@keyframes orb-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@keyframes orb-bounce {
+  0%,
+  100% {
+    transform: translateY(-25%);
+    animation-timing-function: cubic-bezier(0.8, 0, 1, 1);
+  }
+  50% {
+    transform: none;
+    animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .siri-orb::before,
+  .orb-ring,
+  .orb-bar,
+  .orb-dot {
+    animation: none;
+  }
+}

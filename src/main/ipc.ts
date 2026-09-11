@@ -1,5 +1,7 @@
 import { BrowserWindow, Notification, ipcMain, shell, type WebContents } from "electron";
 import type { Attachment } from "../shared/ipc";
+import type { VoiceContext } from "../shared/ipc";
+import { closeOrbWindow, createLiveSession, openOrbWindow, voiceAsk, voiceContext } from "./voice";
 import { loadState, pickFolder, saveState } from "./store";
 import { dictationAvailable, transcribe } from "./dictation";
 import {
@@ -30,6 +32,7 @@ import {
   listConnectors,
   localAccessGranted,
   manageCall,
+  voiceManifest,
   provisionLocalAccess,
   revokeLocalAccess,
   currentSession,
@@ -340,4 +343,11 @@ export function registerIpc(): void {
       });
     },
   );
+
+  ipcMain.handle("studio:openOrb", (_e, input: VoiceContext) => openOrbWindow(input));
+  ipcMain.handle("studio:closeOrb", () => closeOrbWindow());
+  ipcMain.handle("studio:voiceConnect", (_e, input: { sdp: string }) => createLiveSession(input));
+  ipcMain.handle("studio:voiceManifest", (_e, url: string) => voiceManifest(url));
+  ipcMain.handle("studio:voiceContext", () => voiceContext());
+  ipcMain.handle("studio:voiceAsk", (_e, input: { text: string }) => voiceAsk(input));
 }

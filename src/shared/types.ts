@@ -41,6 +41,8 @@ export interface Agent {
   avatar?: string;
   /** Sidebar organization. */
   pinned?: boolean;
+  /** Spoken voice for this agent's voice orb (OpenAI Live voice name). */
+  voice?: string;
   sectionId?: string | null;
   hidden?: boolean;
   unread?: boolean;

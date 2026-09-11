@@ -149,6 +149,16 @@ export interface DeliveryResult {
   cancelled?: boolean;
 }
 
+/** The agent + live session the voice orb is bridged to. */
+export interface VoiceContext {
+  agentId: string;
+  agentUrl: string;
+  agentName: string;
+  sessionId?: string;
+  /** The spoken voice for this agent (OpenAI Live voice name). */
+  voice?: string;
+}
+
 export interface StudioApi {
   session(): Promise<Session | null>;
   signIn(): Promise<{ userCode: string; verificationUri: string }>;
@@ -353,6 +363,22 @@ export interface StudioApi {
     action: LocalAction;
     value: LocalPermission;
   }): Promise<Record<LocalAction, LocalPermission>>;
+
+  // --- Realtime voice ("orb") ---
+  /** Open the floating voice orb, bound to this agent + its live session. */
+  openOrb(input: VoiceContext): Promise<void>;
+  /** Close the floating voice orb. */
+  closeOrb(): Promise<void>;
+  /** Complete the Live WebRTC handshake via the agent's own voice route: offer in, answer out. */
+  voiceConnect(input: { sdp: string }): Promise<{ sdp: string }>;
+  /** Whether an agent is voice-capable (@kybernesis/voice mounted); null if not. */
+  voiceManifest(url: string): Promise<{ enabled: boolean; voice?: string; displayName?: string } | null>;
+  /** Which agent/session the orb is bridged to. */
+  voiceContext(): Promise<VoiceContext | null>;
+  /** The orb's one tool: run a turn on the bound agent session, get its reply. */
+  voiceAsk(input: { text: string }): Promise<{ reply: string; sessionId?: string; askedQuestion: boolean }>;
+  /** Agent activity labels, forwarded to the orb while it waits on a turn. */
+  onVoiceActivity(handler: (label: string | null) => void): () => void;
 }
 
 /**

@@ -684,6 +684,25 @@ function Settings(): ReactNode {
           />
         </div>
 
+        <div className="card stack-row">
+          <div style={{ flex: 1 }}>
+            <div>Voice</div>
+            <div className="muted">The spoken voice for this agent's floating voice orb.</div>
+          </div>
+          <select
+            className="input"
+            style={{ maxWidth: 130 }}
+            value={agent.voice ?? "marin"}
+            onChange={(e) => patchAgent(agent.id, { voice: e.target.value })}
+          >
+            {["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"].map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div className="field" style={{ marginTop: 18 }}>
           <div className="field__label">Reported by the agent</div>
           <div className="card">

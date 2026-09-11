@@ -324,6 +324,32 @@ export function Conversation(): ReactNode {
   } = useStore();
   const agent = agents.find((a) => a.id === activeAgentId);
   const rooms = useStore((s) => s.rooms);
+  const sessions = useStore((s) => s.sessions);
+  const openOrb = (): void => {
+    if (!agent?.url) return;
+    void window.studio.openOrb({
+      agentId: agent.id,
+      agentUrl: agent.url,
+      agentName: agent.name,
+      sessionId: sessions[activeAgentId],
+      voice: agent.voice ?? "marin",
+    });
+  };
+  const [voiceCapable, setVoiceCapable] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setVoiceCapable(false);
+    const url = agent?.url;
+    if (url) {
+      void window.studio.voiceManifest(url).then((m) => {
+        if (!cancelled) setVoiceCapable(Boolean(m?.enabled));
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAgentId, agent?.url]);
   const sendToRoom = useStore((s) => s.sendToRoom);
   const stopRoom = useStore((s) => s.stopRoom);
   const roomQueue = useStore((s) => s.roomQueue);
@@ -1038,6 +1064,28 @@ export function Conversation(): ReactNode {
               <Icon name={draft.trim() || pending.length > 0 ? "arrowUp" : "mic"} />
             )}
           </button>
+          {voiceCapable ? (
+          <button
+            className="icon-btn"
+            type="button"
+            title={`Talk to ${agent?.name ?? "agent"} by voice`}
+            disabled={!agent?.url}
+            onClick={openOrb}
+          >
+            <span
+              aria-hidden
+              style={{
+                display: "block",
+                width: 18,
+                height: 18,
+                borderRadius: "50%",
+                background:
+                  "conic-gradient(from 0deg, oklch(75% 0.15 350), oklch(80% 0.12 200), oklch(78% 0.14 280), oklch(75% 0.15 350))",
+                boxShadow: "0 0 6px rgba(147, 51, 234, 0.5)",
+              }}
+            />
+          </button>
+          ) : null}
         </div>
         {model || busy ? (
           <div className="composer__meta">

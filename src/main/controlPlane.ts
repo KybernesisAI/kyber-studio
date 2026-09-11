@@ -1540,6 +1540,66 @@ export async function manageCall(input: {
 }
 
 /**
+ * Ask an agent whether it is voice-capable (has @kybernesis/voice mounted), and
+ * how it should sound. Same control-plane identity as every other door; null
+ * when the agent has no voice route or the grant/sign-in does not allow it, so
+ * the caller simply shows no orb.
+ */
+export async function voiceManifest(
+  url: string,
+): Promise<{ enabled: boolean; voice?: string; displayName?: string } | null> {
+  const s = await activeSession();
+  if (!s?.bundle || !url) return null;
+  const base = url.replace(/\/$/, "");
+  try {
+    const res = await fetch(`${base}/eve/v1/voice/manifest`, {
+      headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json().catch(() => null)) as
+      | { enabled?: boolean; voice?: string; displayName?: string }
+      | null;
+    if (!data?.enabled) return null;
+    return { enabled: true, voice: data.voice, displayName: data.displayName };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mint a realtime voice session on the agent, which uses ITS OWN OpenAI key. We
+ * relay only the browser's SDP offer and get the answer back — the key never
+ * reaches this app. Authenticated with the same token + bundle as manageCall.
+ */
+export async function voiceSession(input: {
+  url: string;
+  sdp: string;
+  voice?: string;
+}): Promise<{ sdp: string }> {
+  const s = await activeSession();
+  if (!s?.bundle) throw new Error("Your sign-in has expired.");
+  const base = input.url.replace(/\/$/, "");
+  const res = await fetch(`${base}/eve/v1/voice/session`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${s.token}`,
+      "x-kybernesis-bundle": s.bundle,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ sdp: input.sdp, ...(input.voice ? { voice: input.voice } : {}) }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const data = (await res.json().catch(() => null)) as
+    | { ok?: boolean; sdp?: string; error?: string }
+    | null;
+  if (!res.ok || !data?.ok || !data.sdp) {
+    throw new Error(data?.error ?? `The agent's voice route answered ${res.status}.`);
+  }
+  return { sdp: data.sdp };
+}
+
+/**
  * Give an agent what it needs to reach this machine, without anyone touching a
  * credential.
  *
