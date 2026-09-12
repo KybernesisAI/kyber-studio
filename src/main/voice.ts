@@ -78,6 +78,20 @@ export async function voiceAsk(input: {
   };
 }
 
+/**
+ * Toggle the orb from the composer button: open it when closed, close it when
+ * open. Main owns the window, so this stays correct however it was closed
+ * (the × button, Esc, or a previous toggle).
+ */
+export function toggleOrbWindow(context: VoiceContext): boolean {
+  if (orbWindow && !orbWindow.isDestroyed()) {
+    closeOrbWindow();
+    return false;
+  }
+  openOrbWindow(context);
+  return true;
+}
+
 /** Open (or focus) the floating transparent orb window and bind it to an agent. */
 export function openOrbWindow(context: VoiceContext): void {
   // The voice runs on the agent's OWN session, not the text chat's: reusing the
@@ -128,6 +142,17 @@ export function openOrbWindow(context: VoiceContext): void {
   } else {
     void orbWindow.loadFile(join(__dirname, "../renderer/orb.html"));
   }
+}
+
+/**
+ * Move the orb window by a screen-space delta. Driven from the renderer's
+ * click-vs-drag handler so the orb itself can be grabbed to move the window,
+ * while a click with no movement stays a mute toggle.
+ */
+export function moveOrbWindow(dx: number, dy: number): void {
+  if (!orbWindow || orbWindow.isDestroyed()) return;
+  const [x, y] = orbWindow.getPosition();
+  orbWindow.setPosition(Math.round(x + dx), Math.round(y + dy));
 }
 
 export function closeOrbWindow(): void {

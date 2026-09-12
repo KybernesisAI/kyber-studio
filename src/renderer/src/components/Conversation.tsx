@@ -327,7 +327,7 @@ export function Conversation(): ReactNode {
   const sessions = useStore((s) => s.sessions);
   const openOrb = (): void => {
     if (!agent?.url) return;
-    void window.studio.openOrb({
+    void window.studio.toggleOrb({
       agentId: agent.id,
       agentUrl: agent.url,
       agentName: agent.name,
@@ -1071,17 +1071,18 @@ export function Conversation(): ReactNode {
             title={`Talk to ${agent?.name ?? "agent"} by voice`}
             disabled={!agent?.url}
             onClick={openOrb}
+            style={{ alignSelf: "center", marginRight: 7, transform: "translateY(-1px)" }}
           >
             <span
               aria-hidden
               style={{
                 display: "block",
-                width: 18,
-                height: 18,
+                width: 30,
+                height: 30,
                 borderRadius: "50%",
                 background:
                   "conic-gradient(from 0deg, oklch(75% 0.15 350), oklch(80% 0.12 200), oklch(78% 0.14 280), oklch(75% 0.15 350))",
-                boxShadow: "0 0 6px rgba(147, 51, 234, 0.5)",
+                boxShadow: "0 0 4px rgba(147, 51, 234, 0.4)",
               }}
             />
           </button>
