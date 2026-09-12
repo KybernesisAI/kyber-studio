@@ -11,6 +11,7 @@ import {
   toCron,
 } from "@/lib/schedule";
 import { useStore, type PanelView } from "@/lib/store";
+import type { LocalAction, LocalPermission } from "@shared/ipc";
 import { Avatar, Icon, Toggle } from "./primitives";
 
 /**
@@ -527,6 +528,76 @@ function RoutineView(): ReactNode {
 }
 
 /**
+ * The standing answers already given to permission cards, and a way to change them.
+ *
+ * "Always allow" and "Never" are written to disk the moment they are chosen on
+ * a card. The enforcement side has always been able to read and rewrite them;
+ * only this screen was missing, so a person who clicked "always" once could
+ * never see that they had, let alone take it back. These are per-computer, not
+ * per-agent: the permission is about what may happen HERE.
+ */
+const LOCAL_ACTIONS: { action: LocalAction; label: string; detail: string }[] = [
+  { action: "run-command", label: "Run commands", detail: "Shell commands in the working folder." },
+  { action: "read-file", label: "Read files", detail: "Read a file from the working folder." },
+  { action: "write-file", label: "Write files", detail: "Create or change a file there." },
+  { action: "list-directory", label: "List folders", detail: "See what a folder contains." },
+  { action: "local-mcp", label: "Use local services", detail: "Call an MCP server running on this computer." },
+];
+
+function LocalPermissions(): ReactNode {
+  const [perms, setPerms] = useState<Record<LocalAction, LocalPermission> | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void window.studio?.localPermissions().then((p) => live && setPerms(p));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const set = async (action: LocalAction, value: LocalPermission): Promise<void> => {
+    const next = await window.studio?.setLocalPermission({ action, value });
+    if (next) setPerms(next);
+  };
+
+  if (!perms) return null;
+  const standing = LOCAL_ACTIONS.filter((a) => perms[a.action] !== "ask").length;
+
+  return (
+    <div className="card">
+      <div className="stack-row">
+        <div style={{ flex: 1 }}>
+          <div>What agents may do on this computer</div>
+          <div className="muted">
+            {standing === 0
+              ? "Every one of these asks first. Answering “always” or “never” on a card is remembered here."
+              : `${standing} of these no longer ask. Set one back to “Ask” to be prompted again.`}
+          </div>
+        </div>
+      </div>
+      {LOCAL_ACTIONS.map((a) => (
+        <div key={a.action} className="stack-row" style={{ marginTop: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div>{a.label}</div>
+            <div className="muted">{a.detail}</div>
+          </div>
+          <select
+            className="input"
+            style={{ maxWidth: 110 }}
+            value={perms[a.action]}
+            onChange={(e) => void set(a.action, e.target.value as LocalPermission)}
+          >
+            <option value="ask">Ask</option>
+            <option value="always">Always</option>
+            <option value="never">Never</option>
+          </select>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
  * One switch for "this agent may work on this computer".
  *
  * Everything underneath it — minting the agent's credential, installing it,
@@ -654,6 +725,8 @@ function Settings(): ReactNode {
         </div>
 
         <LocalAccess agent={info?.name ?? agent.name} url={agent.url} />
+
+        <LocalPermissions />
 
         <div className="card stack-row">
           <div style={{ flex: 1 }}>

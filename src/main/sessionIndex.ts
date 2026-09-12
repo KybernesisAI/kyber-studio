@@ -1,4 +1,4 @@
-import { activeSession, ISSUER } from "./controlPlane";
+import { activeSession, authHeaders, ISSUER } from "./controlPlane";
 import {
   blocksFromEvents,
   type Replayed,
@@ -57,7 +57,7 @@ export async function listSessions(agent?: string): Promise<IndexedSession[]> {
     const url = new URL(`${ISSUER}/api/sessions`);
     if (agent) url.searchParams.set("agent", agent);
     const res = await fetch(url, {
-      headers: { authorization: `Bearer ${s.token}` },
+      headers: authHeaders(s),
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
@@ -94,7 +94,7 @@ export async function recordSession(entry: {
   try {
     const res = await fetch(`${ISSUER}/api/sessions`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${s.token}` },
+      headers: authHeaders(s, { json: true }),
       body: JSON.stringify(entry),
       signal: AbortSignal.timeout(15_000),
     });
@@ -150,7 +150,7 @@ export async function replaySession(input: {
 
   try {
     const res = await fetch(endpoint, {
-      headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
+      headers: authHeaders(s, { bundle: true }),
       signal: AbortSignal.timeout(60_000),
     });
     if (!res.ok || !res.body) return null;

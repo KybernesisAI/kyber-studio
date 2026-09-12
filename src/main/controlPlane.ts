@@ -91,6 +91,34 @@ function bundleExpiry(bundle: string | undefined): number {
   return exp ? exp * 1000 : Number.POSITIVE_INFINITY;
 }
 
+/**
+ * The headers for one authenticated request — and the one place the bundle
+ * decision is written down.
+ *
+ * The policy bundle is what an agent checks for a grant: a request without it
+ * is treated as an agent-to-agent call and refused. So every agent-facing route
+ * needs `bundle`, as do the control-plane routes that act on an agent's behalf
+ * (connectors, local-exec grants). Plain "who am I" routes do not. That choice
+ * used to be made independently at twenty-three call sites, which is how one of
+ * them eventually ends up wrong.
+ */
+export function authHeaders(
+  s: Session,
+  opts: { bundle?: boolean; json?: boolean } = {},
+): Record<string, string> {
+  const headers: Record<string, string> = { authorization: `Bearer ${s.token}` };
+  if (opts.json) headers["content-type"] = "application/json";
+  if (opts.bundle) {
+    if (!s.bundle) {
+      throw new Error(
+        "Your session has no policy bundle, so no agent can check your grants. Sign out and sign in again.",
+      );
+    }
+    headers["x-kybernesis-bundle"] = s.bundle;
+  }
+  return headers;
+}
+
 /** Claims are display-only; enforcement happens at the agent. Decode, never trust. */
 function readClaims(jwt: string): { email?: string; org_name?: string; exp?: number } {
   try {
@@ -328,7 +356,7 @@ export async function listAgents(): Promise<RemoteAgent[]> {
   const s = await activeSession();
   if (!s) throw new Error("Not signed in.");
   const res = await fetch(`${ISSUER}/api/me/agents`, {
-    headers: { authorization: `Bearer ${s.token}` },
+    headers: authHeaders(s),
     signal: AbortSignal.timeout(20_000),
   });
   if (res.status === 401) throw new Error("Session expired. Sign in again.");
@@ -342,7 +370,7 @@ export async function listRooms(): Promise<RemoteRoom[]> {
   if (!s) return [];
   try {
     const res = await fetch(`${ISSUER}/api/rooms`, {
-      headers: { authorization: `Bearer ${s.token}` },
+      headers: authHeaders(s),
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) return [];
@@ -366,7 +394,7 @@ export async function saveRoom(input: {
   try {
     await fetch(`${ISSUER}/api/rooms`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${s.token}` },
+      headers: authHeaders(s, { json: true }),
       body: JSON.stringify(input),
       signal: AbortSignal.timeout(15_000),
     });
@@ -392,7 +420,7 @@ export async function saveAgentProfile(input: {
   try {
     await fetch(`${ISSUER}/api/me/agents/profile`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${s.token}` },
+      headers: authHeaders(s, { json: true }),
       body: JSON.stringify(input),
       signal: AbortSignal.timeout(20_000),
     });
@@ -630,7 +658,7 @@ export async function agentInfo(url: string): Promise<Record<string, unknown> | 
   if (!s?.bundle) return null;
   try {
     const res = await fetch(`${url.replace(/\/$/, "")}/eve/v1/info`, {
-      headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
+      headers: authHeaders(s, { bundle: true }),
       signal: AbortSignal.timeout(20_000),
     });
     if (!res.ok) return null;
@@ -703,7 +731,7 @@ async function tailIndex(base: string, sessionId: string, from: number): Promise
   const controller = new AbortController();
   try {
     const res = await fetch(url, {
-      headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
+      headers: authHeaders(s, { bundle: true }),
       // Both signals: the controller stops the body once the header is read, and
       // the timeout stops US. Every fetch on the way to sending a turn needs a
       // deadline — this one had none, so an agent that accepted the connection
@@ -1442,7 +1470,7 @@ export async function claimDriver(sessionId: string): Promise<void> {
   try {
     await fetch(`${ISSUER}/api/sessions/driver`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${s.token}` },
+      headers: authHeaders(s, { json: true }),
       body: JSON.stringify({ sessionId, deviceId: deviceId(), platform: "desktop" }),
       signal: AbortSignal.timeout(10_000),
     });
@@ -1515,11 +1543,7 @@ export async function manageCall(input: {
   const base = input.url.replace(/\/$/, "");
   const res = await fetch(`${base}/eve/v1/kyb${input.path}`, {
     method: input.body === undefined ? "GET" : "POST",
-    headers: {
-      authorization: `Bearer ${s.token}`,
-      "x-kybernesis-bundle": s.bundle,
-      ...(input.body === undefined ? {} : { "content-type": "application/json" }),
-    },
+    headers: authHeaders(s, { bundle: true, json: input.body !== undefined }),
     body: input.body === undefined ? undefined : JSON.stringify(input.body),
     // Installs run npm and a full rebuild; a short timeout here would report a
     // failure for work that is actually still going.
@@ -1569,7 +1593,7 @@ export async function voiceManifest(
   const base = url.replace(/\/$/, "");
   try {
     const res = await fetch(`${base}/eve/v1/voice/manifest`, {
-      headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
+      headers: authHeaders(s, { bundle: true }),
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) return null;
@@ -1598,11 +1622,7 @@ export async function voiceSession(input: {
   const base = input.url.replace(/\/$/, "");
   const res = await fetch(`${base}/eve/v1/voice/session`, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${s.token}`,
-      "x-kybernesis-bundle": s.bundle,
-      "content-type": "application/json",
-    },
+    headers: authHeaders(s, { bundle: true, json: true }),
     body: JSON.stringify({ sdp: input.sdp, ...(input.voice ? { voice: input.voice } : {}) }),
     signal: AbortSignal.timeout(30_000),
   });
@@ -1709,7 +1729,7 @@ export async function localAccessGranted(agent: string): Promise<boolean> {
     const res = await fetch(
       `${ISSUER}/api/local-exec/grant?deviceId=${encodeURIComponent(deviceId())}`,
       {
-        headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
+        headers: authHeaders(s, { bundle: true }),
         signal: AbortSignal.timeout(20_000),
       },
     );
@@ -1727,11 +1747,7 @@ export async function revokeLocalAccess(agent: string): Promise<boolean> {
   if (!s?.bundle) return false;
   const res = await fetch(`${ISSUER}/api/local-exec/grant`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${s.token}`,
-      "x-kybernesis-bundle": s.bundle,
-    },
+    headers: authHeaders(s, { bundle: true, json: true }),
     body: JSON.stringify({ agent, deviceId: deviceId(), revoke: true }),
     signal: AbortSignal.timeout(20_000),
   });
@@ -1799,7 +1815,7 @@ export async function listConnectors(
   if (!s?.bundle) return { configured: false, connectors: [] };
   try {
     const res = await fetch(`${ISSUER}/api/connectors?agent=${encodeURIComponent(agent)}`, {
-      headers: { authorization: `Bearer ${s.token}`, "x-kybernesis-bundle": s.bundle },
+      headers: authHeaders(s, { bundle: true }),
       signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) return { configured: false, connectors: [] };
@@ -1838,11 +1854,7 @@ export async function connectService(input: {
 
   const res = await fetch(`${ISSUER}/api/connectors/link`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${s.token}`,
-      "x-kybernesis-bundle": s.bundle,
-    },
+    headers: authHeaders(s, { bundle: true, json: true }),
     body: JSON.stringify(input),
     signal: AbortSignal.timeout(30_000),
   });
@@ -1866,11 +1878,7 @@ export async function disconnectService(input: {
   if (!s?.bundle) return { ok: false, error: "Not signed in." };
   const res = await fetch(`${ISSUER}/api/connectors/disconnect`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${s.token}`,
-      "x-kybernesis-bundle": s.bundle,
-    },
+    headers: authHeaders(s, { bundle: true, json: true }),
     body: JSON.stringify(input),
     signal: AbortSignal.timeout(30_000),
   });
@@ -1890,11 +1898,7 @@ export async function addCustomConnector(input: {
   if (!s?.bundle) return { ok: false, error: "Not signed in." };
   const res = await fetch(`${ISSUER}/api/connectors/custom`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${s.token}`,
-      "x-kybernesis-bundle": s.bundle,
-    },
+    headers: authHeaders(s, { bundle: true, json: true }),
     body: JSON.stringify(input),
     signal: AbortSignal.timeout(30_000),
   });
@@ -1922,11 +1926,7 @@ export async function startMcpSignIn(input: {
   if (!s?.bundle) return { ok: false, error: "Not signed in." };
   const res = await fetch(`${ISSUER}/api/connectors/mcp/oauth/start`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${s.token}`,
-      "x-kybernesis-bundle": s.bundle,
-    },
+    headers: authHeaders(s, { bundle: true, json: true }),
     body: JSON.stringify(input),
     signal: AbortSignal.timeout(30_000),
   });
@@ -1947,11 +1947,7 @@ export async function testRemoteMcp(
   try {
     const res = await fetch(`${ISSUER}/api/connectors/mcp/test`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${s.token}`,
-        "x-kybernesis-bundle": s.bundle,
-      },
+      headers: authHeaders(s, { bundle: true, json: true }),
       body: JSON.stringify({ slug }),
       signal: AbortSignal.timeout(40_000),
     });
