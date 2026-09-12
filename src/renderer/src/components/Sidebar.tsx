@@ -100,7 +100,6 @@ function ContextMenu({
       })}
       <div className="menu__sep" />
       {item("eyeOff", "Hide from sidebar", () => patchAgent(agent.id, { hidden: true }))}
-      {item("trash", "Delete", () => patchAgent(agent.id, { hidden: true }), true)}
     </div>
   );
 }
@@ -286,17 +285,19 @@ function NewRoom({ onClose }: { onClose: () => void }): ReactNode {
 }
 
 export function Sidebar(): ReactNode {
-  const { agents, query, setPluginsOpen, setPaletteOpen, account, signOut, refreshAgents, issuer } =
+  const { agents, setPluginsOpen, setPaletteOpen, account, signOut, refreshAgents, issuer, patchAgent, authError } =
     useStore();
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [accountMenu, setAccountMenu] = useState(false);
   const [newRoom, setNewRoom] = useState(false);
   const rooms = useStore((s) => s.rooms);
 
-  const q = query.trim().toLowerCase();
-  const visible = agents
-    .filter((a) => !a.hidden)
-    .filter((a) => !q || a.name.toLowerCase().includes(q) || (a.lastMessagePreview ?? "").toLowerCase().includes(q));
+  // Hiding is reversible, so the count has to be visible somewhere.
+  const hiddenCount = agents.filter((a) => a.hidden).length;
+  // Searching moved to the palette; the inline filter this replaced ran on a
+  // query nothing could ever set, so it matched everything and then told the
+  // person nothing matched "".
+  const visible = agents.filter((a) => !a.hidden);
 
   // Most recently active first, from the transcripts themselves.
   const recency = (a: Agent): number => lastOf(useStore.getState().conversations[a.id])?.at ?? 0;
@@ -351,7 +352,16 @@ export function Sidebar(): ReactNode {
         {rest.map((a) => (
           <Row key={a.id} agent={a} onMenu={setMenu} />
         ))}
-        {visible.length === 0 ? <div className="empty">No agents match “{query}”.</div> : null}
+        {visible.length === 0 ? (
+          <div className="empty">
+            {hiddenCount > 0
+              ? "Every agent is hidden. Show them from the account menu."
+              : /* Written by refreshAgents for exactly this case — a signed-in
+                   person with no grants — and previously read by nobody, so the
+                   app just sat empty with no explanation. */
+                (authError ?? "No agents yet.")}
+          </div>
+        ) : null}
       </div>
 
       <div className="sidebar__foot">
@@ -385,6 +395,17 @@ export function Sidebar(): ReactNode {
             >
               <Icon name="download" /> Refresh agents
             </button>
+            {hiddenCount > 0 ? (
+              <button
+                className="menu__item"
+                onClick={() => {
+                  setAccountMenu(false);
+                  for (const a of agents.filter((x) => x.hidden)) patchAgent(a.id, { hidden: false });
+                }}
+              >
+                <Icon name="eye" /> Show {hiddenCount} hidden agent{hiddenCount === 1 ? "" : "s"}
+              </button>
+            ) : null}
             <div className="menu__sep" />
             <button
               className="menu__item menu__item--danger"

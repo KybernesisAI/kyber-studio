@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { PendingAttachment } from "./attachments";
 import type { AgentSummary } from "@shared/ipc";
 import { summarize } from "./agentInfo";
-import type { Agent, Block, PeerEvent, Room, Section } from "@shared/types";
+import type { Agent, Block, PeerEvent, Room } from "@shared/types";
 import { ROOM_PREFIX, isRoomId } from "@shared/types";
 import { recipientsFor, type RoomPolicy } from "@shared/addressing";
 import { reconcile } from "@shared/sessionReplay";
@@ -639,15 +639,13 @@ function flushQueue(get: () => State, agentId: string): void {
   setTimeout(() => get().send(agentId, next, true), 0);
 }
 
-export type PanelView = "none" | "overview" | "routine" | "settings" | "channels";
+export type PanelView = "none" | "overview" | "routine" | "settings";
 
 interface State {
   agents: Agent[];
-  sections: Section[];
   conversations: Record<string, Block[]>;
 
   activeAgentId: string;
-  query: string;
   panel: PanelView;
   activeRoutineId: string | null;
   pluginsOpen: boolean;
@@ -789,7 +787,6 @@ interface State {
   /** Follow the active agent's thread while nothing of ours is in flight there; stop any other. */
   watchActive(): void;
   stopWatching(): void;
-  setQuery(q: string): void;
   setPanel(v: PanelView): void;
   openRoutine(id: string): void;
   setPluginsOpen(open: boolean): void;
@@ -830,11 +827,9 @@ interface State {
 
 export const useStore = create<State>((set, get) => ({
   agents: [],
-  sections: [],
   conversations: {},
 
   activeAgentId: "",
-  query: "",
   panel: "none",
   activeRoutineId: null,
   pluginsOpen: false,
@@ -1169,7 +1164,6 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  setQuery: (query) => set({ query }),
   setPanel: (panel) => set({ panel, activeRoutineId: null }),
   openRoutine: (id) => set({ panel: "routine", activeRoutineId: id }),
   setPluginsOpen: (pluginsOpen) => set({ pluginsOpen }),
@@ -1902,7 +1896,15 @@ export const useStore = create<State>((set, get) => ({
               : "Registered, but no URL on file in the control plane.",
           };
         }),
-        activeAgentId: remote[0]?.id ?? get().activeAgentId,
+        // Stay where the person is. This used to be `remote[0]?.id ?? current`,
+        // which ran on EVERY refresh — including the explicit "Refresh agents"
+        // menu item — and threw you into the first agent in the control plane's
+        // list, out of whatever conversation or room you were reading.
+        activeAgentId: (() => {
+          const current = get().activeAgentId;
+          if (current && (isRoomId(current) || remote.some((r) => r.id === current))) return current;
+          return remote[0]?.id ?? current;
+        })(),
       });
 
       // Choices made on this machine before the account could hold them are

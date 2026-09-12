@@ -16,21 +16,13 @@ export type PaletteScope =
   | "Messages"
   | "Agents"
   | "Groups"
-  | "Files"
-  | "Links"
   | "Routines"
   | "Actions";
 
-const SCOPES: PaletteScope[] = [
-  "All",
-  "Messages",
-  "Agents",
-  "Groups",
-  "Files",
-  "Links",
-  "Routines",
-  "Actions",
-];
+// Every scope here must have something that produces it. "Files" and "Links"
+// never did: they were permanently empty tabs that answered every search with
+// "Nothing matches".
+const SCOPES: PaletteScope[] = ["All", "Messages", "Agents", "Groups", "Routines", "Actions"];
 
 interface Item {
   id: string;
@@ -44,6 +36,7 @@ interface Item {
 export function Palette(): ReactNode {
   const {
     agents,
+    rooms,
     details,
     conversations,
     paletteOpen,
@@ -69,6 +62,20 @@ export function Palette(): ReactNode {
 
   const items = useMemo((): Item[] => {
     const out: Item[] = [];
+
+    for (const r of rooms) {
+      const members = r.memberIds
+        .map((id) => agents.find((a) => a.id === id))
+        .filter((a): a is (typeof agents)[number] => Boolean(a));
+      out.push({
+        id: `room:${r.id}`,
+        title: r.name ?? members.map((m) => m.name).join(", "),
+        subtitle: `${members.length} member${members.length === 1 ? "" : "s"}`,
+        scope: "Groups",
+        icon: <Icon name="users" size={16} />,
+        run: () => select(r.id),
+      });
+    }
 
     for (const a of agents.filter((x) => !x.hidden)) {
       out.push({
@@ -126,7 +133,8 @@ export function Palette(): ReactNode {
       run,
     });
     out.push(action("Chat Settings", "Current chat", () => setPanel("settings")));
-    out.push(action("Settings: Channels", "Current agent", () => setPanel("channels")));
+    // Channels are a section of Overview; "channels" opened Settings, which has none.
+    out.push(action("Channels", "Current agent", () => setPanel("overview")));
     out.push(action("Plugins", "Marketplace", () => setPluginsOpen(true), "plug"));
     out.push(action("Agent panel", "Show or hide", () => setPanel("overview"), "monitor"));
 

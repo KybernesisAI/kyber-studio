@@ -197,7 +197,7 @@ function ConnectorDetail({
   return (
     <div className="cd">
       <button className="cd__back" onClick={onBack}>
-        <Icon name="chevron-left" size={14} /> All apps
+        <Icon name="chevronLeft" size={14} /> All apps
       </button>
 
       <div className="cd__head">
@@ -1051,9 +1051,6 @@ export function Plugins(): ReactNode {
             Yours
           </button>
           <div style={{ flex: 1 }} />
-          <button className="topbar__btn" title="Filter">
-            <Icon name="filter" />
-          </button>
           <label className="search" style={{ width: 240 }}>
             <Icon name="search" size={14} />
             <input

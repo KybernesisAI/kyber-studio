@@ -166,7 +166,14 @@ export async function replaySession(input: {
      * made every agent-to-agent call time out against a long-lived host. The
      * cursor is ours to advance and ours to stop.
      */
-    const expected = tail < 0 ? 0 : Math.min(limit, tail + 1);
+    // With no tail header there is nothing to count towards, so fall back to the
+    // caller's cap. On its own that is still not enough — a session with fewer
+    // events than the cap would never reach it — so the read below also stops
+    // when the stream goes quiet. Before both, a missing header (an older eve,
+    // or a proxy that strips it) meant this loop could never break: it followed
+    // the live session until the 60s abort, and the person who clicked a
+    // conversation waited a full minute for an empty transcript.
+    const expected = tail < 0 ? limit : Math.min(limit, tail + 1);
 
     // Collect the raw lines, then parse once. The transport concern here is
     // knowing when to stop; what the events MEAN is blocksFromEvents' job, and
@@ -176,8 +183,22 @@ export async function replaySession(input: {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    /** Quiet for this long means caught up: the stream follows a live session and never ends on its own. */
+    const CAUGHT_UP_MS = 1_500;
     for (;;) {
-      const { done, value } = await reader.read();
+      let idle: ReturnType<typeof setTimeout> | undefined;
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<"idle">((r) => {
+          idle = setTimeout(() => r("idle"), CAUGHT_UP_MS);
+        }),
+      ]);
+      clearTimeout(idle);
+      if (chunk === "idle") {
+        await reader.cancel().catch(() => {});
+        break;
+      }
+      const { done, value } = chunk;
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       const parts = buffer.split("\n");

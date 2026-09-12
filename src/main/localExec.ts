@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { hostname, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { app, type WebContents } from "electron";
-import { ISSUER, activeSession, currentSession, deviceId } from "./controlPlane";
+import { ISSUER, activeSession, deviceId } from "./controlPlane";
 
 /**
  * Local execution: the desktop half.
@@ -120,11 +120,16 @@ export function setServerPermission(serverId: string, value: LocalPermission): v
 
 interface PendingAsk {
   resolve(decision: { allow: boolean; remember: boolean }): void;
+  /** Cleared when the person answers, so it cannot outlive its own card. */
+  timer: ReturnType<typeof setTimeout>;
 }
 const asks = new Map<string, PendingAsk>();
 
 export function answerAsk(id: string, allow: boolean, remember: boolean): void {
-  asks.get(id)?.resolve({ allow, remember });
+  const ask = asks.get(id);
+  if (!ask) return;
+  clearTimeout(ask.timer);
+  ask.resolve({ allow, remember });
   asks.delete(id);
 }
 
@@ -152,15 +157,17 @@ async function authorize(
   });
 
   const decision = await new Promise<{ allow: boolean; remember: boolean }>((res) => {
-    asks.set(request.id, { resolve: res });
     // An unanswered card must not hold the agent forever. Two minutes matches
     // the relay's own patience, after which it reports a timeout the user can act on.
-    setTimeout(() => {
+    // The timer is kept on the entry and cleared when answered: left running, it
+    // outlived its own card and could auto-deny a LATER ask that reused the id.
+    const timer = setTimeout(() => {
       if (asks.has(request.id)) {
         asks.delete(request.id);
         res({ allow: false, remember: false });
       }
     }, 120_000);
+    asks.set(request.id, { resolve: res, timer });
   });
 
   // Remembered against whatever was actually asked about.
