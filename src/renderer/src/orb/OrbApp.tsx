@@ -250,6 +250,39 @@ export function OrbApp(): React.ReactElement {
     setStatus(mutedRef.current ? "muted" : "listening");
   }, []);
 
+  /**
+   * Grab the orb to move the window; a press that doesn't move is a mute toggle.
+   * We drive the move in JS (screen-space deltas → main) rather than a CSS drag
+   * region, because a drag region swallows the click and you lose mute-on-tap.
+   */
+  const onOrbMouseDown = useCallback(
+    (e: React.MouseEvent): void => {
+      if (e.button !== 0) return;
+      const startX = e.screenX;
+      const startY = e.screenY;
+      let lastX = startX;
+      let lastY = startY;
+      let moved = false;
+      const onMove = (ev: MouseEvent): void => {
+        const dx = ev.screenX - lastX;
+        const dy = ev.screenY - lastY;
+        lastX = ev.screenX;
+        lastY = ev.screenY;
+        if (dx || dy) window.studio.moveOrb({ dx, dy });
+        if (Math.hypot(ev.screenX - startX, ev.screenY - startY) > 4) moved = true;
+      };
+      const onUp = (): void => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        // A tap with no drag toggles mute; a drag just moved the window.
+        if (!moved) toggleMute();
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [toggleMute],
+  );
+
   const end = useCallback((): void => {
     teardown();
     void window.studio.closeOrb();
@@ -274,11 +307,11 @@ export function OrbApp(): React.ReactElement {
   }, [connect, end, teardown]);
 
   return (
-    <div className="orb-window">
-      <button className="orb-close" title="End (Esc)" onClick={end}>
+    <div className="orb-window" onMouseDown={onOrbMouseDown}>
+      <button className="orb-close" title="End (Esc)" onMouseDown={(e) => e.stopPropagation()} onClick={end}>
         ×
       </button>
-      <SiriOrb state={state} size="sm" audioLevel={level} onClick={toggleMute} />
+      <SiriOrb state={state} size="sm" audioLevel={level} />
       <div className="orb-status">{status}</div>
     </div>
   );

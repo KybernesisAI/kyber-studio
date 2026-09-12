@@ -10,13 +10,7 @@
   gap: 10px;
   background: transparent;
   user-select: none;
-  -webkit-app-region: drag;
-}
-
-.siri-orb-wrapper,
-.orb-close,
-.orb-status {
-  -webkit-app-region: no-drag;
+  cursor: grab;
 }
 
 .orb-close {

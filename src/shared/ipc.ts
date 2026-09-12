@@ -367,12 +367,16 @@ export interface StudioApi {
   // --- Realtime voice ("orb") ---
   /** Open the floating voice orb, bound to this agent + its live session. */
   openOrb(input: VoiceContext): Promise<void>;
+  /** Toggle the orb from the composer: open when closed, close when open. */
+  toggleOrb(input: VoiceContext): Promise<boolean>;
   /** Close the floating voice orb. */
   closeOrb(): Promise<void>;
   /** Complete the Live WebRTC handshake via the agent's own voice route: offer in, answer out. */
   voiceConnect(input: { sdp: string }): Promise<{ sdp: string }>;
   /** Whether an agent is voice-capable (@kybernesis/voice mounted); null if not. */
   voiceManifest(url: string): Promise<{ enabled: boolean; voice?: string; displayName?: string } | null>;
+  /** Move the floating orb window by a screen-space delta (drag-the-orb). */
+  moveOrb(delta: { dx: number; dy: number }): void;
   /** Which agent/session the orb is bridged to. */
   voiceContext(): Promise<VoiceContext | null>;
   /** The orb's one tool: run a turn on the bound agent session, get its reply. */
