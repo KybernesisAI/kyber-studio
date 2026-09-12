@@ -275,31 +275,6 @@ function AuthorizationCard({
   );
 }
 
-function ConnectionCard({ block }: { block: Extract<Block, { kind: "connection" }> }): ReactNode {
-  return (
-    <div className="conn">
-      <div className="conn__head">
-        <div className="conn__icon">{block.icon ?? "🔌"}</div>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div className="conn__name">{block.name}</div>
-          <div className="conn__desc">{block.description}</div>
-          <div className="conn__tools">{block.toolCount} tools</div>
-        </div>
-      </div>
-      <div className="conn__accounts">
-        {block.accounts.map((a) => (
-          <button className="chip" key={a.id}>
-            {a.label}
-            <Icon name={a.connected ? "check" : "plus"} size={12} />
-          </button>
-        ))}
-        <button className="chip chip--ghost">
-          <Icon name="plus" size={12} /> Add another account
-        </button>
-      </div>
-    </div>
-  );
-}
 
 export function Conversation(): ReactNode {
   const {
@@ -488,7 +463,7 @@ export function Conversation(): ReactNode {
         .map((k) => ({ id: `skill:${k.name}`, title: k.name, detail: k.description, type: "Skill" }));
       const actions: Suggestion[] = [
         { id: "act:settings", title: "Chat Settings", detail: "Current chat", type: "Action" },
-        { id: "act:channels", title: "Settings: Channels", detail: "Current agent", type: "Action" },
+        { id: "act:channels", title: "Channels", detail: "Current agent", type: "Action" },
         { id: "act:plugins", title: "Plugins", detail: "Marketplace", type: "Action" },
       ].filter((a) => match(a.title)) as Suggestion[];
       return [...fromSkills, ...actions].slice(0, 8);
@@ -565,7 +540,7 @@ export function Conversation(): ReactNode {
       setDraft(composerDom.serialize(el));
       setCaretTrigger(null);
       if (s.id === "act:plugins") setPluginsOpen(true);
-      else if (s.id === "act:channels") setPanel("channels");
+      else if (s.id === "act:channels") setPanel("overview");
       else setPanel("settings");
       return;
     }
@@ -798,7 +773,6 @@ export function Conversation(): ReactNode {
               return (
                 <PeerActivity key={b.id} events={b.events} agentId={activeAgentId} blockId={b.id} />
               );
-            if (b.kind === "connection") return <ConnectionCard key={b.id} block={b} />;
             if (b.kind === "authorization") return <AuthorizationCard key={b.id} block={b} />;
             if (b.kind === "question")
               return (

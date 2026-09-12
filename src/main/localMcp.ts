@@ -231,6 +231,14 @@ function handshake(state: Running, name: string): Promise<void> {
       );
       await send(state, name, "notifications/initialized", undefined, 5_000, true);
     })();
+    // A rejected handshake must not be cached. The process can outlive a failed
+    // initialize (a cold npx, a server waiting on an OAuth prompt), and a stuck
+    // promise made every later call — including the user pressing Test — fail
+    // instantly with "did not answer in time" until Studio was restarted.
+    state.ready = state.ready.catch((error: unknown) => {
+      if (state.ready) state.ready = undefined;
+      throw error;
+    });
   }
   return state.ready;
 }

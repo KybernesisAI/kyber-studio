@@ -36,7 +36,6 @@ const studio: StudioApi = {
   pickFolder: () => ipcRenderer.invoke("studio:pickFolder"),
   manage: (input) => ipcRenderer.invoke("studio:manage", input),
   setLocalPermission: (input) => ipcRenderer.invoke("studio:setLocalPermission", input),
-  openOrb: (input) => ipcRenderer.invoke("studio:openOrb", input),
   toggleOrb: (input) => ipcRenderer.invoke("studio:toggleOrb", input),
   closeOrb: () => ipcRenderer.invoke("studio:closeOrb"),
   voiceConnect: (input) => ipcRenderer.invoke("studio:voiceConnect", input),

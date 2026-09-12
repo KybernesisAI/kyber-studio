@@ -43,7 +43,6 @@ export interface Agent {
   pinned?: boolean;
   /** Spoken voice for this agent's voice orb (OpenAI Live voice name). */
   voice?: string;
-  sectionId?: string | null;
   hidden?: boolean;
   unread?: boolean;
   notifications?: boolean;
@@ -51,12 +50,6 @@ export interface Agent {
   status?: "online" | "offline" | "unknown";
   lastMessageAt?: number;
   lastMessagePreview?: string;
-}
-
-export interface Section {
-  id: string;
-  name: string;
-  collapsed?: boolean;
 }
 
 export type MessageRole = "user" | "agent";
@@ -108,17 +101,6 @@ export type Block =
        * disagreed with each other.
        */
       speaker?: { id: string; name: string; accent: string };
-    }
-  | {
-      kind: "connection";
-      id: string;
-      at: number;
-      /** e.g. "Gmail" */
-      name: string;
-      description: string;
-      toolCount: number;
-      icon?: string;
-      accounts: { id: string; label: string; connected: boolean }[];
     }
   | { kind: "peer-activity"; id: string; at: number; events: PeerEvent[] }
   | {
@@ -228,34 +210,6 @@ export interface Plugin {
   added?: boolean;
 }
 
-/**
- * A surface the agent can be reached on, besides Studio itself.
- *
- * Studio manages these rather than merely listing them: a customer adding Slack
- * to their agent should do it here. `configured` reflects what the agent's
- * deployment actually reports, never what we hope is true — an unconfigured
- * channel that renders as connected is worse than one that renders as missing.
- */
-export interface Channel {
-  id: string;
-  kind: "slack" | "imessage" | "telegram" | "discord" | "sms" | "http";
-  label: string;
-  description: string;
-  icon: string;
-  configured: boolean;
-  /** Short status line, e.g. "@kybernesis · 3 channels" or "needs a bot token". */
-  detail?: string;
-}
-
-/** An external system the agent can read and write. */
-export interface Connection {
-  id: string;
-  name: string;
-  description: string;
-  icon: string;
-  toolCount?: number;
-  accounts: { id: string; label: string; connected: boolean }[];
-}
 
 /**
  * A capability the agent can be told to run, offered by the composer's `/` menu.

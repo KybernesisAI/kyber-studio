@@ -59,5 +59,22 @@ export function UpdateRow(): ReactNode {
     );
   }
 
+  // A failed download used to make this row simply disappear, which reads as
+  // "the update finished" — the error was pushed from main and rendered nowhere.
+  // Clicking retries, which is also the only manual check the app has.
+  if (state.status === "error") {
+    return (
+      <button
+        className="foot-row"
+        title={state.error ?? "The update could not be downloaded."}
+        onClick={() => void window.studio?.updaterCheck()}
+      >
+        <Icon name="alert" size={15} />
+        <span className="foot-row__label">Update failed</span>
+        <span className="foot-row__note">Retry</span>
+      </button>
+    );
+  }
+
   return null;
 }

@@ -9,6 +9,8 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }): Reac
     chevronRight: <path d="M6 3l5 5-5 5" />,
     chevronLeft: <path d="M10 3L5 8l5 5" />,
     close: <path d="M4 4l8 8M12 4l-8 8" />,
+    users: <><circle cx="6" cy="6.5" r="2.4" /><path d="M2 13c0-2.2 1.8-3.6 4-3.6s4 1.4 4 3.6" /><path d="M11 4.6a2.4 2.4 0 010 4.3M12 13c0-1.9-.9-3.1-2.2-3.5" /></>,
+    lock: <><rect x="3.5" y="7" width="9" height="6" rx="1.5" /><path d="M5.75 7V5.25a2.25 2.25 0 014.5 0V7" /></>,
     monitor: <><rect x="2" y="3" width="12" height="9" rx="1.5" /><path d="M6 14h4" /></>,
     // What the control actually does: opens a panel down the right-hand side.
     // A monitor suggested "this computer", which is a different feature here
@@ -22,6 +24,7 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }): Reac
     bell: <><path d="M4.5 6.5a3.5 3.5 0 017 0c0 3 1 4 1 4h-9s1-1 1-4z" /><path d="M6.8 13a1.4 1.4 0 002.4 0" /></>,
     pencil: <><path d="M11.5 2.5l2 2L6 12l-3 1 1-3z" /></>,
     copy: <><rect x="5" y="5" width="8" height="8" rx="1.5" /><path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5" /></>,
+    eye: <><path d="M2 8s2.4-4 6-4 6 4 6 4-2.4 4-6 4-6-4-6-4z" /><circle cx="8" cy="8" r="1.8" /></>,
     eyeOff: <><path d="M2 8s2.4-4 6-4c1 0 1.9.3 2.7.8M14 8s-2.4 4-6 4c-1 0-1.9-.3-2.7-.8" /><path d="M2 2l12 12" /></>,
     trash: <><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.2h5.8l.6-8.2" /></>,
     mic: <><rect x="6" y="2" width="4" height="7" rx="2" /><path d="M4 8a4 4 0 008 0M8 12v2" /></>,

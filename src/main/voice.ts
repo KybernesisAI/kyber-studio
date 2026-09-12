@@ -13,7 +13,7 @@
  */
 
 import { join } from "node:path";
-import { BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, shell } from "electron";
 import { is } from "@electron-toolkit/utils";
 import { sendTurn, voiceSession } from "./controlPlane";
 
@@ -67,7 +67,10 @@ export async function voiceAsk(input: {
     onQuestion: (q) => forward(`asked: ${q.prompt}`),
     onAuthorization: (a) => forward(`sign-in needed: ${a.name}`),
   });
-  if (result.sessionId) orbContext = { ...orbContext, sessionId: result.sessionId };
+  // Guard the context still existing: a turn can outlast the orb, and spreading
+  // a null context produced a truthy object with no agentUrl, which slipped past
+  // the "No active voice session." check and failed later as a raw TypeError.
+  if (result.sessionId && orbContext) orbContext = { ...orbContext, sessionId: result.sessionId };
   console.log(`[orb] voiceAsk ← reply ${result.reply.length} chars, askedQuestion=${result.askedQuestion}`);
   return {
     reply: result.askedQuestion
@@ -99,7 +102,6 @@ export function openOrbWindow(context: VoiceContext): void {
   // behind the watch and it never started (150s timeout).
   orbContext = { ...context, sessionId: undefined };
   if (orbWindow && !orbWindow.isDestroyed()) {
-    orbWindow.webContents.send("studio:voice-context", orbContext);
     orbWindow.show();
     orbWindow.focus();
     return;
@@ -123,6 +125,12 @@ export function openOrbWindow(context: VoiceContext): void {
   });
   orbWindow.setAlwaysOnTop(true, "floating");
   orbWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // setVisibleOnAllWorkspaces turns this into an ACCESSORY app on macOS: the
+  // Dock icon and the menu bar vanish, and the main window can never be focused
+  // again — quitting and relaunching was the only way back. Showing the dock
+  // puts the activation policy back to regular, and the window keeps its
+  // all-spaces, over-fullscreen behaviour (both verified together).
+  if (process.platform === "darwin") app.dock?.show().catch(() => undefined);
 
   orbWindow.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
@@ -132,7 +140,14 @@ export function openOrbWindow(context: VoiceContext): void {
     if (message.startsWith("[")) console.log(`[orb] ${message}`);
   });
   orbWindow.on("ready-to-show", () => orbWindow?.show());
+  // Only clear state if the window that closed is still the current one.
+  // close() is async: closing and reopening quickly (a double tap on the
+  // composer button) let the OLD window's closed event fire after the NEW one
+  // was created, blanking its context — the new orb then failed to connect and
+  // the next toggle opened a third, undismissable window.
+  const mine = orbWindow;
   orbWindow.on("closed", () => {
+    if (orbWindow !== mine) return;
     orbWindow = null;
     orbContext = null;
   });

@@ -107,7 +107,10 @@ export interface AgentProfile {
   updatedAt: string;
 }
 
-export type LocalAction = "run-command" | "read-file" | "write-file" | "list-directory";
+// Must match LOCAL_ACTIONS in main/localExec.ts, which is the enforcement side.
+// "local-mcp" was missing here, so the renderer's type claimed an action it can
+// actually receive was impossible — a lie directly under a permission boundary.
+export type LocalAction = "run-command" | "read-file" | "write-file" | "list-directory" | "local-mcp";
 export type LocalPermission = "always" | "ask" | "never";
 
 /** One pending request for something on this machine, awaiting the user. */
@@ -365,8 +368,6 @@ export interface StudioApi {
   }): Promise<Record<LocalAction, LocalPermission>>;
 
   // --- Realtime voice ("orb") ---
-  /** Open the floating voice orb, bound to this agent + its live session. */
-  openOrb(input: VoiceContext): Promise<void>;
   /** Toggle the orb from the composer: open when closed, close when open. */
   toggleOrb(input: VoiceContext): Promise<boolean>;
   /** Close the floating voice orb. */

@@ -763,9 +763,12 @@ export function Panel(): ReactNode {
   if (shown === "none") return null;
   return (
     <aside className={`panel${closing ? " panel--closing" : ""}`}>
-      {panel === "overview" ? <Overview /> : null}
-      {panel === "routine" ? <RoutineView /> : null}
-      {panel === "settings" || panel === "channels" ? <Settings /> : null}
+      {/* Gated on `shown`, not `panel`: `panel` is already "none" while the
+          drawer animates out, so gating on it blanked the contents instantly
+          and slid an empty box off screen — defeating the very hold above. */}
+      {shown === "overview" ? <Overview /> : null}
+      {shown === "routine" ? <RoutineView /> : null}
+      {shown === "settings" ? <Settings /> : null}
     </aside>
   );
 }

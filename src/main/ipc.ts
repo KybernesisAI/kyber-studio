@@ -1,7 +1,7 @@
 import { BrowserWindow, Notification, ipcMain, shell, type WebContents } from "electron";
 import type { Attachment } from "../shared/ipc";
 import type { VoiceContext } from "../shared/ipc";
-import { closeOrbWindow, createLiveSession, moveOrbWindow, openOrbWindow, toggleOrbWindow, voiceAsk, voiceContext } from "./voice";
+import { closeOrbWindow, createLiveSession, moveOrbWindow, toggleOrbWindow, voiceAsk, voiceContext } from "./voice";
 import { loadState, pickFolder, saveState } from "./store";
 import { dictationAvailable, transcribe } from "./dictation";
 import {
@@ -226,6 +226,19 @@ export function registerIpc(): void {
       const send = (channel: string, payload: unknown): void => {
         if (!sender.isDestroyed() && !ctrl.signal.aborted) sender.send(channel, payload);
       };
+      // A watcher outlives its page unless something ends it. The renderer only
+      // sends unwatch when it switches agent — never when the window closes or
+      // the page reloads — and stream ids are minted fresh per watch, so the old
+      // one can never be displaced by a re-watch. Left alone, `follow: true`
+      // reconnects to the agent forever with nobody listening. Tie it to the
+      // page that asked for it.
+      const drop = (): void => {
+        if (watchers.get(input.streamId) === ctrl) watchers.delete(input.streamId);
+        ctrl.abort();
+      };
+      sender.once("destroyed", drop);
+      sender.once("did-start-loading", drop);
+
       void watchSession({
         url: input.url,
         sessionId: input.sessionId,
@@ -246,6 +259,11 @@ export function registerIpc(): void {
         })
         .finally(() => {
           if (watchers.get(input.streamId) === ctrl) watchers.delete(input.streamId);
+          // The stream is over on its own terms; stop holding listeners on the page.
+          if (!sender.isDestroyed()) {
+            sender.off("destroyed", drop);
+            sender.off("did-start-loading", drop);
+          }
         });
     },
   );
@@ -344,7 +362,6 @@ export function registerIpc(): void {
     },
   );
 
-  ipcMain.handle("studio:openOrb", (_e, input: VoiceContext) => openOrbWindow(input));
   ipcMain.handle("studio:toggleOrb", (_e, input: VoiceContext) => toggleOrbWindow(input));
   ipcMain.handle("studio:closeOrb", () => closeOrbWindow());
   ipcMain.handle("studio:voiceConnect", (_e, input: { sdp: string }) => createLiveSession(input));

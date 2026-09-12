@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { BrowserWindow, app, safeStorage, shell } from "electron";
 import { electronApp, is, optimizer } from "@electron-toolkit/utils";
 import { registerIpc } from "./ipc";
-import { setLocalExecWindow, startLocalExec } from "./localExec";
+import { setLocalExecWindow, startLocalExec, stopLocalExec } from "./localExec";
 import { createCredentialStorageReporter } from "./credentialStorage";
 
 /**
@@ -24,6 +24,14 @@ const reportCredentialStorage = createCredentialStorageReporter(safeStorage);
  * lights over the sidebar, matching the reference app. Studio is a chat client,
  * so the window furniture should disappear behind the conversation.
  */
+/**
+ * The main window, tracked so things that must reach the PERSON — updater
+ * progress, for one — never address the orb by accident. getAllWindows()[0] is
+ * not the main window: close the main window on macOS with the orb floating and
+ * the orb becomes index 0, which silently sent the update UI nowhere.
+ */
+let mainWindow: BrowserWindow | null = null;
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1180,
@@ -42,6 +50,10 @@ function createWindow(): void {
       preload: join(__dirname, "../preload/index.mjs"),
       sandbox: false,
     },
+  });
+  mainWindow = win;
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
   });
   // The renderer's console, in the same log as main's: a live-thread event that
   // reaches preload and dies in the store is invisible otherwise.
@@ -84,7 +96,7 @@ void app.whenReady().then(() => {
   registerIpc();
   // The updater needs a live window to report progress to, and windows come and
   // go on macOS — so it takes a getter rather than an instance.
-  registerUpdater(() => BrowserWindow.getAllWindows()[0] ?? null);
+  registerUpdater(() => mainWindow);
   startLocalExec();
   app.on("browser-window-created", (_, window) => optimizer.watchWindowShortcuts(window));
   createWindow();
@@ -104,4 +116,10 @@ app.on("window-all-closed", () => {
 // watcher, a port. None of them should outlive the app that started them, and
 // an orphaned server is the kind of thing a user finds in Activity Monitor a
 // week later and never trusts again.
-app.on("will-quit", () => stopAll());
+app.on("will-quit", () => {
+  // Stop the local-execution poller alongside the MCP servers: it was written
+  // for exactly this and never wired up, so it kept polling the relay through
+  // teardown.
+  stopLocalExec();
+  stopAll();
+});

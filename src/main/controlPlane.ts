@@ -249,7 +249,12 @@ async function refreshSession(): Promise<Session | null> {
       const claims = readClaims(body.token);
       const next: Session = {
         token: body.token,
-        bundle: typeof body.bundle === "string" ? body.bundle : undefined,
+        // Carried forward like every sibling below. Dropping it on a response
+        // that omits it left a session with no bundle at all — and since
+        // bundleExpiry(undefined) is +Infinity, that session then looks healthy
+        // forever while every agent call fails on "no policy bundle", which
+        // only a manual sign-out could clear.
+        bundle: typeof body.bundle === "string" ? body.bundle : current.bundle,
         refreshToken:
           typeof body.refresh_token === "string" ? body.refresh_token : current.refreshToken,
         expiresAt: claims.exp ? claims.exp * 1000 : Date.now() + 3_600_000,
@@ -303,7 +308,9 @@ export async function activeSession(): Promise<Session | null> {
   // Refresh failed. Handing back an expired token would only produce 401s that
   // read as a broken agent, so that is a real sign-out; a token with life left
   // is still usable and the refresh can be retried on the next call.
-  return current && current.expiresAt > Date.now() + 30_000 ? current : null;
+  return current && Math.min(current.expiresAt, bundleExpiry(current.bundle)) > Date.now() + 30_000
+    ? current
+    : null;
 }
 
 export function signOut(): void {
@@ -1030,6 +1037,15 @@ export async function sendTurn(input: {
         // transcript is ours and stays on screen; only the agent's thread
         // restarts, which is what Reset does and does not need to be asked for.
         console.log(`[send] session cannot continue (${error.status}); starting a fresh one`);
+        // A fresh session has no question in it to answer. Re-dispatching answers
+        // into one falls through to sessions.create() with the EMPTY message the
+        // answer rode in on — posting a blank turn and silently discarding what
+        // the person chose. Say so instead.
+        if (input.inputResponses?.length && !input.text.trim()) {
+          throw new Error(
+            "That question belonged to a conversation the agent has since restarted, so it can no longer be answered. Send what you wanted to say as a new message.",
+          );
+        }
         session = null;
         response = await dispatch();
       } else {

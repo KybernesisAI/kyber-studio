@@ -85,7 +85,6 @@ export function blocksFromEvents(lines: string[], limit = Number.POSITIVE_INFINI
       if (!text || seen.has(id)) continue;
       seen.add(id);
       blocks.push({ role: "user", text, at, eventId: id });
-    } else if (event.type === "session.waiting") {
     }
   }
   return { blocks, consumed };
