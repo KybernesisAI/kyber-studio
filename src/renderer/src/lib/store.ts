@@ -1618,11 +1618,15 @@ export const useStore = create<State>((set, get) => ({
     }));
     get().persist();
 
-    // The picture, the name, the colour and the arrangement are the account's,
-    // not this machine's: the phone draws the same list. Sent as a patch — absent
-    // leaves a field alone, null clears it — so changing one never clobbers
-    // another chosen elsewhere.
-    if ("name" in patch || "accent" in patch || "avatar" in patch || "pinned" in patch || "hidden" in patch) {
+    // The picture, the name, the colour, the arrangement and the voice are the
+    // account's, not this machine's: the phone draws the same list and speaks in
+    // the same voice. Sent as a patch — absent leaves a field alone, null clears
+    // it — so changing one never clobbers another chosen elsewhere.
+    //
+    // Every field sent below must also appear in this condition. "voice" was
+    // added to the payload but not to the gate, so a voice-only change never
+    // entered this block and never left the Mac at all.
+    if ("name" in patch || "accent" in patch || "avatar" in patch || "pinned" in patch || "hidden" in patch || "voice" in patch) {
       const agent = get().agents.find((a) => a.id === id);
       if (agent) {
         void window.studio?.saveAgentProfile({
@@ -1912,16 +1916,26 @@ export const useStore = create<State>((set, get) => ({
       // carried up once, so a picture chosen last month is on the phone today.
       for (const r of remote) {
         const chosen = get().prefs[r.id] ?? {};
-        if (r.profile || !(chosen.avatar || chosen.name || chosen.accent || chosen.pinned != null || chosen.hidden != null)) continue;
-        void window.studio.saveAgentProfile({
-          agent: r.name,
-          ...(chosen.name ? { displayName: chosen.name } : {}),
-          ...(chosen.accent ? { accent: chosen.accent } : {}),
-          ...(chosen.avatar ? { avatar: chosen.avatar } : {}),
-          ...(chosen.pinned != null ? { pinned: chosen.pinned } : {}),
-          ...(chosen.hidden != null ? { hidden: chosen.hidden } : {}),
-          ...(chosen.voice ? { voice: chosen.voice } : {}),
-        });
+        const carry: Parameters<NonNullable<typeof window.studio>["saveAgentProfile"]>[0] = { agent: r.name };
+        let send = false;
+
+        // An agent with no profile at all is seeded from this machine.
+        if (!r.profile) {
+          if (chosen.name) { carry.displayName = chosen.name; send = true; }
+          if (chosen.accent) { carry.accent = chosen.accent; send = true; }
+          if (chosen.avatar) { carry.avatar = chosen.avatar; send = true; }
+          if (chosen.pinned != null) { carry.pinned = chosen.pinned; send = true; }
+          if (chosen.hidden != null) { carry.hidden = chosen.hidden; send = true; }
+        }
+
+        // Voice is newer than the profile itself, so an agent that already HAS a
+        // profile can still be missing it — which is every agent, since names and
+        // pictures synced long ago. Gating the whole carry-up on "no profile yet"
+        // meant a voice chosen on this Mac could never reach the account, and the
+        // phone went on speaking in the default.
+        if (!r.profile?.voice && chosen.voice) { carry.voice = chosen.voice; send = true; }
+
+        if (send) void window.studio.saveAgentProfile(carry);
       }
 
       // Rooms need the agent list to map names to ids, so they come after it.
