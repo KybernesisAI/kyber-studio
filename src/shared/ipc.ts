@@ -104,6 +104,8 @@ export interface AgentProfile {
   /** Where it sits in the person's list. Null means never chosen. */
   pinned?: boolean | null;
   hidden?: boolean | null;
+  /** Spoken voice for the orb (an OpenAI Live voice name), chosen per agent. */
+  voice?: string | null;
   updatedAt: string;
 }
 
@@ -175,7 +177,7 @@ export interface StudioApi {
   /** Create or update a room on the account; `archived` hides it. */
   saveRoom(input: { id: string; name?: string | null; members?: string[]; policy?: "all" | "lead" | "silent"; pinned?: boolean | null; archived?: boolean }): Promise<void>;
   /** Save how this person shows an agent, for every device they sign in to. Absent leaves a field alone; null clears it. */
-  saveAgentProfile(input: { agent: string; displayName?: string | null; accent?: string | null; avatar?: string | null; pinned?: boolean | null; hidden?: boolean | null }): Promise<void>;
+  saveAgentProfile(input: { agent: string; displayName?: string | null; accent?: string | null; avatar?: string | null; pinned?: boolean | null; hidden?: boolean | null; voice?: string | null }): Promise<void>;
   send(input: {
     url: string;
     text: string;

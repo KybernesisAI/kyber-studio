@@ -414,6 +414,7 @@ export async function saveAgentProfile(input: {
   avatar?: string | null;
   pinned?: boolean | null;
   hidden?: boolean | null;
+  voice?: string | null;
 }): Promise<void> {
   const s = await activeSession();
   if (!s) return;
