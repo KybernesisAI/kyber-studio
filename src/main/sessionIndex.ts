@@ -1,4 +1,4 @@
-import { activeSession, authHeaders, ISSUER } from "./controlPlane";
+import { activeSession, authHeaders, issuer } from "./controlPlane";
 import {
   blocksFromEvents,
   type Replayed,
@@ -54,7 +54,7 @@ export async function listSessions(agent?: string): Promise<IndexedSession[]> {
   }
   console.log(`[index] listing threads${agent ? ` for ${agent}` : ""} …`);
   try {
-    const url = new URL(`${ISSUER}/api/sessions`);
+    const url = new URL(`${issuer()}/api/sessions`);
     if (agent) url.searchParams.set("agent", agent);
     const res = await fetch(url, {
       headers: authHeaders(s),
@@ -92,7 +92,7 @@ export async function recordSession(entry: {
     return;
   }
   try {
-    const res = await fetch(`${ISSUER}/api/sessions`, {
+    const res = await fetch(`${issuer()}/api/sessions`, {
       method: "POST",
       headers: authHeaders(s, { json: true }),
       body: JSON.stringify(entry),

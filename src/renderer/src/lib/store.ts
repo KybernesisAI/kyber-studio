@@ -825,6 +825,50 @@ interface State {
   signOut(): Promise<void>;
 }
 
+/**
+ * Re-read what an agent says about itself, shortly after a turn.
+ *
+ * An agent can change ITSELF during a conversation — "make me a routine that
+ * does X" writes the routine and @kybernesis/manage restarts the agent about
+ * twenty seconds later. The new routine only reaches /eve/v1/info once that
+ * rebuild lands, so a single refresh when the turn ends always reads the old
+ * manifest and the sidebar stays stale until the person switches agent, signs
+ * out, or restarts the app. That is the bug this exists to end.
+ *
+ * So: look now, then a few times across the restart window, and stop the moment
+ * anything actually changed. Bounded and cheap — at most four small GETs, and
+ * usually one, because most turns change nothing.
+ */
+const infoWatches = new Map<string, ReturnType<typeof setTimeout>[]>();
+
+function fingerprint(info: AgentSummary | undefined): string {
+  if (!info) return "";
+  return JSON.stringify([
+    info.schedules?.map((x) => x.name).sort(),
+    info.channels?.map((x) => x.name).sort(),
+    info.skills?.map((x) => x.name).sort(),
+    info.connections?.map((x) => x.name).sort(),
+    info.tools?.length,
+  ]);
+}
+
+function refreshAgentInfoAcrossRestart(get: () => State, agentId: string): void {
+  for (const t of infoWatches.get(agentId) ?? []) clearTimeout(t);
+  const before = fingerprint(get().details[agentId]);
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const look = async (): Promise<void> => {
+    await get().loadAgentInfo(agentId);
+    if (fingerprint(get().details[agentId]) !== before) {
+      for (const t of infoWatches.get(agentId) ?? []) clearTimeout(t);
+      infoWatches.delete(agentId);
+    }
+  };
+  void look();
+  // Across the restart @kybernesis/manage performs ~20s after a change.
+  for (const delay of [10_000, 25_000, 45_000]) timers.push(setTimeout(() => void look(), delay));
+  infoWatches.set(agentId, timers);
+}
+
 export const useStore = create<State>((set, get) => ({
   agents: [],
   conversations: {},
@@ -1434,6 +1478,9 @@ export const useStore = create<State>((set, get) => ({
         setTimeout(() => streamOwners.delete(streamId), 30_000);
         get().persist();
         flushQueue(get, agentId);
+        // The agent may have just changed itself — a new routine, a channel, a
+        // skill. Notice it without the person having to refresh.
+        refreshAgentInfoAcrossRestart(get, agentId);
       });
   },
 
@@ -1841,6 +1888,9 @@ export const useStore = create<State>((set, get) => ({
 
   refreshAgents: async () => {
     if (!window.studio) return;
+    // Which control plane this actually is. Held as a constant, the account menu
+    // went on naming ours after the app had been pointed somewhere else.
+    void window.studio.controlPlane().then((cp) => set({ issuer: cp.url.replace(/^https?:\/\//, "") }));
     try {
       const remote = await window.studio.listAgents();
       if (remote.length === 0) {

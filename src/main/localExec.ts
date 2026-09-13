@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { hostname, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { app, type WebContents } from "electron";
-import { ISSUER, activeSession, authHeaders, deviceId } from "./controlPlane";
+import { activeSession, authHeaders, deviceId, issuer } from "./controlPlane";
 
 /**
  * Local execution: the desktop half.
@@ -487,7 +487,7 @@ async function post(path: string, body: unknown): Promise<Response | null> {
   const s = await activeSession();
   if (!s) return null;
   try {
-    return await fetch(`${ISSUER}${path}`, {
+    return await fetch(`${issuer()}${path}`, {
       method: "POST",
       headers: authHeaders(s, { json: true }),
       body: JSON.stringify(body),
@@ -533,7 +533,7 @@ export function startLocalExec(): void {
       }
       try {
         const res = await fetch(
-          `${ISSUER}/api/local-exec/requests?deviceId=${encodeURIComponent(id)}`,
+          `${issuer()}/api/local-exec/requests?deviceId=${encodeURIComponent(id)}`,
           {
             headers: authHeaders(s),
             signal: AbortSignal.timeout(60_000),

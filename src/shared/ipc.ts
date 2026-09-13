@@ -369,6 +369,14 @@ export interface StudioApi {
     value: LocalPermission;
   }): Promise<Record<LocalAction, LocalPermission>>;
 
+  /** The control plane this app signs in to, and the default it falls back to. */
+  controlPlane(): Promise<{ url: string; isDefault: boolean; default: string }>;
+  /**
+   * Point the app at a different control plane. Null restores the default.
+   * The session belongs to the old one, so this signs out.
+   */
+  setControlPlane(url: string | null): Promise<{ url: string; isDefault: boolean; default: string }>;
+
   // --- Realtime voice ("orb") ---
   /** Toggle the orb from the composer: open when closed, close when open. */
   toggleOrb(input: VoiceContext): Promise<boolean>;
