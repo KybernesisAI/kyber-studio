@@ -676,7 +676,7 @@ interface State {
       accent?: string;
       /** The picture chosen for this agent, as a data URL. */
       avatar?: string;
-      /** Spoken voice for this agent's voice orb. Local-only, like notifications. */
+      /** Spoken voice for this agent's voice orb. Account-wide, like the picture. */
       voice?: string;
     }
   >;
@@ -1632,6 +1632,7 @@ export const useStore = create<State>((set, get) => ({
           ...("avatar" in patch ? { avatar: patch.avatar ?? null } : {}),
           ...("pinned" in patch ? { pinned: patch.pinned ?? null } : {}),
           ...("hidden" in patch ? { hidden: patch.hidden ?? null } : {}),
+          ...("voice" in patch ? { voice: patch.voice ?? null } : {}),
         });
       }
     }
@@ -1883,7 +1884,7 @@ export const useStore = create<State>((set, get) => ({
             hidden: (profile ? profile.hidden : chosen.hidden) ?? prior?.hidden ?? undefined,
             unread: prior?.unread,
             notifications: chosen.notifications ?? prior?.notifications ?? true,
-            voice: chosen.voice ?? prior?.voice ?? undefined,
+            voice: (profile ? profile.voice : chosen.voice ?? prior?.voice) ?? undefined,
             // "unknown" until something asks the agent itself. Holding an
             // address is not being alive, and calling it "online" here is what
             // made a registration whose machine was long gone look healthy.
@@ -1919,6 +1920,7 @@ export const useStore = create<State>((set, get) => ({
           ...(chosen.avatar ? { avatar: chosen.avatar } : {}),
           ...(chosen.pinned != null ? { pinned: chosen.pinned } : {}),
           ...(chosen.hidden != null ? { hidden: chosen.hidden } : {}),
+          ...(chosen.voice ? { voice: chosen.voice } : {}),
         });
       }
 

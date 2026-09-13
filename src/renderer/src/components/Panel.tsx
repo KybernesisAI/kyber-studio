@@ -768,9 +768,12 @@ function Settings(): ReactNode {
             value={agent.voice ?? "marin"}
             onChange={(e) => patchAgent(agent.id, { voice: e.target.value })}
           >
+            {/* Every voice the Live API accepts, in OpenAI's order of preference;
+                marin and cedar are the two it recommends for quality. There is no
+                endpoint that reports them, so this list is held here and on the phone. */}
             {["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"].map((v) => (
               <option key={v} value={v}>
-                {v}
+                {v === "marin" || v === "cedar" ? `${v} — recommended` : v}
               </option>
             ))}
           </select>
