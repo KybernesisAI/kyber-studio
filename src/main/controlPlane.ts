@@ -615,6 +615,38 @@ async function describeFailure(res: Response, base: string): Promise<Error> {
  *
  * Returns null for events that say nothing about activity.
  */
+/**
+ * The agent changing ITSELF, named while it happens.
+ *
+ * A routine is a file in agent/schedules; a channel is one in agent/channels.
+ * Writing one means @kybernesis/manage restarts the agent about twenty seconds
+ * later to pick it up, and it stops answering while it does. Saying so at the
+ * moment of the write is the difference between "it is restarting, wait a
+ * minute" and "it broke" — and the person asked for the routine, so the wait is
+ * expected rather than alarming.
+ */
+function selfChangeLabel(named: string | null, input: unknown): string | null {
+  if (!named || !/write|edit|create|apply/i.test(named)) return null;
+  const fields = (input ?? {}) as Record<string, unknown>;
+  const raw = [fields.path, fields.file, fields.filePath, fields.target, fields.file_path].find(
+    (v) => typeof v === "string" && v,
+  ) as string | undefined;
+  if (!raw) return null;
+  const path = `/${raw.replace(/^\.?\//, "")}`;
+  const wait = " — it restarts to pick this up, about a minute";
+  // Matching "/agent/" anywhere is too loose: it claims a restart for a write to
+  // something like notes/agent/todo.md. The agent's source is a known set of
+  // directories, so require one of them.
+  if (/\/agent\/schedules\//.test(path)) return `Adding a routine${wait}`;
+  if (/\/agent\/channels\//.test(path)) return `Adding a channel${wait}`;
+  if (/\/agent\/skills\//.test(path)) return `Adding a skill${wait}`;
+  if (/\/agent\/tools\//.test(path)) return `Adding a tool${wait}`;
+  if (/\/agent\/(instructions|hooks|extensions|subagents)\//.test(path) || /^\/agent\/[^/]+$/.test(path)) {
+    return `Changing its own setup${wait}`;
+  }
+  return null;
+}
+
 function activityLabel(
   type: string,
   data: Record<string, unknown>,
@@ -647,6 +679,13 @@ function activityLabel(
     case "reasoning.completed":
       return { label: "Thinking", specific: true };
     case "actions.requested": {
+      // Before anything else: a write into the agent's own source is a restart
+      // the person should be told about while it is happening.
+      const change = selfChangeLabel(named, first?.input);
+      if (change) {
+        if (named) memo.lastTool = named;
+        return { label: change, specific: true };
+      }
       if (named) memo.lastTool = named;
       if (!named) return { label: "Taking an action", specific: true };
       switch (kind) {
