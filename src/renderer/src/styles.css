@@ -638,6 +638,12 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--danger); font-size: var(--fs-sm); text-align: left;
 }
 .signin__issuer { margin-top: 30px; font-size: var(--fs-xs); color: var(--ink-tertiary); font-family: var(--font-mono); }
+.signin__issuer-btn {
+  margin-left: 8px; background: none; border: 0; padding: 0;
+  color: var(--accent-deep); font-size: inherit; text-decoration: underline;
+}
+.signin__issuer--editing { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+.signin__issuer-row { display: flex; gap: 6px; justify-content: center; }
 
 .account-menu {
   margin: 4px 8px 2px; padding: 5px;

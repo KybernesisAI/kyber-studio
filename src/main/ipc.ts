@@ -49,6 +49,9 @@ import {
   testRemoteMcp,
   startDeviceAuth,
   cancelDeviceAuth,
+  DEFAULT_ISSUER,
+  issuer,
+  setIssuer,
 } from "./controlPlane";
 
 /**
@@ -363,6 +366,21 @@ export function registerIpc(): void {
   );
 
   ipcMain.handle("studio:toggleOrb", (_e, input: VoiceContext) => toggleOrbWindow(input));
+  const controlPlaneState = (): { url: string; isDefault: boolean; default: string } => ({
+    url: issuer(),
+    isDefault: issuer() === DEFAULT_ISSUER,
+    default: DEFAULT_ISSUER,
+  });
+  ipcMain.handle("studio:controlPlane", () => controlPlaneState());
+  ipcMain.handle("studio:setControlPlane", async (_e, url: string | null) => {
+    // The identity, its refresh token and every agent grant belong to the
+    // control plane that issued them. Carrying them to another one would only
+    // produce 401s that read as a broken agent, so moving means signing out.
+    signOut();
+    setIssuer(url);
+    return controlPlaneState();
+  });
+
   ipcMain.handle("studio:closeOrb", () => closeOrbWindow());
   ipcMain.handle("studio:voiceConnect", (_e, input: { sdp: string }) => createLiveSession(input));
   ipcMain.handle("studio:voiceManifest", (_e, url: string) => voiceManifest(url));

@@ -26,7 +26,64 @@ import { readPeerEvents, type PeerState } from "./peerEvents";
 
 export type { RemoteAgent, Session };
 
-export const ISSUER = process.env.KYBERNESIS_ISSUER ?? "https://agent.kybernesis.ai";
+/**
+ * The control plane this app signs in to.
+ *
+ * A control plane is portable: a client can run their own, and the agents they
+ * own are pointed at it by KYBERNESIS_ISSUER. Baking the address in at build
+ * time made ours the only one reachable, so this is a setting — held here,
+ * beside the session it authenticates, and read at call time rather than
+ * captured at import.
+ */
+export const DEFAULT_ISSUER = "https://agent.kybernesis.ai";
+
+function issuerPath(): string {
+  return join(app.getPath("userData"), "control-plane.json");
+}
+
+/** Trailing slash off, scheme required: every caller builds `${issuer()}/api/…`. */
+export function normalizeIssuer(raw: string): string | null {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) return null;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const u = new URL(withScheme);
+    if (!u.hostname) return null;
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return null;
+  }
+}
+
+let issuerUrl: string | null = null;
+
+export function issuer(): string {
+  if (issuerUrl) return issuerUrl;
+  try {
+    const held = JSON.parse(readFileSync(issuerPath(), "utf8")) as { url?: unknown };
+    if (typeof held.url === "string" && held.url) issuerUrl = held.url;
+  } catch {
+    /* never chosen, or unreadable: the default stands */
+  }
+  // The environment still wins for a build pinned to one control plane.
+  issuerUrl = issuerUrl ?? process.env.KYBERNESIS_ISSUER ?? DEFAULT_ISSUER;
+  return issuerUrl;
+}
+
+/**
+ * Point this app at a different control plane. The session belongs to the old
+ * one, so it cannot survive the move: callers sign out around this.
+ */
+export function setIssuer(raw: string | null): string {
+  const next = raw === null ? DEFAULT_ISSUER : normalizeIssuer(raw) ?? DEFAULT_ISSUER;
+  issuerUrl = next;
+  try {
+    writeFileSync(issuerPath(), JSON.stringify({ url: next }), "utf8");
+  } catch {
+    /* a control plane that cannot be remembered still works for this run */
+  }
+  return next;
+}
 
 let session: Session | null = null;
 
@@ -139,14 +196,14 @@ export interface DeviceStart {
 }
 
 export async function startDeviceAuth(): Promise<DeviceStart> {
-  const res = await fetch(`${ISSUER}/api/oauth/device`, {
+  const res = await fetch(`${issuer()}/api/oauth/device`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ deviceId: deviceId(), deviceLabel: "KYBER Studio" }),
     signal: AbortSignal.timeout(20_000),
   });
   if (!res.ok) {
-    throw new Error(`Control plane refused the device request (HTTP ${res.status}) at ${ISSUER}.`);
+    throw new Error(`Control plane refused the device request (HTTP ${res.status}) at ${issuer()}.`);
   }
   const body = (await res.json()) as Record<string, unknown>;
   const start: DeviceStart = {
@@ -197,7 +254,7 @@ export async function pollDeviceAuth(start: DeviceStart): Promise<Session> {
       }, { once: true });
     });
     if (abort.signal.aborted) throw new Error(SIGN_IN_CANCELLED);
-    const res = await fetch(`${ISSUER}/api/oauth/token`, {
+    const res = await fetch(`${issuer()}/api/oauth/token`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ device_code: start.deviceCode }),
@@ -255,7 +312,7 @@ async function refreshSession(): Promise<Session | null> {
 
   refreshing = (async () => {
     try {
-      const res = await fetch(`${ISSUER}/api/oauth/refresh`, {
+      const res = await fetch(`${issuer()}/api/oauth/refresh`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ refresh_token: current.refreshToken }),
@@ -355,7 +412,7 @@ export function signOut(): void {
 export async function listAgents(): Promise<RemoteAgent[]> {
   const s = await activeSession();
   if (!s) throw new Error("Not signed in.");
-  const res = await fetch(`${ISSUER}/api/me/agents`, {
+  const res = await fetch(`${issuer()}/api/me/agents`, {
     headers: authHeaders(s),
     signal: AbortSignal.timeout(20_000),
   });
@@ -369,7 +426,7 @@ export async function listRooms(): Promise<RemoteRoom[]> {
   const s = await activeSession();
   if (!s) return [];
   try {
-    const res = await fetch(`${ISSUER}/api/rooms`, {
+    const res = await fetch(`${issuer()}/api/rooms`, {
       headers: authHeaders(s),
       signal: AbortSignal.timeout(15_000),
     });
@@ -392,7 +449,7 @@ export async function saveRoom(input: {
   const s = await activeSession();
   if (!s) return;
   try {
-    await fetch(`${ISSUER}/api/rooms`, {
+    await fetch(`${issuer()}/api/rooms`, {
       method: "POST",
       headers: authHeaders(s, { json: true }),
       body: JSON.stringify(input),
@@ -419,7 +476,7 @@ export async function saveAgentProfile(input: {
   const s = await activeSession();
   if (!s) return;
   try {
-    await fetch(`${ISSUER}/api/me/agents/profile`, {
+    await fetch(`${issuer()}/api/me/agents/profile`, {
       method: "POST",
       headers: authHeaders(s, { json: true }),
       body: JSON.stringify(input),
@@ -1469,7 +1526,7 @@ export async function claimDriver(sessionId: string): Promise<void> {
   const s = await activeSession();
   if (!s) return;
   try {
-    await fetch(`${ISSUER}/api/sessions/driver`, {
+    await fetch(`${issuer()}/api/sessions/driver`, {
       method: "POST",
       headers: authHeaders(s, { json: true }),
       body: JSON.stringify({ sessionId, deviceId: deviceId(), platform: "desktop" }),
@@ -1666,7 +1723,7 @@ export async function provisionLocalAccess(input: {
   };
 
   // 1. Mint. Owner-or-manage only, enforced at the control plane.
-  const minted = await fetch(`${ISSUER}/api/agents/credential`, {
+  const minted = await fetch(`${issuer()}/api/agents/credential`, {
     method: "POST",
     headers,
     body: JSON.stringify({ agent: input.agent }),
@@ -1709,7 +1766,7 @@ export async function provisionLocalAccess(input: {
   // 3. Record the standing permission. Deliberately last: an agent that is
   // allowed but cannot identify itself is a grant that does nothing, and a
   // half-finished setup should look unfinished rather than allowed.
-  const granted = await fetch(`${ISSUER}/api/local-exec/grant`, {
+  const granted = await fetch(`${issuer()}/api/local-exec/grant`, {
     method: "POST",
     headers,
     body: JSON.stringify({ agent: input.agent, deviceId: deviceId() }),
@@ -1728,7 +1785,7 @@ export async function localAccessGranted(agent: string): Promise<boolean> {
   if (!s?.bundle) return false;
   try {
     const res = await fetch(
-      `${ISSUER}/api/local-exec/grant?deviceId=${encodeURIComponent(deviceId())}`,
+      `${issuer()}/api/local-exec/grant?deviceId=${encodeURIComponent(deviceId())}`,
       {
         headers: authHeaders(s, { bundle: true }),
         signal: AbortSignal.timeout(20_000),
@@ -1746,7 +1803,7 @@ export async function localAccessGranted(agent: string): Promise<boolean> {
 export async function revokeLocalAccess(agent: string): Promise<boolean> {
   const s = await activeSession();
   if (!s?.bundle) return false;
-  const res = await fetch(`${ISSUER}/api/local-exec/grant`, {
+  const res = await fetch(`${issuer()}/api/local-exec/grant`, {
     method: "POST",
     headers: authHeaders(s, { bundle: true, json: true }),
     body: JSON.stringify({ agent, deviceId: deviceId(), revoke: true }),
@@ -1815,7 +1872,7 @@ export async function listConnectors(
   const s = await activeSession();
   if (!s?.bundle) return { configured: false, connectors: [] };
   try {
-    const res = await fetch(`${ISSUER}/api/connectors?agent=${encodeURIComponent(agent)}`, {
+    const res = await fetch(`${issuer()}/api/connectors?agent=${encodeURIComponent(agent)}`, {
       headers: authHeaders(s, { bundle: true }),
       signal: AbortSignal.timeout(30_000),
     });
@@ -1853,7 +1910,7 @@ export async function connectService(input: {
   const s = await activeSession();
   if (!s?.bundle) return { ok: false, error: "Not signed in." };
 
-  const res = await fetch(`${ISSUER}/api/connectors/link`, {
+  const res = await fetch(`${issuer()}/api/connectors/link`, {
     method: "POST",
     headers: authHeaders(s, { bundle: true, json: true }),
     body: JSON.stringify(input),
@@ -1877,7 +1934,7 @@ export async function disconnectService(input: {
 }): Promise<{ ok: boolean; error?: string }> {
   const s = await activeSession();
   if (!s?.bundle) return { ok: false, error: "Not signed in." };
-  const res = await fetch(`${ISSUER}/api/connectors/disconnect`, {
+  const res = await fetch(`${issuer()}/api/connectors/disconnect`, {
     method: "POST",
     headers: authHeaders(s, { bundle: true, json: true }),
     body: JSON.stringify(input),
@@ -1897,7 +1954,7 @@ export async function addCustomConnector(input: {
 }): Promise<{ ok: boolean; error?: string; slug?: string; needsSignIn?: boolean }> {
   const s = await activeSession();
   if (!s?.bundle) return { ok: false, error: "Not signed in." };
-  const res = await fetch(`${ISSUER}/api/connectors/custom`, {
+  const res = await fetch(`${issuer()}/api/connectors/custom`, {
     method: "POST",
     headers: authHeaders(s, { bundle: true, json: true }),
     body: JSON.stringify(input),
@@ -1925,7 +1982,7 @@ export async function startMcpSignIn(input: {
 }): Promise<{ ok: boolean; error?: string }> {
   const s = await activeSession();
   if (!s?.bundle) return { ok: false, error: "Not signed in." };
-  const res = await fetch(`${ISSUER}/api/connectors/mcp/oauth/start`, {
+  const res = await fetch(`${issuer()}/api/connectors/mcp/oauth/start`, {
     method: "POST",
     headers: authHeaders(s, { bundle: true, json: true }),
     body: JSON.stringify(input),
@@ -1946,7 +2003,7 @@ export async function testRemoteMcp(
   const s = await activeSession();
   if (!s?.bundle) return { ok: false, error: "Not signed in." };
   try {
-    const res = await fetch(`${ISSUER}/api/connectors/mcp/test`, {
+    const res = await fetch(`${issuer()}/api/connectors/mcp/test`, {
       method: "POST",
       headers: authHeaders(s, { bundle: true, json: true }),
       body: JSON.stringify({ slug }),

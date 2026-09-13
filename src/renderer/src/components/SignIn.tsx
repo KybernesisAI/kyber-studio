@@ -132,8 +132,74 @@ export function SignIn(): ReactNode {
           </div>
         ) : null}
 
-        <div className="signin__issuer">{useStore.getState().issuer}</div>
+        <ControlPlane />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Which control plane this app signs in to.
+ *
+ * Ours is the default and stays one line of small print — the address only
+ * becomes a question for someone running their own, and for them it has to be
+ * answerable without a rebuild. Changing it signs the app out, because the
+ * identity and every agent grant belong to the control plane that issued them.
+ */
+function ControlPlane(): ReactNode {
+  const [state, setState] = useState<{ url: string; isDefault: boolean; default: string } | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void window.studio?.controlPlane().then(setState);
+  }, []);
+
+  const apply = async (next: string | null): Promise<void> => {
+    setError(null);
+    try {
+      const now = await window.studio!.setControlPlane(next);
+      setState(now);
+      setEditing(false);
+      setDraft("");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  if (!state) return null;
+  const host = state.url.replace(/^https?:\/\//, "");
+
+  if (!editing) {
+    return (
+      <div className="signin__issuer">
+        {host}
+        {state.isDefault ? null : " · custom"}
+        <button className="signin__issuer-btn" onClick={() => { setEditing(true); setDraft(state.isDefault ? "" : host); }}>
+          Change
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="signin__issuer signin__issuer--editing">
+      <input
+        className="input"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder={state.default.replace(/^https?:\/\//, "")}
+        spellCheck={false}
+        autoFocus
+        onKeyDown={(e) => { if (e.key === "Enter" && draft.trim()) void apply(draft); if (e.key === "Escape") setEditing(false); }}
+      />
+      <div className="signin__issuer-row">
+        <button className="btn btn--small" onClick={() => void apply(draft)} disabled={!draft.trim()}>Use this</button>
+        {state.isDefault ? null : <button className="btn btn--small" onClick={() => void apply(null)}>Use the default</button>}
+        <button className="btn btn--small" onClick={() => { setEditing(false); setError(null); }}>Cancel</button>
+      </div>
+      {error ? <div className="signin__error">{error}</div> : null}
     </div>
   );
 }
