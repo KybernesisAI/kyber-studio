@@ -43,12 +43,29 @@ function createWindow(): void {
     trafficLightPosition: { x: 18, y: 18 },
     backgroundColor: "#ffffff",
     webPreferences: {
-      // .mjs, not .js: this package is "type": "module", so electron-vite
-      // emits an ESM preload. Pointing at .js loads nothing, the context bridge
-      // never attaches, and the renderer sees no window.studio at all — which
-      // looks like a logged-out app rather than a broken preload path.
-      preload: join(__dirname, "../preload/index.mjs"),
-      sandbox: false,
+      // .cjs, and bundled — both halves, or the bridge does not attach.
+      //
+      // The renderer is sandboxed, which is Electron's default and what
+      // `sandbox: false` used to opt out of here. A sandboxed preload is run as
+      // plain script with no ESM context, so it cannot be the .mjs that
+      // "type": "module" would otherwise emit; electron-vite builds it to
+      // CommonJS for exactly that reason. Its `require` reaches `electron` and a
+      // few polyfilled builtins and NOTHING from node_modules, which is why the
+      // preload config bundles @electron-toolkit/preload in rather than
+      // externalising it. CJS alone is not enough; CJS and inlined is.
+      //
+      // Both mistakes fail the same way, and the way is the problem: the bridge
+      // never attaches, every window.studio call is undefined, and the app looks
+      // SIGNED OUT rather than broken. Nothing reaches a log. Do not judge this
+      // by the app starting.
+      //
+      // `sandbox: false` came across from KBDE, where nodeIntegrationInSubFrames
+      // made it necessary. Studio has no such frames and its preload is pure IPC
+      // — no Node APIs at all — so the flag bought nothing and cost both windows
+      // their sandbox: Electron implements it by spawning the renderer
+      // --no-sandbox --no-zygote, in the host user namespace, NoNewPrivs 0,
+      // Seccomp 0. Do not reintroduce it to fix a preload problem.
+      preload: join(__dirname, "../preload/index.cjs"),
     },
   });
   mainWindow = win;

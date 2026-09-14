@@ -26,7 +26,7 @@
  * dependencies. Anything the framework needs but this app never declared is
  * present all through development and absent in the .dmg.
  *
- * One failure is not a missing module at all, and section 2 is the only part of
+ * One failure is not a missing module at all, and section 3 is the only part of
  * this file that reads a byte of a native binary: a `.node` that is PRESENT and
  * built for the wrong CPU. The per-platform packages are chosen by whichever
  * machine ran `npm install`, so a bundle can be complete, resolvable, and still
@@ -46,7 +46,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
 /**
- * The measuring half of section 2, in its own module so that it can be tested
+ * The measuring half of section 3, in its own module so that it can be tested
  * without building an artefact. Same functions, unchanged — see
  * scripts/lib/native-arch.mjs and test/native-arch.test.mjs.
  */
@@ -59,6 +59,12 @@ import {
   tallyPlatforms,
   verdictFor,
 } from "./lib/native-arch.mjs";
+
+/**
+ * The same split, for the same reason: reading a preload's shape is text work
+ * with no artefact in it, so it lives in a module the test suite can exercise.
+ */
+import { inspectPreload } from "./lib/preload-shape.mjs";
 
 // ── 0. Where is the app, and what shape is it? ─────────────────────────
 /**
@@ -101,7 +107,7 @@ const defaultPath = LAYOUTS.find((l) => l.platform === process.platform)?.defaul
 /**
  * One positional argument — the app — plus an optional `--arch=<x64|arm64|…>`.
  *
- * The flag is the escape hatch for section 2, which works out what architecture
+ * The flag is the escape hatch for section 3, which works out what architecture
  * the bundle is SUPPOSED to be from the path electron-builder wrote. A path that
  * electron-builder did not name (a mounted volume, an artefact somebody renamed,
  * an unzipped download) carries no arch, and the one answer that must never be
@@ -246,7 +252,89 @@ if (missing.size > 0) {
 }
 console.log(`✓ module graph closes (${packages.length} packages)`);
 
-// ── 2. Is every native binary the (platform, arch) being shipped? ─────
+// ── 2. Is the preload one a sandboxed renderer can actually load? ─────
+/**
+ * Section 1 proves the module graph closes for the MAIN process. The preload is
+ * not in that graph and does not play by its rules.
+ *
+ * The renderer is sandboxed (KYB-569), and a sandboxed preload is run as plain
+ * script with no ESM context, with a `require` that reaches `electron` and a
+ * small polyfilled subset of Node builtins and NOTHING from node_modules. So
+ * two things must be true of the emitted file, and neither is visible in the
+ * source tree that test/renderer-sandbox.test.mjs guards:
+ *
+ * - it is CommonJS, at `out/preload/index.cjs`. This package is
+ *   `"type": "module"`, so a `.js` preload is ESM and does not load.
+ * - everything it uses is BUNDLED IN. This is the half that gets missed:
+ *   `externalizeDepsPlugin` on the preload build is the obvious, reasonable
+ *   thing to write, and it leaves a bare `require("@electron-toolkit/preload")`
+ *   that resolves all through development and throws in the package.
+ *
+ * It belongs in this file rather than only in the test suite because the
+ * SHIPPED bytes are the question — a config change, a plugin, or a bundler
+ * upgrade can each change what lands in the archive without touching a line the
+ * tests read.
+ *
+ * And it runs here, before anything expensive, because the failure it catches
+ * is total: no bridge, no window.studio, an app that looks signed out to
+ * everyone who installs it. Finding that out after five minutes of loading
+ * Whisper weights helps nobody.
+ */
+const PRELOAD = "out/preload/index.cjs";
+const preloadAt = join(extracted, PRELOAD);
+
+if (!existsSync(preloadAt)) {
+  console.error(`\n✗ no preload in the package at ${PRELOAD}.`);
+  const dir = join(extracted, "out/preload");
+  if (existsSync(dir)) {
+    console.error(`\n  out/preload does contain:`);
+    for (const entry of readdirSync(dir)) console.error(`    ${entry}`);
+    console.error(`\n  An index.mjs here means the preload build is still emitting ESM.`);
+    console.error(`  A sandboxed renderer cannot load one: set the preload output format to`);
+    console.error(`  cjs with entryFileNames "[name].cjs" in electron.vite.config.ts.`);
+  } else {
+    console.error(`\n  There is no out/preload directory at all — the preload build did not run,`);
+    console.error(`  or electron-builder's files globs dropped it.`);
+  }
+  console.error(`\n  Without a preload that loads, the context bridge never attaches and every`);
+  console.error(`  window.studio call is undefined. The app starts and looks SIGNED OUT.\n`);
+  process.exit(1);
+}
+
+const { usesRequire, unresolvable, esm } = inspectPreload(readFileSync(preloadAt, "utf8"));
+
+if (esm.length > 0 || !usesRequire) {
+  console.error(`\n✗ the packaged preload is not CommonJS: ${PRELOAD}`);
+  if (esm.length > 0) {
+    console.error(`\n  Top-level ESM statements, which a sandboxed preload cannot run:`);
+    for (const statement of esm.slice(0, 10)) console.error(`    ${statement}`);
+    if (esm.length > 10) console.error(`    … and ${esm.length - 10} more`);
+  }
+  if (!usesRequire) console.error(`\n  It contains no require( at all.`);
+  console.error(`\n  Sandboxed preloads are run as plain script with no ESM context. Fix the`);
+  console.error(`  preload output format in electron.vite.config.ts rather than turning the`);
+  console.error(`  renderer sandbox off to match it.\n`);
+  process.exit(1);
+}
+
+if (unresolvable.length > 0) {
+  console.error(`\n✗ the packaged preload requires packages it will not be able to resolve:`);
+  console.error(`\n  ${PRELOAD}\n`);
+  for (const specifier of unresolvable) console.error(`    require("${specifier}")`);
+  console.error(`\n  A sandboxed preload's require resolves electron and a few polyfilled`);
+  console.error(`  builtins — never a package from node_modules, however correctly it is`);
+  console.error(`  installed. These resolve in development and throw here.`);
+  console.error(`\n  They must be BUNDLED INTO the preload: electron.vite.config.ts must keep`);
+  console.error(`  externalizeDepsPlugin off the preload build and leave only electron`);
+  console.error(`  external. CommonJS alone is not enough — this is what that looks like.`);
+  console.error(`\n  The symptom if this ships: no context bridge, window.studio undefined,`);
+  console.error(`  an app that looks signed out rather than broken.\n`);
+  process.exit(1);
+}
+
+console.log(`✓ preload is bundled CommonJS a sandboxed renderer can load (${PRELOAD})`);
+
+// ── 3. Is every native binary the (platform, arch) being shipped? ─────
 /**
  * Every other check in this file catches a MISSING package. None of them
  * catches a present-but-wrong-architecture one, and before this section nothing
@@ -558,7 +646,7 @@ if (natives.length === 0) {
 }
 reportUncheckedFiles(console.log);
 
-// ── 3. Can the app's runtime import the paths that matter? ─────────────
+// ── 4. Can the app's runtime import the paths that matter? ─────────────
 /**
  * Modules chosen because they are NOT on the startup path. A build that boots
  * and then dies on first use is the exact failure this file exists for.
@@ -586,7 +674,7 @@ for (const entry of ENTRY_POINTS) {
   }
 }
 
-// ── 4. Does dictation actually run inside the package? ─────────────────
+// ── 5. Does dictation actually run inside the package? ─────────────────
 /**
  * Everything above proves modules resolve. This proves the one that has to do
  * real work does it: @huggingface/transformers pulls in onnxruntime-node, whose
