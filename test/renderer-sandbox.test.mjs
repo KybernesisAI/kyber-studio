@@ -88,18 +88,58 @@ test("no window in src/main disables the renderer sandbox", () => {
   // not accepted as an alternative and is not what the fix did — sandboxed is
   // the default, and an explicit true is an invitation to flip it back.
   //
-  // `sandbox: false` is not the only way to spell it, and a check that only
-  // knows that one is a check somebody passes while putting the bug back.
-  // Electron's docs: "Enabling Node.js integration for a renderer process by
-  // setting nodeIntegration: true disables the sandbox for the process." A
-  // window with the flag deleted and nodeIntegration turned on is exactly as
-  // unsandboxed as KYB-569 found this app. nodeIntegrationInSubFrames is the
-  // likeliest route back in specifically: src/main/index.ts names it as the
-  // reason `sandbox: false` came across from KBDE in the first place.
+  // WHY THE LIST MUST BE EXHAUSTIVE. After the fix there is no `sandbox` key in
+  // either webPreferences at all — and that absence is precisely the state in
+  // which Electron DERIVES the answer rather than reading it. Electron 34.5.8,
+  // shell/browser/web_contents_preferences.cc:280-286:
+  //
+  //     bool WebContentsPreferences::IsSandboxed() const {
+  //       if (sandbox_) return *sandbox_;
+  //       bool sandbox_disabled_by_default =
+  //           node_integration_ || node_integration_in_worker_;
+  //       return !sandbox_disabled_by_default;
+  //     }
+  //
+  // `sandbox_` is a std::optional, cleared to nullopt (:119) and assigned only
+  // when the key is actually present (:175-177). So with no key, a node
+  // integration flag is the entire input. AppendCommandLineSwitches then takes
+  // the else branch and appends kNoSandbox and kNoZygote (:318-325), which is
+  // the unconfined renderer KYB-569 found in the host user namespace.
+  //
+  // Read that derivation carefully, because it is narrower than it looks:
+  // nodeIntegration and nodeIntegrationInWorker feed IsSandboxed() directly.
+  // nodeIntegrationInSubFrames does NOT — it gates `can_sandbox_frame` for
+  // cross-origin SUBFRAMES (:318). It stays on this list on its own merits: it
+  // unsandboxes those subframes, and src/main/index.ts names it as the reason
+  // `sandbox: false` came across from KBDE in the first place.
+  //
+  // nodeIntegrationInWorker is the third spelling, and it was missed when this
+  // test was written — review round 3 found it, against Electron's source. The
+  // word boundary is why: `\bnodeIntegration\s*:\s*true\b` does not match
+  // `nodeIntegrationInWorker: true`, because \b fails on the following letter.
+  // A fixture of the fixed main window with that one line added passed all
+  // three original assertions.
+  //
+  // WHAT THIS CANNOT SEE, written down because a known limit is worth more than
+  // a discovered one. It is a TEXT scan, so it only ever catches a literal.
+  // Both of these disable the sandbox and both return [] here:
+  //
+  //     sandbox: !app.isPackaged,
+  //     nodeIntegration: isDev ? true : false
+  //
+  // A computed value is out of reach without a parser. That is accepted: the
+  // scan cannot invent a violation, only miss one.
+  //
+  // `app.commandLine.appendSwitch("no-sandbox")` is a further route and an
+  // app-wide one rather than per-window. It is greppable, so it is checked
+  // below — but only because it is greppable, and the computed-value hole above
+  // applies to it just the same.
   const disallowed = [
     ["sandbox: false", /\bsandbox\s*:\s*false\b/],
     ["nodeIntegration: true", /\bnodeIntegration\s*:\s*true\b/],
     ["nodeIntegrationInSubFrames: true", /\bnodeIntegrationInSubFrames\s*:\s*true\b/],
+    ["nodeIntegrationInWorker: true", /\bnodeIntegrationInWorker\s*:\s*true\b/],
+    ['appendSwitch("no-sandbox")', /\bappendSwitch\s*\(\s*["'`](?:--)?no-sandbox\b/],
   ];
 
   for (const [property, pattern] of disallowed) {
@@ -225,6 +265,12 @@ test("comments cannot satisfy or break a rule about code", () => {
   assert.match(withoutComments('const u = "https://x/y"; // gone'), /https:\/\/x\/y/);
   // Line numbers must not move, or a guard names the wrong line.
   assert.equal(withoutComments("a\n/* two\nlines */\nb").split("\n").length, 4);
+  // A regex literal containing `//` is not a comment. Outside a string a
+  // backslash escapes what follows, so each `\/` is consumed as a pair and the
+  // slashes never become adjacent — the rest of the line survives.
+  const afterRegex = withoutComments('const re = /^https?:\\/\\//; const mode = "keep";');
+  assert.match(afterRegex, /mode/);
+  assert.match(afterRegex, /keep/);
 });
 
 test("a bare package require is found, and a bundled preload has none", () => {
@@ -240,6 +286,22 @@ test("a bare package require is found, and a bundled preload has none", () => {
     [],
   );
   assert.deepEqual(unresolvableSpecifiers(["node:events", "node:timers", "node:url"]), []);
+
+  // The electron subpaths resolve too, and only source says so: Electron's
+  // docs/tutorial/sandbox.md lists `electron` alone, while
+  // lib/sandboxed_renderer/init.ts binds all three to the same module object.
+  // electron-vite's preload preset externalises /^electron\/.+/, so one of
+  // these reaching the bundle as a bare require is a real path, not a theory.
+  assert.deepEqual(unresolvableSpecifiers(["electron/common", "electron/renderer"]), []);
+
+  // And the two that look like they belong and do not. `process` is a GLOBAL
+  // passed into the preload wrapper, not a module — require("process") throws.
+  // init.ts registers `timers` and `node:timers`, not the promises subpath.
+  // Pinned so that neither is added back on the strength of looking familiar.
+  assert.deepEqual(unresolvableSpecifiers(["process", "node:timers/promises"]), [
+    "process",
+    "node:timers/promises",
+  ]);
 
   // Every OTHER builtin is as absent as a package from node_modules, which is
   // why this cannot be an isBuiltin check: electron-vite's preload preset

@@ -44,21 +44,25 @@
  * the file on disk — a guard that names the wrong line is a guard people learn
  * to distrust.
  *
- * Two known limits, both in regex literals, which this walk does not track as a
- * lexical state:
+ * Regex literals are not tracked as a lexical state. That used to cost a line
+ * of live code per URL-scheme regex; one of the two holes is now closed.
  *
- * - a regex whose body contains `//` — `const re = /https?:\/\//;` — is read as
- *   opening a line comment, and the REST OF THAT LINE is deleted, live code
- *   included. Not exotic: URL-scheme regexes are ordinary in an Electron main
- *   process, around `will-navigate` and `setWindowOpenHandler`. The blast radius
- *   is one line, and newlines are preserved either way, so line numbers still
- *   hold and a reported site is still the right site.
- * - a regex whose body opens a block comment would be read as opening one.
- *   Writing one means escaping the star, which stops it matching here anyway.
+ * - CLOSED — a regex whose body contains `//`, as `const re = /^https?:\/\//;`
+ *   does. It was read as opening a line comment and the REST OF THAT LINE was
+ *   deleted, live code included. Not exotic either: URL-scheme regexes are
+ *   ordinary in an Electron main process, around `will-navigate` and
+ *   `setWindowOpenHandler`. The closure is one rule — OUTSIDE a string, a
+ *   backslash escapes whatever follows it — so each `\/` is consumed as a pair
+ *   and the two slashes never become adjacent. It costs nothing elsewhere: a
+ *   backslash outside a string has no other use in JavaScript, and both
+ *   characters are still written to the output, so nothing shifts.
+ * - OPEN — a regex whose body opens a block comment would still be read as
+ *   opening one. Writing that means escaping the star, which stops the regex
+ *   matching here anyway, so it stays documented rather than closed.
  *
- * The consequence in both directions is a check that reads LESS code than the
- * file contains, so it can miss a violation on such a line. It cannot invent
- * one, which is the direction that would get this guard distrusted.
+ * The consequence of the remaining limit is a check that reads LESS code than
+ * the file contains, so it can miss a violation on such a line. It cannot
+ * invent one, which is the direction that would get this guard distrusted.
  */
 export function withoutComments(source) {
   let out = "";
@@ -78,6 +82,15 @@ export function withoutComments(source) {
       if (c === quote) quote = null;
       out += c;
       i += 1;
+      continue;
+    }
+
+    // Outside a string, a backslash escapes the next character. In practice
+    // that means a regex literal's body: consuming `\/` as a pair is what
+    // stops `/^https?:\/\//` reading as a line comment.
+    if (c === "\\") {
+      out += c + (next ?? "");
+      i += 2;
       continue;
     }
 
@@ -125,9 +138,37 @@ export function requiredSpecifiers(source) {
  * builtins for a sandboxed preload — `events`, `timers` and `url` — in bare and
  * `node:`-prefixed form. Nothing else is there: not `fs`, not `path`, not
  * `crypto`, not `os`, not `child_process`, however plainly built in they are.
+ *
+ * `electron/common` and `electron/renderer` are here on a SOURCE-LEVEL fact,
+ * and this note exists so that nobody removes them after checking the docs.
+ * Electron's docs/tutorial/sandbox.md lists only `electron` (:49) — but
+ * lib/sandboxed_renderer/init.ts seeds the loader's map with all three, each
+ * bound to the same module object (34.5.8, :48-54):
+ *
+ *     const loadedModules = new Map([
+ *       ['electron', electron],
+ *       ['electron/common', electron],
+ *       ['electron/renderer', electron],
+ *       ['events', events], ['node:events', events],
+ *     ]);
+ *
+ * They matter here rather than in theory: electron-vite's preload preset
+ * externalises `/^electron\/.+/` (3.1.0, dist/chunks/lib-DyJQBCfr.mjs:391), so
+ * `import { ipcRenderer } from "electron/renderer"` arrives in the bundle as a
+ * bare require. Rejecting it would fail a build over a preload that loads.
+ *
+ * What is deliberately NOT here:
+ *
+ * - `process`. It is not a module. init.ts passes it into the preload wrapper
+ *   as a GLOBAL alongside `require` and `Buffer`, and the loader's require
+ *   throws for anything outside the two maps — so `require("process")` fails.
+ * - `node:timers/promises`. init.ts registers `timers` and `node:timers` only
+ *   (:56-61); the promises subpath is not in either map.
  */
 const RESOLVABLE = new Set([
   "electron",
+  "electron/common",
+  "electron/renderer",
   "events",
   "node:events",
   "timers",
