@@ -9,9 +9,10 @@
  *   context, and `"type": "module"` makes a `.js` file ESM — so the emitted
  *   file has to be `.cjs` and has to contain no top-level `import`.
  * - every package it uses must be BUNDLED IN. A sandboxed preload's `require`
- *   resolves `electron` and a small polyfilled subset of Node builtins, and
- *   NOTHING from node_modules. A bare `require("@electron-toolkit/preload")`
- *   resolves happily in development and throws in the package.
+ *   resolves `electron` and the three builtins Electron polyfills — `events`,
+ *   `timers`, `url` — and NOTHING else: no other builtin, and nothing from
+ *   node_modules. A bare `require("@electron-toolkit/preload")` resolves
+ *   happily in development and throws in the package.
  *
  * Both failures are silent in the way that matters: the context bridge never
  * attaches, `window.studio` is undefined everywhere, and the app looks SIGNED
@@ -31,7 +32,6 @@
  * documentation as though it were code — is a false positive that would be
  * blamed on the check rather than on the regex.
  */
-import { isBuiltin } from "node:module";
 
 /**
  * Source with comments removed and everything else left where it was.
@@ -44,9 +44,21 @@ import { isBuiltin } from "node:module";
  * the file on disk — a guard that names the wrong line is a guard people learn
  * to distrust.
  *
- * The known limit: a regex literal whose body opens a block comment would be
- * read as opening one. No such literal exists in this repo, and writing one
- * means escaping the star, which stops it matching here anyway.
+ * Two known limits, both in regex literals, which this walk does not track as a
+ * lexical state:
+ *
+ * - a regex whose body contains `//` — `const re = /https?:\/\//;` — is read as
+ *   opening a line comment, and the REST OF THAT LINE is deleted, live code
+ *   included. Not exotic: URL-scheme regexes are ordinary in an Electron main
+ *   process, around `will-navigate` and `setWindowOpenHandler`. The blast radius
+ *   is one line, and newlines are preserved either way, so line numbers still
+ *   hold and a reported site is still the right site.
+ * - a regex whose body opens a block comment would be read as opening one.
+ *   Writing one means escaping the star, which stops it matching here anyway.
+ *
+ * The consequence in both directions is a check that reads LESS code than the
+ * file contains, so it can miss a violation on such a line. It cannot invent
+ * one, which is the direction that would get this guard distrusted.
  */
 export function withoutComments(source) {
   let out = "";
@@ -107,18 +119,52 @@ export function requiredSpecifiers(source) {
 }
 
 /**
- * The specifiers a sandboxed preload could not resolve: bare package names.
+ * Everything a sandboxed preload can resolve, and it is a SHORT list.
  *
- * `electron` is the one the runtime provides, and Node builtins (bare or
- * `node:`-prefixed) are the polyfilled subset. Relative and absolute paths are
- * not this check's business — a bundle should not have them either, but a path
- * that does not resolve fails loudly, which is a different problem from this one.
+ * `electron` comes from the runtime. Electron polyfills exactly three Node
+ * builtins for a sandboxed preload — `events`, `timers` and `url` — in bare and
+ * `node:`-prefixed form. Nothing else is there: not `fs`, not `path`, not
+ * `crypto`, not `os`, not `child_process`, however plainly built in they are.
+ */
+const RESOLVABLE = new Set([
+  "electron",
+  "events",
+  "node:events",
+  "timers",
+  "node:timers",
+  "url",
+  "node:url",
+]);
+
+/**
+ * The specifiers a sandboxed preload could not resolve.
+ *
+ * Checked against an explicit allowlist and NOT against `isBuiltin`, which was
+ * the first version of this and was wrong in the one direction that matters: it
+ * waved through every Node builtin, and only three of them exist here.
+ *
+ * That hole is reachable through this build rather than hypothetical.
+ * electron-vite's preload preset sets `external: ['electron', /^electron\/.+/,
+ * ...builtinModules.flatMap(m => [m, `node:${m}`])]`, and vite's `mergeConfig`
+ * CONCATENATES arrays rather than replacing them — so the `external:
+ * ["electron"]` in electron.vite.config.ts narrows that to nothing. The first
+ * person to write `import { join } from "node:path"` in the preload gets a bare
+ * `require("node:path")` in the bundle; with a builtin check both guards pass it
+ * green and it fails at load, silently, in the way described above.
+ *
+ * The allowlist errs the other way. A specifier that is genuinely fine but not
+ * listed fails the build loudly, in CI, with the specifier named — which is a
+ * five-minute correction here rather than an app that looks signed out.
+ *
+ * Relative and absolute paths are not this check's business — a bundle should
+ * not have them either, but a path that does not resolve fails loudly, which is
+ * a different problem from this one.
  */
 export function unresolvableSpecifiers(specifiers) {
   return specifiers.filter((specifier) => {
-    if (specifier === "electron") return false;
+    if (RESOLVABLE.has(specifier)) return false;
     if (specifier.startsWith(".") || specifier.startsWith("/")) return false;
-    return !isBuiltin(specifier);
+    return true;
   });
 }
 
@@ -129,6 +175,23 @@ export function unresolvableSpecifiers(specifiers) {
  * distinguishes a statement from the word appearing inside an expression —
  * `await import(...)` is legal in CommonJS and must NOT be reported, whereas
  * `import x from "y"` at column zero is the thing that makes a file ESM.
+ *
+ * The known limits, worth having written down rather than discovered by someone
+ * reading a green run. All three patterns are single-line and space-sensitive,
+ * so each of these is ESM and returns `[]` here:
+ *
+ * - a multi-line specifier list — `import {\n  x\n} from "y";`
+ * - minified output with no spaces — `import{contextBridge}from"electron";`
+ * - a bare re-export — `export{a as b};` (the export pattern requires at least
+ *   one space after `export`, before the `{`)
+ *
+ * This is acceptable only because of what the input is: rollup, building THIS
+ * bundle, emits none of those shapes — `minify: false` in electron-vite's
+ * preload preset, a cjs output format, and one entry. It is a shape check over
+ * generated output, not an ESM parser, and it stops being sound the moment it
+ * is pointed at hand-written or minified source. `inspectPreload`'s
+ * `usesRequire` is the backstop for a miss here, and it is a weak one — see
+ * there.
  */
 export function esmStatements(source) {
   const found = [];
@@ -148,6 +211,13 @@ export function esmStatements(source) {
  * not judgement. Deliberately returns findings rather than a boolean: the
  * failure message has to name the offending specifier or statement, or whoever
  * reads it learns only that something is wrong.
+ *
+ * `usesRequire` is a weak signal and is treated as one. Strings are not stripped
+ * by `withoutComments` — deliberately, since a URL in one must survive — so the
+ * two-word sequence `require(` satisfies it from anywhere, a string literal or a
+ * log message included. It catches a preload that is ESM through and through; it
+ * would not catch an ESM preload that happens to mention require in a message.
+ * The load-bearing checks are `esm` and `unresolvable`.
  */
 export function inspectPreload(source) {
   return {

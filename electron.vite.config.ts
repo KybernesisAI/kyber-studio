@@ -18,8 +18,16 @@ export default defineConfig({
    * And no externalizeDepsPlugin here, unlike `main`. A sandboxed preload's
    * `require` resolves `electron` plus a few polyfilled builtins and nothing
    * else, so leaving @electron-toolkit/preload as a bare require would throw at
-   * load; it has to be inlined. `electron` alone stays external, because the
-   * runtime is the only thing that can provide it.
+   * load; it has to be inlined.
+   *
+   * The `external` below ADDS to electron-vite's preload preset rather than
+   * replacing it: the preset externalises `electron`, `electron/*` and every
+   * Node builtin in both bare and `node:` form, and vite's `mergeConfig`
+   * concatenates arrays. So the resolved external list is electron plus all the
+   * builtins — of which a sandboxed preload can actually resolve only `events`,
+   * `timers` and `url`. Importing any other builtin here compiles to a bare
+   * `require` that throws at load; scripts/lib/preload-shape.mjs holds the list
+   * and is the reason a builtin must not be assumed safe.
    *
    * Getting either half wrong is SILENT — see src/main/index.ts. Guarded by
    * test/renderer-sandbox.test.mjs and scripts/verify-package.mjs.

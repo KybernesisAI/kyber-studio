@@ -87,7 +87,29 @@ test("no window in src/main disables the renderer sandbox", () => {
   // Property order and spacing are free; the value is not. `sandbox: true` is
   // not accepted as an alternative and is not what the fix did — sandboxed is
   // the default, and an explicit true is an invitation to flip it back.
-  assert.deepEqual(sitesOf(/\bsandbox\s*:\s*false\b/), []);
+  //
+  // `sandbox: false` is not the only way to spell it, and a check that only
+  // knows that one is a check somebody passes while putting the bug back.
+  // Electron's docs: "Enabling Node.js integration for a renderer process by
+  // setting nodeIntegration: true disables the sandbox for the process." A
+  // window with the flag deleted and nodeIntegration turned on is exactly as
+  // unsandboxed as KYB-569 found this app. nodeIntegrationInSubFrames is the
+  // likeliest route back in specifically: src/main/index.ts names it as the
+  // reason `sandbox: false` came across from KBDE in the first place.
+  const disallowed = [
+    ["sandbox: false", /\bsandbox\s*:\s*false\b/],
+    ["nodeIntegration: true", /\bnodeIntegration\s*:\s*true\b/],
+    ["nodeIntegrationInSubFrames: true", /\bnodeIntegrationInSubFrames\s*:\s*true\b/],
+  ];
+
+  for (const [property, pattern] of disallowed) {
+    const sites = sitesOf(pattern);
+    assert.deepEqual(
+      sites,
+      [],
+      `${property} takes the renderer out of the Chromium sandbox:\n${sites.join("\n")}`,
+    );
+  }
 });
 
 test("the sandbox assertion is looking at windows that exist", () => {
@@ -118,13 +140,23 @@ test("every preload in src/main is the .cjs bundle", () => {
     `expected a preload for each known window, found ${assignments.length}`,
   );
 
+  // Every literal on the line is judged, not the last one: `literals.at(-1)`
+  // was positional, and `preload: join(__dirname, "../preload/index.mjs"),
+  // title: "x.cjs"` satisfies a positional check while loading ESM.
   for (const { file, expression, literals } of assignments) {
-    const path = literals.at(-1);
-    assert.ok(path, `could not read a preload path out of ${file}: ${expression}`);
-    assert.ok(
-      path.endsWith(".cjs"),
-      `${file} loads a preload that is not the CommonJS bundle: ${path}\n` +
+    assert.ok(literals.length > 0, `could not read a preload path out of ${file}: ${expression}`);
+
+    const esmLooking = literals.filter((literal) => /\.m?js$/.test(literal));
+    assert.deepEqual(
+      esmLooking,
+      [],
+      `${file} names a preload file that is not the CommonJS bundle: ${esmLooking.join(", ")}\n` +
         `  A sandboxed renderer cannot load an ESM preload, and this package is "type": "module".`,
+    );
+
+    assert.ok(
+      literals.some((literal) => literal.endsWith(".cjs")),
+      `${file} has a preload: with no .cjs path on it: ${expression}`,
     );
   }
 });
@@ -166,6 +198,15 @@ test("externalizeDepsPlugin is not applied to the preload", () => {
     "externalizeDepsPlugin on the preload leaves @electron-toolkit/preload as a bare require",
   );
 
+  // The plugin is not the only spelling. electron-vite 5 deprecates
+  // externalizeDepsPlugin in favour of a `build.externalizeDeps` option, so
+  // `preload: { build: { externalizeDeps: true, … } }` reopens this exact trap
+  // somewhere the plugin check above cannot see it.
+  assert.ok(
+    !config.preload?.build?.externalizeDeps,
+    "build.externalizeDeps on the preload leaves @electron-toolkit/preload a bare require",
+  );
+
   // The non-vacuous half: main SHOULD have it, so a change that stopped this
   // test being able to see plugins at all cannot pass as a clean bill of health.
   assert.ok(
@@ -191,8 +232,28 @@ test("a bare package require is found, and a bundled preload has none", () => {
     "electron",
     "@electron-toolkit/preload",
   ]);
-  // electron is provided by the runtime; builtins are polyfilled; a package is not.
-  assert.deepEqual(unresolvableSpecifiers(["electron", "node:path", "events", "./local"]), []);
+  // electron comes from the runtime, and Electron polyfills three builtins for a
+  // sandboxed preload — events, timers, url — in both spellings. Paths are
+  // somebody else's problem.
+  assert.deepEqual(
+    unresolvableSpecifiers(["electron", "events", "timers", "url", "./local", "/abs/x"]),
+    [],
+  );
+  assert.deepEqual(unresolvableSpecifiers(["node:events", "node:timers", "node:url"]), []);
+
+  // Every OTHER builtin is as absent as a package from node_modules, which is
+  // why this cannot be an isBuiltin check: electron-vite's preload preset
+  // externalises all of them and mergeConfig concatenates, so `node:path` in the
+  // preload reaches the bundle as a bare require and fails silently at load.
+  assert.deepEqual(unresolvableSpecifiers(["node:fs", "fs", "path", "child_process"]), [
+    "node:fs",
+    "fs",
+    "path",
+    "child_process",
+  ]);
+  assert.deepEqual(unresolvableSpecifiers(["electron", "node:path", "events", "./local"]), [
+    "node:path",
+  ]);
   assert.deepEqual(unresolvableSpecifiers(["@electron-toolkit/preload", "zod"]), [
     "@electron-toolkit/preload",
     "zod",
