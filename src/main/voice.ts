@@ -119,8 +119,11 @@ export function openOrbWindow(context: VoiceContext): void {
     alwaysOnTop: true,
     backgroundColor: "#00000000",
     webPreferences: {
-      preload: join(__dirname, "../preload/index.mjs"),
-      sandbox: false,
+      // .cjs because the renderer is sandboxed and a sandboxed preload has no
+      // ESM context, and no `sandbox: false` — the orb loads the same preload as
+      // the main window and fails the same silent way. src/main/index.ts has the
+      // whole of it.
+      preload: join(__dirname, "../preload/index.cjs"),
     },
   });
   orbWindow.setAlwaysOnTop(true, "floating");

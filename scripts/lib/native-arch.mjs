@@ -2,7 +2,7 @@
  * Reading (platform, arch) out of a native binary, and out of a build path.
  *
  * @remarks
- * This is the measuring half of `verify-package.mjs` section 2, and it lives in
+ * This is the measuring half of `verify-package.mjs` section 3, and it lives in
  * its own file for ONE reason: so that it can be tested without a packaged app.
  *
  * `verify-package.mjs` is a script, not a module — it runs top to bottom, needs
