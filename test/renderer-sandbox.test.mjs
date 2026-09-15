@@ -29,6 +29,9 @@ import {
  * sentence, so it is asserted here instead. The assertions are deliberately
  * about the things that are LOAD-BEARING and not obvious:
  *
+ * - src/main must CALL `app.enableSandbox()`. This is the primary guarantee and
+ *   the only positive one: it forces the sandbox on app-wide, so no window's
+ *   webPreferences can opt out of it. Everything below is a second line.
  * - `sandbox: false` must not come back. It is one word and it reads like a
  *   workaround for a preload that will not load, which is exactly what somebody
  *   debugging this will think they have.
@@ -83,14 +86,85 @@ function sitesOf(pattern) {
 
 // ── the source tree ────────────────────────────────────────────────────
 
+test("src/main forces the sandbox on, app-wide", () => {
+  // THE PRIMARY GUARANTEE, and the reason the enumeration below is no longer
+  // load-bearing on its own.
+  //
+  // `app.enableSandbox()` strips any --no-sandbox from the command line and
+  // appends `enable-sandbox` (Electron 34.5.8,
+  // shell/browser/api/electron_api_app.cc:1429-1440). That switch is copied onto
+  // every renderer's command line (shell/browser/electron_browser_client.cc:533
+  // -540) before per-window preferences are applied at :573, and the per-window
+  // branch that would otherwise unsandbox the renderer is guarded on its absence
+  // (shell/browser/web_contents_preferences.cc:320-325):
+  //
+  //     if (IsSandboxed() || can_sandbox_frame) {
+  //       command_line->AppendSwitch(switches::kEnableSandbox);
+  //     } else if (!command_line->HasSwitch(switches::kEnableSandbox)) {
+  //       command_line->AppendSwitch(sandbox::policy::switches::kNoSandbox);
+  //       command_line->AppendSwitch(::switches::kNoZygote);
+  //     }
+  //
+  // So one call defeats `sandbox: false`, `nodeIntegration: true` and
+  // `nodeIntegrationInWorker: true` together — all three work only by making
+  // IsSandboxed() false (:280-286), and with the switch present the else branch
+  // cannot fire. It is the else-IF that does this and NOT IsSandboxed(), which
+  // reads the webPreferences value first and never consults the switch; check
+  // :320-325 against a future Electron, not :280-286.
+  //
+  // WHAT IS NOT CHECKED HERE, and why that is acceptable. The call must happen
+  // before the app is ready or EnableSandbox throws (:1430-1435). Ordering is
+  // not asserted, because that is the one mistake in this whole file that
+  // announces itself: it throws on startup rather than failing silently. Every
+  // other rule here exists precisely because its failure is quiet.
+  //
+  // And note the mirror of the comment-stripping problem. A NEGATIVE assertion
+  // can be satisfied by prose, which is why sources are stripped first; a
+  // POSITIVE one can be satisfied by a string literal, and stripping does not
+  // touch strings. `const help = "call app.enableSandbox()"` would pass this.
+  // That is a smaller hole than it looks — nobody writes that line by accident,
+  // whereas `sandbox: false` is exactly what a person reaches for — but it is
+  // the honest limit of a text scan in this direction, and it needs a parser to
+  // close, same as the computed values described below.
+  const sites = sitesOf(/\benableSandbox\s*\(\s*\)/);
+  assert.ok(
+    sites.length > 0,
+    "nothing in src/main calls app.enableSandbox().\n" +
+      "  WHAT THAT LOSES: the sandbox stops being forced on app-wide, and the only\n" +
+      "  thing still keeping the renderer in it is the list of spellings in the test\n" +
+      "  below. That list was found incomplete in two successive review rounds\n" +
+      "  (nodeIntegration: true, then nodeIntegrationInWorker: true), and it cannot\n" +
+      "  see a computed value at all. Removing this call puts the guarantee back on\n" +
+      "  an enumeration that has twice failed to be exhaustive — and it fails\n" +
+      "  silently: the bridge never attaches and the app looks SIGNED OUT.",
+  );
+});
+
 test("no window in src/main disables the renderer sandbox", () => {
   // Property order and spacing are free; the value is not. `sandbox: true` is
   // not accepted as an alternative and is not what the fix did — sandboxed is
   // the default, and an explicit true is an invitation to flip it back.
   //
-  // WHY THE LIST MUST BE EXHAUSTIVE. After the fix there is no `sandbox` key in
-  // either webPreferences at all — and that absence is precisely the state in
-  // which Electron DERIVES the answer rather than reading it. Electron 34.5.8,
+  // DEFENCE IN DEPTH, NOT THE GUARANTEE. The positive assertion above is what
+  // keeps the renderer sandboxed now: app.enableSandbox() overrides every
+  // webPreferences spelling below, so an incomplete list here is NO LONGER A
+  // HOLE. That is the whole point of the restructure — this list used to have to
+  // be exhaustive to be correct, and twice it was not.
+  //
+  // It is kept, rather than deleted, because these flags do more than unsandbox
+  // a renderer and are worth catching for those other effects: nodeIntegration
+  // exposes require() to renderer code, nodeIntegrationInWorker does the same
+  // inside workers, and nodeIntegrationInSubFrames unsandboxes cross-origin
+  // subframes (which enableSandbox does not speak to — see :318). It also still
+  // catches the mistake at the place a person actually edits, with a file:line,
+  // which is worth more than a correct-but-silent app-wide override.
+  //
+  // Read the rest of this comment as the reasoning that MADE the list, not as a
+  // standard it must still meet.
+  //
+  // After the fix there is no `sandbox` key in either webPreferences at all —
+  // and that absence is precisely the state in which Electron DERIVES the answer
+  // rather than reading it. Electron 34.5.8,
   // shell/browser/web_contents_preferences.cc:280-286:
   //
   //     bool WebContentsPreferences::IsSandboxed() const {

@@ -9,6 +9,55 @@ import { setLocalExecWindow, startLocalExec, stopLocalExec } from "./localExec";
 import { createCredentialStorageReporter } from "./credentialStorage";
 
 /**
+ * Put every renderer this app will ever create in the Chromium sandbox, once,
+ * here — rather than trusting each window's webPreferences not to opt out.
+ *
+ * This is the same guarantee the per-window comment in createWindow() describes,
+ * made structural. KYB-569 was `webPreferences.sandbox: false`, and the guard
+ * written against it had to ENUMERATE the spellings that turn the sandbox off.
+ * Two review rounds each found that list incomplete — `nodeIntegration: true`,
+ * then `nodeIntegrationInWorker: true`. A list that has to stay exhaustive to be
+ * correct is a poor guarantee, because the failure of it is silent. One call
+ * that outranks all of them is a better one.
+ *
+ * How it outranks them, in Electron 34.5.8, written down because it is not where
+ * you would look. enableSandbox() strips any --no-sandbox already on the command
+ * line and appends `enable-sandbox`
+ * (shell/browser/api/electron_api_app.cc:1429-1440; the switch itself is
+ * shell/common/options_switches.cc:199). That switch is then copied onto every
+ * renderer's command line (shell/browser/electron_browser_client.cc:533-540)
+ * BEFORE the per-window preferences get their say at :573. And their say is
+ * this, from shell/browser/web_contents_preferences.cc:320-325:
+ *
+ *     if (IsSandboxed() || can_sandbox_frame) {
+ *       command_line->AppendSwitch(switches::kEnableSandbox);
+ *     } else if (!command_line->HasSwitch(switches::kEnableSandbox)) {
+ *       command_line->AppendSwitch(sandbox::policy::switches::kNoSandbox);
+ *       command_line->AppendSwitch(::switches::kNoZygote);
+ *     }
+ *
+ * `sandbox: false`, `nodeIntegration: true` and `nodeIntegrationInWorker: true`
+ * all work by making IsSandboxed() return false (:280-286). With the switch
+ * present the else branch cannot fire, so not one of them can reach
+ * --no-sandbox --no-zygote any more. That is the point of doing it here: three
+ * spellings defeated by one positive act instead of three negative ones.
+ *
+ * Note carefully that it is the else-IF that does this, and NOT IsSandboxed()
+ * itself — IsSandboxed() reads the webPreferences value first and never consults
+ * the switch at all. Anyone re-checking this against a later Electron should
+ * look at :320-325, not at :280-286, or they will conclude it does not work.
+ *
+ * It must run before the app is ready: EnableSandbox throws outright if
+ * Browser::Get()->is_ready() (:1430-1435). Hence module scope, not whenReady().
+ *
+ * What this does not change is the reason any of it is guarded rather than
+ * merely written down: the failure is SILENT. The bridge never attaches,
+ * window.studio is undefined, and the app looks SIGNED OUT rather than broken.
+ * Do not judge this by the app starting.
+ */
+app.enableSandbox();
+
+/**
  * Say which credential store the OS gave us — once, and only once there is a
  * window to say it behind.
  *
@@ -62,9 +111,18 @@ function createWindow(): void {
       // `sandbox: false` came across from KBDE, where nodeIntegrationInSubFrames
       // made it necessary. Studio has no such frames and its preload is pure IPC
       // — no Node APIs at all — so the flag bought nothing and cost both windows
-      // their sandbox: Electron implements it by spawning the renderer
+      // their sandbox: Electron implemented it by spawning the renderer
       // --no-sandbox --no-zygote, in the host user namespace, NoNewPrivs 0,
       // Seccomp 0. Do not reintroduce it to fix a preload problem.
+      //
+      // That last route is now closed at the app level — app.enableSandbox() at
+      // the top of this file means `sandbox: false` here can no longer reach
+      // --no-sandbox, which is why this comment says "implemented" and not
+      // "implements". The flag would now be merely wrong rather than dangerous.
+      // It is still wrong: it tells the renderer it is unsandboxed while the
+      // process it runs in is sandboxed anyway, and the preload breaks on the
+      // difference. The app-wide call is the guarantee; this is still the place
+      // a person edits, so it is still written down here.
       preload: join(__dirname, "../preload/index.cjs"),
     },
   });
