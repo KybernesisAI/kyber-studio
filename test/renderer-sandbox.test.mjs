@@ -126,17 +126,33 @@ test("src/main forces the sandbox on, app-wide", () => {
   // whereas `sandbox: false` is exactly what a person reaches for — but it is
   // the honest limit of a text scan in this direction, and it needs a parser to
   // close, same as the computed values described below.
-  const sites = sitesOf(/\benableSandbox\s*\(\s*\)/);
+  //
+  // THE RECEIVER IS PART OF THE ASSERTION. Without `app\s*\.` in front, the
+  // pattern was `/\benableSandbox\s*\(\s*\)/`, which matches the DEFINITION
+  // `function enableSandbox() {}` as happily as the call — so a file that
+  // defines the name and never calls Electron's method satisfied the primary
+  // guarantee. Verified by mutation: substituting that definition for the real
+  // call passed this test before the receiver was required.
+  //
+  // Exactly one call is expected, and it is deliberately NOT asserted.
+  // `sites.length === 1` would narrow the string-literal hole above a little,
+  // but a second legitimate call — a helper module under src/main adding a
+  // defensive one — is a plausible future edit, and failing it with "expected
+  // exactly 1" would read as a bug in the test rather than a decision. The
+  // string-literal hole is already much harder to hit now that `app.` is
+  // required; that is where the cheap narrowing was, and it has been taken.
+  const sites = sitesOf(/\bapp\s*\.\s*enableSandbox\s*\(\s*\)/);
   assert.ok(
     sites.length > 0,
     "nothing in src/main calls app.enableSandbox().\n" +
       "  WHAT THAT LOSES: the sandbox stops being forced on app-wide, and the only\n" +
       "  thing still keeping the renderer in it is the list of spellings in the test\n" +
-      "  below. That list was found incomplete in two successive review rounds\n" +
-      "  (nodeIntegration: true, then nodeIntegrationInWorker: true), and it cannot\n" +
-      "  see a computed value at all. Removing this call puts the guarantee back on\n" +
-      "  an enumeration that has twice failed to be exhaustive — and it fails\n" +
-      "  silently: the bridge never attaches and the app looks SIGNED OUT.",
+      "  below. That list was found incomplete in three successive review rounds\n" +
+      "  (nodeIntegration: true, then nodeIntegrationInWorker: true, then\n" +
+      "  removeSwitch(\"enable-sandbox\")), and it cannot see a computed value at all.\n" +
+      "  Removing this call puts the guarantee back on an enumeration that has three\n" +
+      "  times failed to be exhaustive — and it fails silently: the bridge never\n" +
+      "  attaches and the app looks SIGNED OUT.",
   );
 });
 
@@ -145,22 +161,76 @@ test("no window in src/main disables the renderer sandbox", () => {
   // not accepted as an alternative and is not what the fix did — sandboxed is
   // the default, and an explicit true is an invitation to flip it back.
   //
-  // DEFENCE IN DEPTH, NOT THE GUARANTEE. The positive assertion above is what
-  // keeps the renderer sandboxed now: app.enableSandbox() overrides every
-  // webPreferences spelling below, so an incomplete list here is NO LONGER A
-  // HOLE. That is the whole point of the restructure — this list used to have to
-  // be exhaustive to be correct, and twice it was not.
+  // THIS LIST HOLDS TWO CLASSES OF ENTRY AND THEY ARE NOT EQUALLY LOAD-BEARING.
+  // The previous revision of this comment said flatly that app.enableSandbox()
+  // "overrides every webPreferences spelling below, so an incomplete list here
+  // is NO LONGER A HOLE". That is true of the first class and FALSE of the
+  // second, and the second is not a webPreferences spelling at all. Work out
+  // which class you are adding to before you treat this list as optional.
   //
-  // It is kept, rather than deleted, because these flags do more than unsandbox
-  // a renderer and are worth catching for those other effects: nodeIntegration
-  // exposes require() to renderer code, nodeIntegrationInWorker does the same
-  // inside workers, and nodeIntegrationInSubFrames unsandboxes cross-origin
-  // subframes (which enableSandbox does not speak to — see :318). It also still
-  // catches the mistake at the place a person actually edits, with a file:line,
-  // which is worth more than a correct-but-silent app-wide override.
+  //   PER-WINDOW SPELLINGS — sandbox, nodeIntegration, nodeIntegrationInWorker,
+  //   nodeIntegrationInSubFrames. app.enableSandbox() OVERRIDES these. The
+  //   switch it appends makes the else-if at web_contents_preferences.cc:322
+  //   unreachable, and that else-if is the only route to --no-sandbox. For this
+  //   class an incomplete list is genuinely no longer a hole. The entries are
+  //   kept for their OTHER effects, described below, and because they name a
+  //   file:line at the place a person actually edits.
+  //
+  //   APP-WIDE COMMAND-LINE ROUTES — appendSwitch("no-sandbox"),
+  //   removeSwitch("enable-sandbox"). enableSandbox() does NOT override these.
+  //   They act on the same command line it wrote to, after it wrote to it, and
+  //   removeSwitch REMOVES THE OVERRIDE rather than being overridden by it. For
+  //   this class the enumeration is the only thing between the app and KYB-569,
+  //   exactly as it was before the restructure, and an omission here IS a hole.
+  //
+  // The mechanism for removeSwitch, because it is the one that forces the
+  // distinction (Electron 34.5.8 on Chromium 132.0.6834.210):
+  //
+  //   - `app.commandLine.removeSwitch` is a public, app-wide, greppable API —
+  //     shell/common/api/electron_api_command_line.cc:62 binds it, :43-46 hands
+  //     the string straight to Chromium.
+  //   - base::CommandLine::RemoveSwitch does `switches_.erase(it)`
+  //     (base/command_line.cc:446) and strips the switch from argv_ too
+  //     (:447-462).
+  //   - base::CommandLine::HasSwitch is `return Contains(switches_,
+  //     switch_string);` (:340-343). It reads switches_ and nothing else.
+  //
+  // So `removeSwitch("enable-sandbox")` ANYWHERE after the module-scope
+  // app.enableSandbox() makes HasSwitch(kEnableSandbox) false at :322, the else
+  // branch fires, and kNoSandbox + kNoZygote are appended at :323-324. That is
+  // the KYB-569 state exactly — the host user namespace, NoNewPrivs 0, Seccomp
+  // 0 — reached silently from one line. The switch name is the literal string
+  // "enable-sandbox" (shell/common/options_switches.cc:199), which is why a
+  // text scan can see this one at all.
+  //
+  // The `--`-prefixed form is matched for shape, NOT because it works.
+  // RemoveSwitch DCHECKs that the key carries no prefix (:442) and looks up the
+  // raw argument (:443), so `removeSwitch("--enable-sandbox")` finds nothing
+  // and returns at :445: a no-op in release, a DCHECK failure in debug. It is
+  // matched anyway because it states the same intent and should be read by a
+  // human. The `(?:--)?` on the appendSwitch entry is NOT the same and IS
+  // load-bearing: AppendSwitchNative strips the prefix before storing the key
+  // (:399-400, :405), so `appendSwitch("--no-sandbox")` genuinely does set
+  // switches_["no-sandbox"].
+  //
+  // NOT A HOLE, checked explicitly so that nobody adds it later on the strength
+  // of it looking like one: `app.commandLine.appendArgument("--no-sandbox")`.
+  // electron_api_command_line.cc:63 maps it to base::CommandLine::AppendArg
+  // (:48-52), which is argv_.push_back and never touches switches_ — and
+  // HasSwitch reads switches_ only. It cannot flip the branch at :322. Leave it
+  // off this list.
+  //
+  // The per-window entries are kept, rather than deleted, because these flags
+  // do more than unsandbox a renderer and are worth catching for those other
+  // effects: nodeIntegration exposes require() to renderer code,
+  // nodeIntegrationInWorker does the same inside workers, and
+  // nodeIntegrationInSubFrames loads the preload — and therefore the whole
+  // window.studio contextBridge surface — into every iframe. That last one is
+  // the part enableSandbox() genuinely does not speak to; see the correction
+  // below, which reverses what this file previously claimed.
   //
   // Read the rest of this comment as the reasoning that MADE the list, not as a
-  // standard it must still meet.
+  // standard the per-window half must still meet.
   //
   // After the fix there is no `sandbox` key in either webPreferences at all —
   // and that absence is precisely the state in which Electron DERIVES the answer
@@ -182,10 +252,53 @@ test("no window in src/main disables the renderer sandbox", () => {
   //
   // Read that derivation carefully, because it is narrower than it looks:
   // nodeIntegration and nodeIntegrationInWorker feed IsSandboxed() directly.
-  // nodeIntegrationInSubFrames does NOT — it gates `can_sandbox_frame` for
-  // cross-origin SUBFRAMES (:318). It stays on this list on its own merits: it
-  // unsandboxes those subframes, and src/main/index.ts names it as the reason
-  // `sandbox: false` came across from KBDE in the first place.
+  // nodeIntegrationInSubFrames does NOT — it gates `can_sandbox_frame` (:318).
+  //
+  // CORRECTION, review round 4. This file previously said that
+  // nodeIntegrationInSubFrames "unsandboxes cross-origin subframes (which
+  // enableSandbox does not speak to)". That was wrong, and wrong in the
+  // direction that matters: it understated the app-wide call. Re-read :318-325
+  // against 34.5.8:
+  //
+  //     bool can_sandbox_frame = is_subframe && !node_integration_in_sub_frames_;
+  //
+  //     if (IsSandboxed() || can_sandbox_frame) {
+  //       command_line->AppendSwitch(switches::kEnableSandbox);
+  //     } else if (!command_line->HasSwitch(switches::kEnableSandbox)) {
+  //       … kNoSandbox … kNoZygote
+  //     }
+  //
+  // can_sandbox_frame feeds ONLY the positive arm at :320, so it can only ever
+  // ADD sandboxing; there is no path from it to kNoSandbox. The sole route to
+  // kNoSandbox is the else-if at :322, and app.enableSandbox() blocks that.
+  // enableSandbox() therefore DOES cover the subframe case: with the switch
+  // present, nodeIntegrationInSubFrames: true cannot produce --no-sandbox
+  // --no-zygote for a subframe renderer either. Setting it to true turns
+  // can_sandbox_frame off, which withholds an ADDITIONAL AppendSwitch that the
+  // app-wide one has already made redundant.
+  //
+  // The entry stays, but for a different reason than the one written here
+  // before. nodeIntegrationInSubFrames: true loads the preload into EVERY
+  // subframe — every, not every cross-origin one; there is no origin test
+  // anywhere in the decision, and the old wording borrowed "cross-origin" from
+  // the comment above :318, which is about which frames get their own process
+  // and is a different question. shell/renderer/renderer_client_base.cc:216-227
+  // is the decision:
+  //
+  //     bool allow_node_in_sub_frames = prefs.node_integration_in_sub_frames;
+  //     return (is_main_frame || is_devtools || allow_node_in_sub_frames) &&
+  //            !IsWebViewFrame(context, render_frame);
+  //
+  // Without the flag a subframe gets no preload; with it, every one does. And
+  // that call is made by the SANDBOXED renderer client as well
+  // (shell/renderer/electron_sandboxed_renderer_client.cc:167-174), which is
+  // exactly the point: forcing the sandbox on does not take the preload back
+  // out of those frames. So the whole window.studio contextBridge surface — the
+  // control-plane IPC included — is handed to whatever each iframe happens to
+  // be showing. THAT is what enableSandbox() does not touch, and it is a real
+  // exposure worth a guard — it is simply not a sandbox-flag question.
+  // src/main/index.ts names this flag as the reason `sandbox: false` came
+  // across from KBDE in the first place, and carries the same correction.
   //
   // nodeIntegrationInWorker is the third spelling, and it was missed when this
   // test was written — review round 3 found it, against Electron's source. The
@@ -207,13 +320,31 @@ test("no window in src/main disables the renderer sandbox", () => {
   // `app.commandLine.appendSwitch("no-sandbox")` is a further route and an
   // app-wide one rather than per-window. It is greppable, so it is checked
   // below — but only because it is greppable, and the computed-value hole above
-  // applies to it just the same.
+  // applies to it just the same. So does it apply to removeSwitch: the switch
+  // name arriving as a variable puts that call out of reach too.
+  //
+  // AND THE BOUNDARY OF THE WHOLE SCAN, which is narrower than any individual
+  // pattern. Everything here reads src/main and nothing else. --no-sandbox can
+  // reach this app from at least three places no guard in this file can see:
+  //
+  //   - a package.json script, or anything else that puts it on the argv the
+  //     app is launched with;
+  //   - an electron-builder launch argument baked into the packaged artefact;
+  //   - the ELECTRON_DISABLE_SANDBOX environment variable, which is real in
+  //     34.5.8 — shell/app/electron_main_delegate.cc:84 names it and :260-261
+  //     appends sandbox::policy::switches::kNoSandbox when it is set.
+  //
+  // None of those is a defect in this test; they are simply outside what a scan
+  // of src/main can reach, and they are written down for the same reason the
+  // computed-value hole is. Closing them means checking the launch surface and
+  // the environment, which is a different guard in a different place.
   const disallowed = [
     ["sandbox: false", /\bsandbox\s*:\s*false\b/],
     ["nodeIntegration: true", /\bnodeIntegration\s*:\s*true\b/],
     ["nodeIntegrationInSubFrames: true", /\bnodeIntegrationInSubFrames\s*:\s*true\b/],
     ["nodeIntegrationInWorker: true", /\bnodeIntegrationInWorker\s*:\s*true\b/],
     ['appendSwitch("no-sandbox")', /\bappendSwitch\s*\(\s*["'`](?:--)?no-sandbox\b/],
+    ['removeSwitch("enable-sandbox")', /\bremoveSwitch\s*\(\s*["'`](?:--)?enable-sandbox\b/],
   ];
 
   for (const [property, pattern] of disallowed) {
