@@ -2046,6 +2046,39 @@ export const useStore = create<State>((set, get) => ({
       live: x.live,
     }));
     info.channels = [...info.channels, ...extra];
+
+    /**
+     * Adopt the agent's own conversation, so a routine's answer shows up here.
+     *
+     * A routine cannot post into whichever session this app happened to start:
+     * eve reserves the session namespace, and the only thing that can address a
+     * session by id is handed to HTTP route handlers, never to a schedule. So
+     * the agent keeps ONE canonical conversation, every routine delivers into
+     * it, and this side joins it rather than holding a second one. Then what a
+     * routine says and what the person types are the same thread.
+     *
+     * Only when it differs from what we hold, and only when the agent actually
+     * has one — before the first routine delivers there is nothing to adopt,
+     * and switching to an empty thread would throw away a live conversation.
+     */
+    const canonical = await window.studio.manage({ url: agent.url, path: "/session" });
+    const named = canonical.ok
+      ? (canonical.data as { session?: { sessionId?: string } | null }).session?.sessionId
+      : undefined;
+    if (typeof named === "string" && named !== "" && get().sessions[agentId] !== named) {
+      set((st) => {
+        const streamIndexes = { ...st.streamIndexes };
+        // The cursor belongs to the thread being left; carrying it over would
+        // read from the wrong offset in the one being joined.
+        delete streamIndexes[agentId];
+        return {
+          sessions: { ...st.sessions, [agentId]: named },
+          conversations: { ...st.conversations, [agentId]: [] },
+          streamIndexes,
+        };
+      });
+      await get().hydrate(agentId);
+    }
     set((s) => ({
       details: { ...s.details, [agentId]: info },
       models: info.model ? { ...s.models, [agentId]: info.model } : s.models,
