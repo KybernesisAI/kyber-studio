@@ -57,6 +57,7 @@ import {
   identify,
   normaliseArch,
   tallyPlatforms,
+  tallyVerdicts,
   verdictFor,
 } from "./lib/native-arch.mjs";
 
@@ -528,10 +529,18 @@ const natives = [...archiveOnly, ...unpackedNatives];
  */
 const INVENTORY = `.node inventory: app.asar ${archiveNatives.length} (${archiveNatives.length - archiveOnly.length} also unpacked, counted once) + app.asar.unpacked ${unpackedNatives.length} = ${natives.length} unique`;
 
-const wrongArch = [];
-const foreignPlatform = [];
-let checked = 0;
-let unrecognised = 0;
+/**
+ * The walk reads; `tallyVerdicts` counts.
+ *
+ * What stays in this loop is what needs a real file on disk — `identify`, and
+ * the exit for when it cannot be read — plus the per-file `verdictFor` call,
+ * which needs no file but has to happen once per header. The deciding and the
+ * bookkeeping both live in scripts/lib/native-arch.mjs, where a test can reach
+ * without building an artefact: this file is a script, so importing it runs it,
+ * and for as long as the counting lived here it could not be tested at all
+ * (KYB-562).
+ */
+const entries = [];
 
 for (const native of natives) {
   let header;
@@ -542,37 +551,17 @@ for (const native of natives) {
     // to shrug at, but it is not a mismatch either — so it gets its own words.
     //
     // Deliberately WITHOUT the foreign/skipped counts the other failing path
-    // prints: this exits mid-walk, so those counts cover only the files reached
-    // before this one. A partial count presented as a count is worse than none,
-    // and the file named here is the diagnosis anyway.
+    // prints. This exits mid-walk, before anything has been tallied at all, and
+    // a partial count presented as a count is worse than none. The file named
+    // here is the diagnosis anyway.
     console.error(`\n✗ could not read the header of a bundled native binary:\n  ${native.shown}`);
     console.error(`  ${error.message}\n`);
     process.exit(1);
   }
-  // The verdict itself lives in scripts/lib/native-arch.mjs so that it can be
-  // tested without a packaged app; what stays here is the bookkeeping, and the
-  // rule that `foreign` and `unrecognised` do NOT count as checked.
-  switch (verdictFor(header, TARGET_PLATFORM, ACCEPTABLE)) {
-    case "unrecognised":
-      unrecognised += 1;
-      break;
-    case "foreign":
-      foreignPlatform.push({ ...native, ...header });
-      break;
-    case "wrong-arch":
-      checked += 1;
-      wrongArch.push({ ...native, arches: header.arches });
-      break;
-    case "correct":
-      checked += 1;
-      break;
-    default:
-      // Named rather than left to `default`, so that a fifth verdict added later
-      // cannot land here and be silently counted as a file verified — which is
-      // the exact failure the checked/foreign asymmetry exists to prevent.
-      throw new Error(`unhandled verdict for ${native.shown}`);
-  }
+  entries.push({ native, header, verdict: verdictFor(header, TARGET_PLATFORM, ACCEPTABLE) });
 }
+
+const { checked, unrecognised, foreignPlatform, wrongArch } = tallyVerdicts(entries);
 
 /**
  * What was NOT arch-checked, and why — printed on the failing path as well as
