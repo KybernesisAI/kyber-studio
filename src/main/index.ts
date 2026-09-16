@@ -7,6 +7,7 @@ import { electronApp, is, optimizer } from "@electron-toolkit/utils";
 import { registerIpc } from "./ipc";
 import { setLocalExecWindow, startLocalExec, stopLocalExec } from "./localExec";
 import { createCredentialStorageReporter } from "./credentialStorage";
+import { focusExistingWindow } from "./singleInstance";
 
 /**
  * Put every renderer this app will ever create in the Chromium sandbox, once,
@@ -220,22 +221,83 @@ function createWindow(): void {
   }
 }
 
-void app.whenReady().then(() => {
-  electronApp.setAppUserModelId("ai.kybernesis.kyberstudio");
-  registerIpc();
-  // The updater needs a live window to report progress to, and windows come and
-  // go on macOS — so it takes a getter rather than an instance.
-  registerUpdater(() => mainWindow);
-  startLocalExec();
-  app.on("browser-window-created", (_, window) => optimizer.watchWindowShortcuts(window));
-  createWindow();
-  // Load the speech model in the background so the first dictation is not the
-  // one that waits for it. Silent on failure: nobody asked for anything yet.
-  warmUp();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+/**
+ * One Studio per machine, and a second launch reaches the one already running.
+ *
+ * Without this, a second launch was simply a second app: measured on Linux, two
+ * main processes side by side, both reaching the keyring, nothing noticing.
+ * Nothing collides loudly enough to surface it — the relay poller is an outbound
+ * long-poll rather than a bound port, so there is no address in use to fail on,
+ * and `deviceId()` is read from a file, so both copies present the SAME identity
+ * to the relay. Two clients under one device id is measured — both in the
+ * winner's log and server-side, against a stub relay. What that then does to
+ * delivery is a property of the relay's dispatch, which does not live in this
+ * repo and is NOT measured here.
+ *
+ * They also both write `local-permissions.json` and `local-mcp.json`, neither of
+ * which is written atomically. That is a real defect and it is NOT this lock's
+ * to fix — a crash mid-write does the same thing to a single instance, and the
+ * same code ships on macOS, so it belongs in its own ticket against the product
+ * (KYB-500 settled decision 8). At the time of writing that ticket is drafted
+ * and NOT yet filed, so there is no id to point you at; the reasoning is in
+ * KYB-575's "Scope" section. The lock narrows how often the interleaving is
+ * reached; it does not remove it.
+ */
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  // Not an error, and deliberately silent: the person double-clicked an app
+  // that was already running. The instance that owns the lock is about to be
+  // raised in front of them, which is the whole answer.
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    // The handler drops the second launch's `argv` and `workingDirectory`.
+    //
+    // What makes that safe is one positive fact, not a list of absences: the
+    // ONLY reader of `argv` in this app is `readPasswordStoreOverride`
+    // (credentialStorage.ts:63), and it reports whether `--password-store` was
+    // set — a Chromium switch consumed at process start, which a process already
+    // running could not retroactively honour anyway. Nothing else reads `argv`,
+    // and nothing in src/main reads `process.cwd()`.
+    //
+    // Phrased that way deliberately. The enumeration this replaced was all true
+    // — no setAsDefaultProtocolClient, no open-url handler, no `protocols` key,
+    // sign-in is a device code rather than a deep link — but it ruled out deep
+    // links ONLY. Someone later adding a flag a running instance should act on
+    // would have found four facts still true and concluded nothing had changed.
+    // KYB-569 spent three review rounds on a guard that had to stay exhaustive
+    // to be correct; this epic has paid for that lesson already.
+    //
+    // So: the day someone adds a `kyber://` handler, or any flag a running
+    // instance must act on, this is where it arrives and where it would
+    // otherwise be silently swallowed.
+    //
+    // No window is the macOS case — `window-all-closed` does not quit there, so
+    // the app can be running with nothing on screen and a second launch is a
+    // request to open one. Note that on macOS this handler is NOT the common
+    // path: relaunching from Finder or the Dock activates the existing process
+    // and emits `activate`, handled below, rather than starting a second one.
+    if (focusExistingWindow(mainWindow) === "no-window") createWindow();
   });
-});
+
+  void app.whenReady().then(() => {
+    electronApp.setAppUserModelId("ai.kybernesis.kyberstudio");
+    registerIpc();
+    // The updater needs a live window to report progress to, and windows come and
+    // go on macOS — so it takes a getter rather than an instance.
+    registerUpdater(() => mainWindow);
+    startLocalExec();
+    app.on("browser-window-created", (_, window) => optimizer.watchWindowShortcuts(window));
+    createWindow();
+    // Load the speech model in the background so the first dictation is not the
+    // one that waits for it. Silent on failure: nobody asked for anything yet.
+    warmUp();
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
+  });
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
