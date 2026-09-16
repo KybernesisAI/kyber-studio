@@ -1,9 +1,12 @@
 /**
- * Reading (platform, arch) out of a native binary, and out of a build path.
+ * Reading (platform, arch) out of a native binary and out of a build path, and
+ * the bookkeeping kept over the verdicts that come out of it.
  *
  * @remarks
- * This is the measuring half of `verify-package.mjs` section 3, and it lives in
- * its own file for ONE reason: so that it can be tested without a packaged app.
+ * This is the half of `verify-package.mjs` section 3 that needs no packaged app
+ * to run: `identify` reads bytes off a path it is handed, and nothing here
+ * builds, unpacks or locates an artefact. It lives in its own file for ONE
+ * reason — so that it can be tested without one.
  *
  * `verify-package.mjs` is a script, not a module — it runs top to bottom, needs
  * a real bundle to point at, and calls `process.exit`. Importing it from a test
@@ -11,11 +14,25 @@
  * at all except by building an artefact, which is why every proof KYB-544 had
  * lived in a temporary CI workflow and died with it (KYB-551).
  *
- * Nothing here changed in the move. These are the same functions, byte for byte,
- * with the same comments; the split is structural. If you are changing behaviour,
- * `test/native-arch.test.mjs` is where you find out what you broke, and a test
- * that disagrees with the code is a finding to raise rather than an assertion to
- * edit.
+ * Nothing changed in KYB-551's move: the classifier and the verdict came across
+ * byte for byte, with the same comments. KYB-562 is NOT quite that, and the
+ * difference is worth knowing before you read `tallyVerdicts` as a transcript.
+ * Its switch body did move unchanged, but the function around it is new, its
+ * `switch` head reads a verdict it was handed instead of calling `verdictFor`
+ * itself, and its four collections moved from module scope in the script to
+ * inside the function — per-call now, where they were per-process. That last
+ * part is the behaviour-relevant one of the three, and the reason "nothing
+ * changed" would be the wrong thing to tell you here.
+ *
+ * One further difference is real but unreachable: the `default:` throw fires
+ * after the walk now rather than during it, so an unknown verdict followed by a
+ * file with an unreadable header would reach the walk's own exit instead of
+ * throwing. `verdictFor` is closed at four verdicts and tested to be, so it
+ * cannot arise — the criterion is met by reachability, not by identity.
+ *
+ * If you are changing behaviour, `test/native-arch.test.mjs` is where you find
+ * out what you broke, and a test that disagrees with the code is a finding to
+ * raise rather than an assertion to edit.
  *
  * Nothing here touches the network or the environment, but nothing here is
  * quite pure either. `identify` reads the first 4 KiB of the file it is handed
@@ -275,9 +292,9 @@ export function expectedLabel(acceptable) {
  *   This is the failure the whole section exists to produce.
  * - `correct` — same platform, at least one acceptable slice.
  *
- * `wrong-arch` and `correct` both count as CHECKED by the caller; `foreign` and
- * `unrecognised` do not. That asymmetry is what stops a bundle full of foreign
- * payload reporting a reassuring number of files checked.
+ * `wrong-arch` and `correct` both count as CHECKED by `tallyVerdicts`;
+ * `foreign` and `unrecognised` do not. That asymmetry is what stops a bundle
+ * full of foreign payload reporting a reassuring number of files checked.
  *
  * A measurement we have no name for — "ELF machine 0x2b" — is not in any
  * acceptable set, so on the target platform it lands on `wrong-arch` and fails
@@ -288,4 +305,55 @@ export function verdictFor(header, targetPlatform, acceptable) {
   if (header.platform !== targetPlatform) return "foreign";
   if (!header.arches.some((arch) => acceptable.has(arch))) return "wrong-arch";
   return "correct";
+}
+
+/**
+ * The walk's bookkeeping, as a pure reducer.
+ *
+ * @remarks
+ * `verdictFor` decides what each file IS; this decides what the walk DOES with
+ * that answer, and the two were split for the same reason. While these five
+ * lines lived inside the loop in `verify-package.mjs` — a script, so importing
+ * it runs it — no committed test could reach them. The asymmetry documented on
+ * `verdictFor` rested on nothing: an edit adding `checked += 1` to the `foreign`
+ * case would have passed the entire suite, and the build would have gone green
+ * with a bigger and more reassuring number of files "verified". That is a silent
+ * failure in the machinery whose whole job is to make a silent failure loud
+ * (KYB-562).
+ *
+ * Takes `[{ native, header, verdict }]` with the verdict already decided per
+ * file, because deciding it needs `identify()` to have read the file, and
+ * reading files is the walk's job rather than this one's. Returns fresh
+ * collections on every call and touches nothing outside them.
+ */
+export function tallyVerdicts(entries) {
+  const wrongArch = [];
+  const foreignPlatform = [];
+  let checked = 0;
+  let unrecognised = 0;
+
+  for (const { native, header, verdict } of entries) {
+    switch (verdict) {
+      case "unrecognised":
+        unrecognised += 1;
+        break;
+      case "foreign":
+        foreignPlatform.push({ ...native, ...header });
+        break;
+      case "wrong-arch":
+        checked += 1;
+        wrongArch.push({ ...native, arches: header.arches });
+        break;
+      case "correct":
+        checked += 1;
+        break;
+      default:
+        // Named rather than left to `default`, so that a fifth verdict added later
+        // cannot land here and be silently counted as a file verified — which is
+        // the exact failure the checked/foreign asymmetry exists to prevent.
+        throw new Error(`unhandled verdict for ${native.shown}`);
+    }
+  }
+
+  return { checked, unrecognised, foreignPlatform, wrongArch };
 }

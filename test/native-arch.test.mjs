@@ -11,6 +11,7 @@ import {
   identify,
   normaliseArch,
   tallyPlatforms,
+  tallyVerdicts,
   verdictFor,
 } from "../scripts/lib/native-arch.mjs";
 
@@ -510,4 +511,197 @@ test("measuring and deciding join up, from bytes to verdict", () => {
 
   const notAnObject = identify(binaryFile(Buffer.from("#!/bin/sh\n")));
   assert.equal(verdictFor(notAnObject, "linux", acceptableFor("x64")), "unrecognised");
+});
+
+/**
+ * `tallyVerdicts` — the walk's bookkeeping (KYB-562).
+ *
+ * These exist to catch ONE edit: counting a file the section did not arch-check
+ * as one it did. `wrong-arch` and `correct` are checked; `foreign` and
+ * `unrecognised` are not. Break that and nothing else fails — the build goes
+ * green with a bigger, more comforting number, which is a silent failure in the
+ * machinery whose entire job is to make a silent failure loud.
+ *
+ * Until KYB-562 these five lines sat inside the loop in `verify-package.mjs`,
+ * which is a script: importing it runs it, so no committed test could reach
+ * them. An edit adding `checked += 1` to the `foreign` case would have passed
+ * the whole suite.
+ *
+ * The verdicts are handed in rather than derived here. `verdictFor` is already
+ * exhaustively tested above, and what is under test below is only what the
+ * caller DOES with its answer — so the inputs are synthetic verdict lists and no
+ * file is read.
+ */
+const nativeAt = (n) => ({
+  file: `/dist/linux-unpacked/resources/app.asar.unpacked/${n}.node`,
+  shown: `resources/app.asar.unpacked/${n}.node`,
+});
+const LINUX_X64 = { platform: "linux", format: "ELF", arches: ["x64"] };
+const LINUX_ARM64 = { platform: "linux", format: "ELF", arches: ["arm64"] };
+const WIN32_X64 = { platform: "win32", format: "PE", arches: ["x64"] };
+const entry = (verdict, header, n = 0) => ({ native: nativeAt(n), header, verdict });
+
+test("an empty walk tallies to nothing", () => {
+  assert.deepEqual(tallyVerdicts([]), {
+    checked: 0,
+    unrecognised: 0,
+    foreignPlatform: [],
+    wrongArch: [],
+  });
+});
+
+test("a correct file counts as checked", () => {
+  const { checked, wrongArch, foreignPlatform, unrecognised } = tallyVerdicts([
+    entry("correct", LINUX_X64),
+  ]);
+  assert.equal(checked, 1);
+  assert.deepEqual(wrongArch, []);
+  assert.deepEqual(foreignPlatform, []);
+  assert.equal(unrecognised, 0);
+});
+
+test("a wrong-arch file counts as checked AND is reported", () => {
+  // Both halves matter and they fail independently. Dropping the `checked`
+  // increment here is the third mutation KYB-562 names: the file WAS examined
+  // and found wrong, so a bundle of nothing but mismatches must not report that
+  // it checked none of them.
+  const { checked, wrongArch } = tallyVerdicts([entry("wrong-arch", LINUX_ARM64)]);
+  assert.equal(checked, 1);
+  assert.equal(wrongArch.length, 1);
+});
+
+test("a foreign file is never counted as checked", () => {
+  // The first mutation KYB-562 names. A win32 x64 binary in an x64 linux bundle
+  // matches the expected arch exactly and is still not evidence of anything —
+  // it is not going to be loaded here, so it was never arch-checked.
+  const { checked, foreignPlatform } = tallyVerdicts([entry("foreign", WIN32_X64)]);
+  assert.equal(checked, 0);
+  assert.equal(foreignPlatform.length, 1);
+});
+
+test("an unrecognised file is never counted as checked", () => {
+  // The second mutation KYB-562 names. `identify` returned null: we do not know
+  // what this file is, which is the opposite of having verified it.
+  const { checked, unrecognised } = tallyVerdicts([entry("unrecognised", null)]);
+  assert.equal(checked, 0);
+  assert.equal(unrecognised, 1);
+});
+
+test("the checked/unchecked asymmetry holds across a mixed walk", () => {
+  // Eight files, three of them arch-checked. The single assertion that fails
+  // under any of the four increment mutations at once, and the shape a real
+  // bundle actually has: some payload for this platform, some for others.
+  const tally = tallyVerdicts([
+    entry("correct", LINUX_X64, 0),
+    entry("foreign", WIN32_X64, 1),
+    entry("unrecognised", null, 2),
+    entry("wrong-arch", LINUX_ARM64, 3),
+    entry("foreign", WIN32_X64, 4),
+    entry("correct", LINUX_X64, 5),
+    entry("unrecognised", null, 6),
+    entry("foreign", WIN32_X64, 7),
+  ]);
+  assert.equal(tally.checked, 3, "only correct and wrong-arch are checked");
+  assert.equal(tally.unrecognised, 2);
+  assert.equal(tally.foreignPlatform.length, 3);
+  assert.equal(tally.wrongArch.length, 1);
+});
+
+test("reported files keep the order the walk found them in", () => {
+  // The report prints these lists straight out, file by file. A reordering here
+  // would be invisible in the counts and wrong on the screen.
+  const tally = tallyVerdicts([
+    entry("foreign", WIN32_X64, 2),
+    entry("wrong-arch", LINUX_ARM64, 9),
+    entry("foreign", WIN32_X64, 0),
+    entry("wrong-arch", LINUX_ARM64, 4),
+    entry("foreign", WIN32_X64, 1),
+  ]);
+  assert.deepEqual(
+    tally.foreignPlatform.map(({ shown }) => shown),
+    [nativeAt(2).shown, nativeAt(0).shown, nativeAt(1).shown],
+  );
+  assert.deepEqual(
+    tally.wrongArch.map(({ shown }) => shown),
+    [nativeAt(9).shown, nativeAt(4).shown],
+  );
+});
+
+test("a reported file carries exactly the fields its report line reads", () => {
+  // `reportUncheckedFiles` destructures { shown, format, arches } off a foreign
+  // entry and `tallyPlatforms` reads its `platform`; the wrong-arch report reads
+  // { shown, arches }. The whole object is pinned rather than those fields, so
+  // that a field appearing or vanishing is a failure here rather than a surprise
+  // on the screen.
+  //
+  // It does NOT pin the merge direction — measured, not assumed: flipping the
+  // spread survives this assertion, because nothing in `nativeAt` collides with
+  // the header. The test below is the one that pins it.
+  const foreign = tallyVerdicts([entry("foreign", WIN32_X64, 3)]).foreignPlatform[0];
+  assert.deepEqual(foreign, { ...nativeAt(3), platform: "win32", format: "PE", arches: ["x64"] });
+
+  const wrong = tallyVerdicts([entry("wrong-arch", LINUX_ARM64, 3)]).wrongArch[0];
+  assert.deepEqual(wrong, { ...nativeAt(3), arches: ["arm64"] });
+  // NOT the header's platform/format: the wrong-arch line names the file and the
+  // arches it found, and carrying more would be shape nothing reads.
+  assert.equal("format" in wrong, false);
+  assert.equal("platform" in wrong, false);
+});
+
+test("the header wins where it and the walk's own record disagree", () => {
+  // `nodeFilesIn` yields { file, shown } and nothing else, so today no key
+  // collides and the merge direction is invisible — flipping `{ ...native,
+  // ...header }` to `{ ...header, ...native }` survives every other test in this
+  // file. That was measured by mutation, not assumed.
+  //
+  // It stops being invisible the moment anyone adds a field like `format` to the
+  // walk's record, which is a natural thing to add: the report would silently
+  // begin printing the PATH's idea of what the file is instead of the BYTES'.
+  // That is this section's oldest failure mode — substituting an assumption for
+  // a measurement — so the direction is pinned here with a record that
+  // deliberately carries the collision.
+  const native = { ...nativeAt(5), format: "guessed-from-the-path", arches: ["guessed-from-the-path"] };
+  const { foreignPlatform } = tallyVerdicts([{ native, header: WIN32_X64, verdict: "foreign" }]);
+  assert.equal(foreignPlatform[0].format, "PE");
+  assert.deepEqual(foreignPlatform[0].arches, ["x64"]);
+});
+
+test("a fifth verdict throws and names the file, rather than being counted", () => {
+  // What makes the `default:` branch a guard rather than dead code. `verdictFor`
+  // is closed at four verdicts (proved above), so this cannot arise today — it
+  // exists for the day someone adds a fifth and does not come back here. Landing
+  // silently is the failure mode the asymmetry exists to prevent.
+  assert.throws(
+    () => tallyVerdicts([entry("probably-fine", LINUX_X64, 7)]),
+    { message: `unhandled verdict for ${nativeAt(7).shown}` },
+  );
+});
+
+test("a fifth verdict is fatal even when everything around it is fine", () => {
+  // It must not be swallowed by a walk that otherwise tallies cleanly.
+  assert.throws(
+    () => tallyVerdicts([entry("correct", LINUX_X64, 0), entry("who-knows", LINUX_X64, 1), entry("correct", LINUX_X64, 2)]),
+    { message: `unhandled verdict for ${nativeAt(1).shown}` },
+  );
+});
+
+test("each call tallies its own walk and nothing accumulates between them", () => {
+  // Module-level collections would make a second call report the first one's
+  // files too. Nothing calls this twice today; a reducer that cannot be called
+  // twice is a trap for whoever first does.
+  const first = tallyVerdicts([entry("foreign", WIN32_X64), entry("wrong-arch", LINUX_ARM64)]);
+  const second = tallyVerdicts([entry("foreign", WIN32_X64)]);
+  assert.equal(first.foreignPlatform.length, 1);
+  assert.equal(second.foreignPlatform.length, 1);
+  assert.equal(second.wrongArch.length, 0);
+  assert.equal(second.checked, 0);
+});
+
+test("tallying does not mutate the walk it was handed", () => {
+  // The entries are the walk's own record. Spreading into new objects rather
+  // than decorating these is what keeps the reducer pure.
+  const entries = [entry("foreign", WIN32_X64, 1), entry("wrong-arch", LINUX_ARM64, 2)];
+  const before = structuredClone(entries);
+  tallyVerdicts(entries);
+  assert.deepEqual(entries, before);
 });
