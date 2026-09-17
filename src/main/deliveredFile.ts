@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { dialog, shell } from "electron";
+import { app, dialog, shell } from "electron";
 
 /**
  * Taking delivery of a file the agent produced.
@@ -113,7 +113,12 @@ export async function saveRemoteFile(input: {
   suggestedName: string;
 }): Promise<DeliveryResult> {
   const choice = await dialog.showSaveDialog({
-    defaultPath: join(homedir(), "Downloads", basename(input.suggestedName)),
+    // Ask the OS where downloads go. A literal "Downloads" under $HOME is
+    // right on macOS and Windows and wrong on a good deal of Linux: the
+    // directory is whatever XDG_DOWNLOAD_DIR names, and on a localised desktop
+    // it is ~/Herunterladen or ~/Téléchargements, which is to say ~/Downloads
+    // does not exist there at all.
+    defaultPath: join(app.getPath("downloads"), basename(input.suggestedName)),
     title: "Save file",
   });
   if (choice.canceled || !choice.filePath) return { ok: false, cancelled: true };
