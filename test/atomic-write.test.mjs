@@ -27,10 +27,12 @@ import { writeAtomic } from "../src/main/atomicWrite.ts";
  *
  * NOT covered here, deliberately, and recorded so it is not mistaken for
  * coverage: the other half of KYB-580 — that the save dialog's default folder
- * comes from `app.getPath("downloads")` rather than a hard-coded `~/Downloads`.
- * That property is "we asked the OS", which cannot be observed without running
- * Electron; asserting it by reading the source would be a text scan that a
- * later edit walks straight past. It is UAT, and the ticket carries it as such.
+ * comes from the OS rather than a hard-coded `~/Downloads`. That property is
+ * "we asked the OS", which cannot be observed without running Electron;
+ * asserting it by reading the source would be a text scan that a later edit
+ * walks straight past. It was verified by UAT instead — Linux Mint, with
+ * XDG_DOWNLOAD_DIR redirected, dialog confirmed opening at the redirected
+ * folder — and the ticket carries that run as the evidence.
  */
 
 function scratch() {
@@ -65,10 +67,14 @@ test("a publish that cannot happen reports the failure AND clears the temp file"
   const dir = scratch();
   const target = join(dir, "state.json");
   mkdirSync(target);
+  // Not needed on POSIX — rename onto an empty directory already fails — but it
+  // keeps the case unambiguous on Windows, where an empty directory can be
+  // replaced.
   writeFileSync(join(target, "occupant"), "x", "utf8");
 
   assert.throws(
     () => writeAtomic(target, '{"doomed":true}'),
+    { code: "EISDIR" },
     "a write that never reached the target must not be reported as a success",
   );
   assert.equal(
@@ -78,7 +84,27 @@ test("a publish that cannot happen reports the failure AND clears the temp file"
   );
 });
 
-test("each target gets its own temp path, so one failure cannot corrupt another file", () => {
+test("the temp file is the one derived from the target, not a name of its own choosing", () => {
+  // Occupy EXACTLY `${target}.tmp` with something that cannot be written over.
+  // An implementation that derives the temp name from the target fails here; one
+  // that randomises it, or shares a single temp name across every target, sails
+  // straight past and turns this test red — which is the whole point.
+  //
+  // Review found the previous version of this test asserted only that two files
+  // it never created did not exist. It passed 4/4 against both of those mutants,
+  // while carrying a name that claimed to rule them out.
+  const dir = scratch();
+  const target = join(dir, "state.json");
+  mkdirSync(`${target}.tmp`);
+
+  assert.throws(
+    () => writeAtomic(target, '{"x":1}'),
+    { code: "EISDIR" },
+    "the derived temp path is what the implementation must use",
+  );
+});
+
+test("one target's temp file never collides with another's", () => {
   const dir = scratch();
   const first = join(dir, "session.json");
   const second = join(dir, "projects.json");
@@ -88,6 +114,4 @@ test("each target gets its own temp path, so one failure cannot corrupt another 
 
   assert.equal(readFileSync(first, "utf8"), '{"a":1}');
   assert.equal(readFileSync(second, "utf8"), '{"b":2}');
-  assert.equal(existsSync(`${first}.tmp`), false);
-  assert.equal(existsSync(`${second}.tmp`), false);
 });

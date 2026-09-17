@@ -33,6 +33,26 @@ export interface DeliveryResult {
   cancelled?: boolean;
 }
 
+/**
+ * Where the OS says downloads go.
+ *
+ * @remarks
+ * `app.getPath` THROWS when the platform cannot resolve the folder — "Failed to
+ * get 'downloads' path" — which is reachable on a minimal or containerised
+ * Linux with no xdg-user-dirs, exactly the sort of place an AppImage gets run.
+ * The hard-coded literal this replaced could not fail, so asking the OS without
+ * a fallback would trade a dialog that opens in the wrong folder for a save
+ * action that does not open at all. The home directory is a worse answer than
+ * the real one and a much better answer than an exception.
+ */
+function downloadsDir(): string {
+  try {
+    return app.getPath("downloads");
+  } catch {
+    return homedir();
+  }
+}
+
 /** `~` is not a directory: the shell expands it, and node does not. */
 function expand(path: string): string {
   if (path === "~") return homedir();
@@ -113,12 +133,13 @@ export async function saveRemoteFile(input: {
   suggestedName: string;
 }): Promise<DeliveryResult> {
   const choice = await dialog.showSaveDialog({
-    // Ask the OS where downloads go. A literal "Downloads" under $HOME is
-    // right on macOS and Windows and wrong on a good deal of Linux: the
-    // directory is whatever XDG_DOWNLOAD_DIR names, and on a localised desktop
-    // it is ~/Herunterladen or ~/Téléchargements, which is to say ~/Downloads
-    // does not exist there at all.
-    defaultPath: join(app.getPath("downloads"), basename(input.suggestedName)),
+    // Ask the OS where downloads go rather than assuming. A literal
+    // "Downloads" under $HOME is wrong on a good deal of Linux — the directory
+    // is whatever XDG_DOWNLOAD_DIR names, and a localised desktop has
+    // ~/Herunterladen or ~/Téléchargements and no ~/Downloads at all — and it is
+    // wrong on Windows too, where the Downloads folder is relocatable and
+    // OneDrive's Known Folder Move routinely relocates it.
+    defaultPath: join(downloadsDir(), basename(input.suggestedName)),
     title: "Save file",
   });
   if (choice.canceled || !choice.filePath) return { ok: false, cancelled: true };
