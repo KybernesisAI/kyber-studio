@@ -48,7 +48,11 @@ export interface DeliveryResult {
 function downloadsDir(): string {
   try {
     return app.getPath("downloads");
-  } catch {
+  } catch (error) {
+    // Never observed on any platform, which is the reason to say something when
+    // it happens: a silent fall back to $HOME is indistinguishable from the OS
+    // answering $HOME, so the first real occurrence would leave no trace at all.
+    console.warn("Could not resolve the downloads directory; using home.", error);
     return homedir();
   }
 }

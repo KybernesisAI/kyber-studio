@@ -33,6 +33,14 @@ import { writeAtomic } from "../src/main/atomicWrite.ts";
  * walks straight past. It was verified by UAT instead — Linux Mint, with
  * XDG_DOWNLOAD_DIR redirected, dialog confirmed opening at the redirected
  * folder — and the ticket carries that run as the evidence.
+ *
+ * ALSO not covered, and this one is the module's own headline claim: atomicity.
+ * An implementation that publishes by copying the temp over the target and then
+ * deleting it — the truncate-in-place behaviour the rename exists to prevent —
+ * passes every test in this file. Review demonstrated exactly that. Catching it
+ * needs a concurrent reader, which this suite does not have. What these tests
+ * actually pin is the leftover-temp contract and the derived temp path; the
+ * atomic publish is asserted by reading `renameSync`, not by exercising it.
  */
 
 function scratch() {
@@ -67,9 +75,15 @@ test("a publish that cannot happen reports the failure AND clears the temp file"
   const dir = scratch();
   const target = join(dir, "state.json");
   mkdirSync(target);
-  // Not needed on POSIX — rename onto an empty directory already fails — but it
-  // keeps the case unambiguous on Windows, where an empty directory can be
-  // replaced.
+  // The occupant is not strictly needed: on POSIX, rename onto an EMPTY
+  // directory already fails. It is kept because a directory with something in
+  // it is unambiguous under any implementation.
+  //
+  // It does NOT help on Windows, and an earlier version of this comment claimed
+  // it did — twice, in two different wrong ways. MoveFileExW with
+  // MOVEFILE_REPLACE_EXISTING cannot target a directory at all, empty or not.
+  // The likely Windows error is EACCES rather than EISDIR, so the matcher below
+  // will need revisiting when KYB-500's Windows lane turns CI on.
   writeFileSync(join(target, "occupant"), "x", "utf8");
 
   assert.throws(
@@ -100,18 +114,7 @@ test("the temp file is the one derived from the target, not a name of its own ch
   assert.throws(
     () => writeAtomic(target, '{"x":1}'),
     { code: "EISDIR" },
-    "the derived temp path is what the implementation must use",
+    "the temp file must be `${target}.tmp` — note this pins the literal suffix, " +
+      "so renaming it to .temp fails here even though that is also derived",
   );
-});
-
-test("one target's temp file never collides with another's", () => {
-  const dir = scratch();
-  const first = join(dir, "session.json");
-  const second = join(dir, "projects.json");
-
-  writeAtomic(first, '{"a":1}');
-  writeAtomic(second, '{"b":2}');
-
-  assert.equal(readFileSync(first, "utf8"), '{"a":1}');
-  assert.equal(readFileSync(second, "utf8"), '{"b":2}');
 });
