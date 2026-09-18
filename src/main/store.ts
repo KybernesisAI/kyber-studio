@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, dialog } from "electron";
+
+import { writeAtomic } from "./atomicWrite";
 
 /**
  * Durable state for the desktop.
@@ -30,15 +32,9 @@ export function loadState<T>(name: string, fallback: T): T {
 
 export function saveState(name: string, value: unknown): void {
   try {
-    // Write beside the file, then RENAME. Rename is atomic on the same
-    // filesystem: the real file is either the old one or the new one, never a
-    // half-written one. Copying the temp over the target instead (which is what
-    // this used to do) truncates the target first, so a crash mid-write left
-    // invalid JSON — and loadState answers invalid JSON with the fallback, which
-    // silently discards the transcript, the eve session ids and the open project.
-    const tmp = file(`${name}.tmp`);
-    writeFileSync(tmp, JSON.stringify(value), "utf8");
-    renameSync(tmp, file(name));
+    // Atomic, and it tidies up after itself when it cannot be — see
+    // ./atomicWrite for why the rename matters and what a failure leaves.
+    writeAtomic(file(name), JSON.stringify(value));
   } catch {
     /* losing a save is survivable; crashing on one is not */
   }

@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { dialog, shell } from "electron";
+import { app, dialog, shell } from "electron";
 
 /**
  * Taking delivery of a file the agent produced.
@@ -31,6 +31,30 @@ export interface DeliveryResult {
   error?: string;
   /** True when the user closed the save dialog; not a failure to report loudly. */
   cancelled?: boolean;
+}
+
+/**
+ * Where the OS says downloads go.
+ *
+ * @remarks
+ * `app.getPath` THROWS when the platform cannot resolve the folder — "Failed to
+ * get 'downloads' path" — which is reachable on a minimal or containerised
+ * Linux with no xdg-user-dirs, exactly the sort of place an AppImage gets run.
+ * The hard-coded literal this replaced could not fail, so asking the OS without
+ * a fallback would trade a dialog that opens in the wrong folder for a save
+ * action that does not open at all. The home directory is a worse answer than
+ * the real one and a much better answer than an exception.
+ */
+function downloadsDir(): string {
+  try {
+    return app.getPath("downloads");
+  } catch (error) {
+    // Never observed on any platform, which is the reason to say something when
+    // it happens: a silent fall back to $HOME is indistinguishable from the OS
+    // answering $HOME, so the first real occurrence would leave no trace at all.
+    console.warn("Could not resolve the downloads directory; using home.", error);
+    return homedir();
+  }
 }
 
 /** `~` is not a directory: the shell expands it, and node does not. */
@@ -113,7 +137,13 @@ export async function saveRemoteFile(input: {
   suggestedName: string;
 }): Promise<DeliveryResult> {
   const choice = await dialog.showSaveDialog({
-    defaultPath: join(homedir(), "Downloads", basename(input.suggestedName)),
+    // Ask the OS where downloads go rather than assuming. A literal
+    // "Downloads" under $HOME is wrong on a good deal of Linux — the directory
+    // is whatever XDG_DOWNLOAD_DIR names, and a localised desktop has
+    // ~/Herunterladen or ~/Téléchargements and no ~/Downloads at all — and it is
+    // wrong on Windows too, where the Downloads folder is relocatable and
+    // OneDrive's Known Folder Move routinely relocates it.
+    defaultPath: join(downloadsDir(), basename(input.suggestedName)),
     title: "Save file",
   });
   if (choice.canceled || !choice.filePath) return { ok: false, cancelled: true };
