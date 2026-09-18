@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -34,13 +34,22 @@ import { writeAtomic } from "../src/main/atomicWrite.ts";
  * XDG_DOWNLOAD_DIR redirected, dialog confirmed opening at the redirected
  * folder — and the ticket carries that run as the evidence.
  *
- * ALSO not covered, and this one is the module's own headline claim: atomicity.
- * An implementation that publishes by copying the temp over the target and then
- * deleting it — the truncate-in-place behaviour the rename exists to prevent —
- * passes every test in this file. Review demonstrated exactly that. Catching it
- * needs a concurrent reader, which this suite does not have. What these tests
- * actually pin is the leftover-temp contract and the derived temp path; the
- * atomic publish is asserted by reading `renameSync`, not by exercising it.
+ * The PUBLISH MECHANISM is pinned, by inode. A rename gives the target a new
+ * inode; copying over it writes through the existing one. So an implementation
+ * that publishes with `copyFileSync` and then deletes the temp — the
+ * truncate-in-place behaviour the rename exists to prevent — turns test 2 red.
+ *
+ * That check exists because an earlier version of this header said catching it
+ * "needs a concurrent reader, which this suite does not have". That was wrong,
+ * and wrong in the direction that keeps a gap open: it told the next reader not
+ * to bother. Review closed it in three synchronous lines. The claim is recorded
+ * here because being confidently wrong about what cannot be tested is the same
+ * failure as claiming coverage that does not exist — the defect this file has
+ * been corrected for three times.
+ *
+ * What is STILL not covered: durability, which needs a power cut, and genuine
+ * concurrency, which needs a second process. Neither is reachable here, and the
+ * module's doc comment says as much rather than implying otherwise.
  */
 
 function scratch() {
@@ -51,21 +60,34 @@ test("the data lands, and no temp file is left beside it", () => {
   const dir = scratch();
   const target = join(dir, "state.json");
 
-  writeAtomic(target, '{"open":"project"}');
+  // Non-ASCII deliberately: this is state for transcripts and project names, so
+  // the encoding is load-bearing. With an ASCII payload, switching the write
+  // from utf8 to latin1 survives every test in this file.
+  writeAtomic(target, '{"open":"Téléchargements ✓"}');
 
-  assert.equal(readFileSync(target, "utf8"), '{"open":"project"}');
+  assert.equal(readFileSync(target, "utf8"), '{"open":"Téléchargements ✓"}');
   assert.equal(existsSync(`${target}.tmp`), false, "the temp file should have been renamed away");
 });
 
-test("an existing file is replaced rather than appended to", () => {
+test("an existing file is replaced by a rename, not written through in place", () => {
   const dir = scratch();
   const target = join(dir, "state.json");
   writeFileSync(target, '{"old":true}', "utf8");
+  const before = statSync(target).ino;
 
   writeAtomic(target, '{"new":true}');
 
   assert.equal(readFileSync(target, "utf8"), '{"new":true}');
   assert.equal(existsSync(`${target}.tmp`), false);
+  // The inode is the whole atomicity claim, and it is cheap to check. renameSync
+  // puts a NEW inode at this path; copyFileSync would write through the old one,
+  // truncating it first — which is exactly the window where a crash leaves
+  // invalid JSON for loadState to silently discard.
+  assert.notEqual(
+    statSync(target).ino,
+    before,
+    "the target must be replaced by a rename, not overwritten in place",
+  );
 });
 
 test("a publish that cannot happen reports the failure AND clears the temp file", () => {
