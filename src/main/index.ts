@@ -3,7 +3,7 @@ import { warmUp } from "./dictation";
 import { registerUpdater } from "./updater";
 import { join } from "node:path";
 import { BrowserWindow, app, safeStorage, shell } from "electron";
-import { electronApp, is, optimizer } from "@electron-toolkit/utils";
+import { electronApp, is, optimizer, platform } from "@electron-toolkit/utils";
 import { registerIpc } from "./ipc";
 import { setLocalExecWindow, startLocalExec, stopLocalExec } from "./localExec";
 import { createCredentialStorageReporter } from "./credentialStorage";
@@ -117,8 +117,21 @@ function createWindow(): void {
     minWidth: 720,
     minHeight: 520,
     show: false,
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 18, y: 18 },
+    // macOS only, and said so rather than left to Electron to ignore.
+    //
+    // `hiddenInset` hides the titlebar and floats the traffic lights over the
+    // content; `trafficLightPosition` then places them. Neither option exists
+    // off darwin — Linux and Windows get a frame from the desktop — so passing
+    // them everywhere is not a bug, it is a platform assumption with no branch,
+    // which is the shape of defect KYB-500 was opened to find. The spread makes
+    // the assumption visible to a reader who does not already know Electron's
+    // per-platform ignore rules.
+    //
+    // `platform` comes from @electron-toolkit/utils, already a dependency and
+    // already imported here. A hand-rolled isMac() would duplicate it.
+    ...(platform.isMacOS
+      ? ({ titleBarStyle: "hiddenInset", trafficLightPosition: { x: 18, y: 18 } } as const)
+      : {}),
     backgroundColor: "#ffffff",
     webPreferences: {
       // .cjs, and bundled — both halves, or the bridge does not attach.
