@@ -45,7 +45,11 @@ export function Autocomplete({
     if (s.icon) return <span style={{ fontSize: 15 }}>{s.icon}</span>;
     if (s.type === "Skill") return <Icon name="package" size={15} />;
     if (s.type === "Routine") return <Icon name="clock" size={15} />;
-    return <span style={{ fontSize: 13, color: "var(--ink-tertiary)" }}>⌘</span>;
+    // Action and Plugin are what reach here. They used to share a ⌘ glyph, which
+    // named a key rather than a thing, was the wrong metaphor for a Plugin, and
+    // on a desktop whose fallback font lacks U+2318 renders as a blank box.
+    if (s.type === "Plugin") return <Icon name="plug" size={15} />;
+    return <Icon name="chevronRight" size={15} />;
   };
 
   return (
