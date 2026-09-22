@@ -106,7 +106,6 @@ if (script === "start") {
   // Deliberately no signal forwarding: the script under test must reap this.
   setTimeout(() => console.log(${JSON.stringify(LATE_LINE)}), ${LATE_DELAY_MS});
   setTimeout(() => {}, 300000);
-  process.exit = process.exit;
 }
 `;
   const npmPath = join(root, "bin", "npm");
