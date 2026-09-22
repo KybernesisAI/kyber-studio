@@ -728,6 +728,7 @@ function foreignEntry(shown, format, arches, platform) {
 
 const FOREIGN_LINUX_X64 = foreignEntry("…/napi-v6/linux/x64/onnxruntime_binding.node", "ELF", ["x64"], "linux");
 const FOREIGN_WIN32_ARM64 = foreignEntry("…/napi-v6/win32/arm64/onnxruntime_binding.node", "PE", ["arm64"], "win32");
+const FOREIGN_LINUX_ARM64 = foreignEntry("…/napi-v6/linux/arm64/onnxruntime_binding.node", "ELF", ["arm64"], "linux");
 
 /** The tally shape `tallyVerdicts` returns, with only the fields this reads set. */
 function uncheckedTally({ foreignPlatform = [], unrecognised = 0 } = {}) {
@@ -771,10 +772,30 @@ test("every foreign file is paired with its own measurement, in order", () => {
   ]);
 });
 
+/**
+ * Two files on ONE platform — which the two-platform fixture cannot distinguish.
+ *
+ * Every other multi-file case here uses one linux file and one win32 file, so
+ * the file count and the platform count are both 2 and a header keyed off the
+ * wrong one reads correctly. Review mutated the plural ternary to count
+ * platforms instead of files and it survived. This is also the only case that
+ * exercises `×N` for N greater than 1.
+ */
+test("two foreign files on one platform are counted as two files, tallied once", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64, FOREIGN_LINUX_ARM64] }));
+  assert.equal(lines[0], "\n  2 bundled .node files are for another platform (linux ×2), not arch-checked:");
+});
+
+/**
+ * Three slices, not two. With only a two-slice fixture, `arches.slice(0, 2)`
+ * passes and a real three-slice Mach-O — x86_64 + arm64 + arm64e is a shipping
+ * shape — would be silently truncated. Review found that; the name said "every
+ * slice" and the fixture stopped one short of proving it.
+ */
 test("a universal foreign binary lists every slice it carries", () => {
-  const fat = foreignEntry("…/some.node", "Mach-O", ["x64", "arm64"], "darwin");
+  const fat = foreignEntry("…/some.node", "Mach-O", ["x64", "arm64", "arm64e"], "darwin");
   const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [fat] }));
-  assert.ok(lines.includes("        Mach-O, x64 + arm64"), lines.join("\n"));
+  assert.equal(lines[2], "        Mach-O, x64 + arm64 + arm64e");
 });
 
 test("one unreadable file is singular, more than one is plural", () => {
@@ -808,6 +829,31 @@ test("the whole report for a known tally is exactly these lines", () => {
     "  Dead weight in the artefact rather than a fault in it, and trimming them",
     "  is a packaging change with its own ticket.",
     "\n  2 bundled .node files were skipped: not an ELF, Mach-O or PE object.",
+  ]);
+});
+
+/**
+ * The same, for more than one foreign file.
+ *
+ * The single-file golden above pins the tail, and the pairing test pins a
+ * four-line window — so between them nothing constrained the lines after the
+ * window when there is more than one file. Review confirmed two survivors
+ * there: the prose block emitted twice, and a stray trailing line.
+ */
+test("the whole report for a two-file tally is exactly these lines", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64, FOREIGN_WIN32_ARM64] }));
+  assert.deepEqual(lines, [
+    "\n  2 bundled .node files are for another platform (linux ×1, win32 ×1), not arch-checked:",
+    `    ${FOREIGN_LINUX_X64.shown}`,
+    "        ELF, x64",
+    `    ${FOREIGN_WIN32_ARM64.shown}`,
+    "        PE, arm64",
+    "  Their platform is not this build's, so the per-platform resolution these",
+    "  packages use does not select them here. That is a property of the files",
+    "  measured above, NOT a load path this check traced — a foreign-container",
+    "  file sitting at a path this target does resolve would still land here.",
+    "  Dead weight in the artefact rather than a fault in it, and trimming them",
+    "  is a packaging change with its own ticket.",
   ]);
 });
 
