@@ -12,7 +12,7 @@
  * whole reason this file exists rather than a couple of inline checks: a module
  * that reads `navigator` at the top level cannot be reached by `node --test`,
  * and this repo has been bitten repeatedly by logic that no test could get at.
- * The single line of glue at the bottom is the only part not covered.
+ * The two lines of glue at the bottom are the only part not covered.
  *
  * What this is NOT for: deciding what a keystroke does. Gate DISPLAY on this,
  * never input. If the detection is ever wrong, the cost should be a label that

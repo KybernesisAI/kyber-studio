@@ -89,7 +89,7 @@ test("a keyboard hint names a key the keyboard has", () => {
   assert.equal(chordLabel(false, "1"), "Ctrl 1");
 });
 
-test("the exported modifier is derived from the exported predicate", () => {
+test("the exported pair is well-formed and agrees with the host it runs on", () => {
   // A shape check, not a platform check: asserting IS_MAC's VALUE would pin
   // this suite to the machine it runs on and fail on a Mac.
   assert.equal(typeof IS_MAC, "boolean");
@@ -99,5 +99,12 @@ test("the exported modifier is derived from the exported predicate", () => {
   // Review substituted five implementations of modifierFor — swapped,
   // two constants, and one returning 42 — and the old assertion passed
   // under every one of them. It read as verification and could not fail.
+  //
+  // What this still does NOT do, despite an earlier name that said it did:
+  // check that MODIFIER is DERIVED from IS_MAC. On a non-Mac host IS_MAC is
+  // false and the right-hand side folds to "Ctrl", so hardcoding MODIFIER,
+  // or writing IS_MAC = !isMacPlatform(...) — this ticket's own defect,
+  // reproduced on macOS — both survive green. Those live in the two glue
+  // lines the docstring above declares uncovered.
   assert.equal(MODIFIER, IS_MAC ? "⌘" : "Ctrl");
 });

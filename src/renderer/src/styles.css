@@ -62,8 +62,10 @@
      rather than only Apple's. What that is worth, per platform, measured rather
      than assumed:
 
-       Windows  `system-ui` resolves to Segoe UI where the Apple families
-                resolve to nothing. A real improvement.
+       Windows  `system-ui` is EXPECTED to resolve to Segoe UI, where the Apple
+                families resolve to nothing and the stack fell through to its
+                final `sans-serif` — Arial, not nothing. Also NOT observed: no
+                Windows machine has run this either.
        Linux    A no-op on Mint 22 / Cinnamon: `fc-match system-ui` and
                 `fc-match sans-serif` both answer Bitstream Vera Sans.
        macOS    `system-ui` now LEADS and therefore wins — a font-family list is
