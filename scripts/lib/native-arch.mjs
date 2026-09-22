@@ -357,3 +357,58 @@ export function tallyVerdicts(entries) {
 
   return { checked, unrecognised, foreignPlatform, wrongArch };
 }
+
+/**
+ * The lines describing what was NOT arch-checked, and why — returned rather
+ * than printed, so that they can be tested.
+ *
+ * For as long as this lived in `verify-package.mjs` it read `foreignPlatform`
+ * and `unrecognised` out of module scope, so no test could hand it a tally; and
+ * `verify-package.mjs` is a script, so importing it to reach the function runs
+ * the whole check against an artefact that does not exist in a unit test. It
+ * was therefore covered by nothing (KYB-586).
+ *
+ * What that left open is exact rather than hypothetical. Deleting the
+ * `foreignPlatform` block left every one of this module's tests green while
+ * every bundle silently stopped reporting its foreign payload — and silence is
+ * also what this script says when there is nothing wrong. A check whose failure
+ * looks exactly like its success is the defect this epic keeps producing.
+ *
+ * Hence the guards below. A malformed tally throws instead of returning an
+ * empty report: "nothing to say" and "I was handed something I could not read"
+ * must not produce the same output, or the same defect returns one level along.
+ */
+export function formatUncheckedReport(tally) {
+  if (tally === null || typeof tally !== "object") {
+    throw new TypeError(`a tally is required, got ${tally === null ? "null" : typeof tally}`);
+  }
+  const { foreignPlatform, unrecognised } = tally;
+  if (!Array.isArray(foreignPlatform)) {
+    throw new TypeError(`tally.foreignPlatform must be an array, got ${typeof foreignPlatform}`);
+  }
+  if (!Number.isInteger(unrecognised) || unrecognised < 0) {
+    throw new TypeError(`tally.unrecognised must be a non-negative integer, got ${unrecognised}`);
+  }
+
+  const lines = [];
+
+  if (foreignPlatform.length > 0) {
+    lines.push(`\n  ${foreignPlatform.length} bundled .node ${foreignPlatform.length === 1 ? "file is" : "files are"} for another platform (${tallyPlatforms(foreignPlatform)}), not arch-checked:`);
+    for (const { shown, format, arches } of foreignPlatform) {
+      lines.push(`    ${shown}`);
+      lines.push(`        ${format}, ${arches.join(" + ")}`);
+    }
+    lines.push(`  Their platform is not this build's, so the per-platform resolution these`);
+    lines.push(`  packages use does not select them here. That is a property of the files`);
+    lines.push(`  measured above, NOT a load path this check traced — a foreign-container`);
+    lines.push(`  file sitting at a path this target does resolve would still land here.`);
+    lines.push(`  Dead weight in the artefact rather than a fault in it, and trimming them`);
+    lines.push(`  is a packaging change with its own ticket.`);
+  }
+
+  if (unrecognised > 0) {
+    lines.push(`\n  ${unrecognised} bundled .node ${unrecognised === 1 ? "file was" : "files were"} skipped: not an ELF, Mach-O or PE object.`);
+  }
+
+  return lines;
+}

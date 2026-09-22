@@ -8,6 +8,7 @@ import {
   acceptableFor,
   archFromPath,
   expectedLabel,
+  formatUncheckedReport,
   identify,
   normaliseArch,
   tallyPlatforms,
@@ -704,4 +705,130 @@ test("tallying does not mutate the walk it was handed", () => {
   const before = structuredClone(entries);
   tallyVerdicts(entries);
   assert.deepEqual(entries, before);
+});
+
+/**
+ * `formatUncheckedReport` — the report about files the arch check did NOT judge.
+ *
+ * Why these exist (KYB-586). This wording used to sit in `verify-package.mjs`,
+ * reading the tally out of module scope, so nothing could call it: the script
+ * runs on import, and the function took no arguments to give it. Deleting its
+ * `foreignPlatform` branch left the whole suite green while every bundle
+ * stopped reporting foreign payload — and this script's way of saying "all is
+ * well" is also to say nothing. A pass and a failure looked identical.
+ *
+ * So the tests below pin two separate things: the words, and the fact that
+ * there are any. The second matters more.
+ */
+
+/** A foreign entry as the walk builds it: `{ ...native, ...header }`. */
+function foreignEntry(shown, format, arches, platform) {
+  return { file: `/abs/${shown}`, shown, format, arches, platform };
+}
+
+const FOREIGN_LINUX_X64 = foreignEntry("…/napi-v6/linux/x64/onnxruntime_binding.node", "ELF", ["x64"], "linux");
+const FOREIGN_WIN32_ARM64 = foreignEntry("…/napi-v6/win32/arm64/onnxruntime_binding.node", "PE", ["arm64"], "win32");
+
+/** The tally shape `tallyVerdicts` returns, with only the fields this reads set. */
+function uncheckedTally({ foreignPlatform = [], unrecognised = 0 } = {}) {
+  return { checked: 0, unrecognised, foreignPlatform, wrongArch: [] };
+}
+
+test("nothing unchecked means nothing said", () => {
+  assert.deepEqual(formatUncheckedReport(uncheckedTally()), []);
+});
+
+test("a single foreign file is described in the singular", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64] }));
+  assert.match(lines[0], /1 bundled \.node file is for another platform \(linux ×1\), not arch-checked:/);
+  assert.doesNotMatch(lines[0], /files are/);
+});
+
+test("several foreign files are described in the plural, tallied per platform", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64, FOREIGN_WIN32_ARM64] }));
+  assert.match(lines[0], /2 bundled \.node files are for another platform \(linux ×1, win32 ×1\), not arch-checked:/);
+});
+
+test("every foreign file is named, with what it is and what it was built for", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64, FOREIGN_WIN32_ARM64] }));
+  assert.ok(lines.includes(`    ${FOREIGN_LINUX_X64.shown}`), "the linux file is not named");
+  assert.ok(lines.includes("        ELF, x64"), "the linux file's measurement is missing");
+  assert.ok(lines.includes(`    ${FOREIGN_WIN32_ARM64.shown}`), "the win32 file is not named");
+  assert.ok(lines.includes("        PE, arm64"), "the win32 file's measurement is missing");
+});
+
+test("a universal foreign binary lists every slice it carries", () => {
+  const fat = foreignEntry("…/some.node", "Mach-O", ["x64", "arm64"], "darwin");
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [fat] }));
+  assert.ok(lines.includes("        Mach-O, x64 + arm64"), lines.join("\n"));
+});
+
+test("one unreadable file is singular, more than one is plural", () => {
+  const one = formatUncheckedReport(uncheckedTally({ unrecognised: 1 }));
+  assert.equal(one.length, 1);
+  assert.match(one[0], /1 bundled \.node file was skipped: not an ELF, Mach-O or PE object\./);
+
+  const three = formatUncheckedReport(uncheckedTally({ unrecognised: 3 }));
+  assert.match(three[0], /3 bundled \.node files were skipped: not an ELF, Mach-O or PE object\./);
+});
+
+test("both kinds of unchecked file are reported, foreign first", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64], unrecognised: 2 }));
+  const foreignAt = lines.findIndex((l) => l.includes("for another platform"));
+  const skippedAt = lines.findIndex((l) => l.includes("were skipped"));
+  assert.notEqual(foreignAt, -1, "no foreign block");
+  assert.notEqual(skippedAt, -1, "no skipped line");
+  assert.ok(foreignAt < skippedAt, "the skipped line came before the foreign block");
+});
+
+test("the report explains that a foreign file is a measurement, not a traced load path", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64] }));
+  const prose = lines.join("\n");
+  assert.match(prose, /NOT a load path this check traced/);
+  assert.match(prose, /Dead weight in the artefact rather than a fault in it/);
+});
+
+/**
+ * The property the deleted `if` would have violated, stated directly rather
+ * than left to be inferred from the cases above: if anything went unchecked,
+ * the report says so. This is the assertion that a silent report fails.
+ */
+test("the report is empty if and only if nothing went unchecked", () => {
+  for (const nForeign of [0, 1, 2]) {
+    for (const unrecognised of [0, 1, 2]) {
+      const foreignPlatform = [FOREIGN_LINUX_X64, FOREIGN_WIN32_ARM64].slice(0, nForeign);
+      const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform, unrecognised }));
+      const somethingUnchecked = nForeign > 0 || unrecognised > 0;
+      assert.equal(
+        lines.length > 0,
+        somethingUnchecked,
+        `${nForeign} foreign + ${unrecognised} unrecognised produced ${lines.length} lines`,
+      );
+    }
+  }
+});
+
+/**
+ * A malformed tally must not read as a clean one. These four are the reason the
+ * function validates rather than destructuring optimistically: a refactor that
+ * renames or drops a field of `tallyVerdicts`'s return would otherwise make the
+ * report go quiet, which is indistinguishable from a bundle with nothing wrong.
+ */
+test("a tally missing its foreign list throws rather than reporting nothing", () => {
+  assert.throws(() => formatUncheckedReport({ unrecognised: 0 }), /foreignPlatform must be an array/);
+});
+
+test("a tally missing its unrecognised count throws rather than reporting nothing", () => {
+  assert.throws(() => formatUncheckedReport({ foreignPlatform: [] }), /unrecognised must be a non-negative integer/);
+});
+
+test("a negative or fractional unrecognised count is rejected", () => {
+  assert.throws(() => formatUncheckedReport({ foreignPlatform: [], unrecognised: -1 }), /non-negative integer/);
+  assert.throws(() => formatUncheckedReport({ foreignPlatform: [], unrecognised: 1.5 }), /non-negative integer/);
+});
+
+test("something that is not a tally at all throws", () => {
+  assert.throws(() => formatUncheckedReport(null), /a tally is required, got null/);
+  assert.throws(() => formatUncheckedReport(undefined), /a tally is required, got undefined/);
+  assert.throws(() => formatUncheckedReport("3 files"), /a tally is required, got string/);
 });
