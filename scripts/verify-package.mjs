@@ -54,9 +54,9 @@ import {
   acceptableFor,
   archFromPath,
   expectedLabel,
+  formatUncheckedReport,
   identify,
   normaliseArch,
-  tallyPlatforms,
   tallyVerdicts,
   verdictFor,
 } from "./lib/native-arch.mjs";
@@ -561,31 +561,21 @@ for (const native of natives) {
   entries.push({ native, header, verdict: verdictFor(header, TARGET_PLATFORM, ACCEPTABLE) });
 }
 
-const { checked, unrecognised, foreignPlatform, wrongArch } = tallyVerdicts(entries);
+const tally = tallyVerdicts(entries);
+const { checked, unrecognised, foreignPlatform, wrongArch } = tally;
 
 /**
  * What was NOT arch-checked, and why — printed on the failing path as well as
  * the passing one. A count that only appears on success is a count nobody reads
  * at the moment it matters: the first failure of this check was diagnosed
  * without knowing that two files had been skipped in silence.
+ *
+ * The wording lives in `formatUncheckedReport`, which is a pure function of the
+ * tally and is tested there. This half only prints, so that the half deciding
+ * what to say can be reached without building an artefact (KYB-586).
  */
 function reportUncheckedFiles(print) {
-  if (foreignPlatform.length > 0) {
-    print(`\n  ${foreignPlatform.length} bundled .node ${foreignPlatform.length === 1 ? "file is" : "files are"} for another platform (${tallyPlatforms(foreignPlatform)}), not arch-checked:`);
-    for (const { shown, format, arches } of foreignPlatform) {
-      print(`    ${shown}`);
-      print(`        ${format}, ${arches.join(" + ")}`);
-    }
-    print(`  Their platform is not this build's, so the per-platform resolution these`);
-    print(`  packages use does not select them here. That is a property of the files`);
-    print(`  measured above, NOT a load path this check traced — a foreign-container`);
-    print(`  file sitting at a path this target does resolve would still land here.`);
-    print(`  Dead weight in the artefact rather than a fault in it, and trimming them`);
-    print(`  is a packaging change with its own ticket.`);
-  }
-  if (unrecognised > 0) {
-    print(`\n  ${unrecognised} bundled .node ${unrecognised === 1 ? "file was" : "files were"} skipped: not an ELF, Mach-O or PE object.`);
-  }
+  for (const line of formatUncheckedReport(tally)) print(line);
 }
 
 console.log(`  ${INVENTORY}`);

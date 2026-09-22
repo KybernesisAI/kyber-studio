@@ -8,6 +8,7 @@ import {
   acceptableFor,
   archFromPath,
   expectedLabel,
+  formatUncheckedReport,
   identify,
   normaliseArch,
   tallyPlatforms,
@@ -704,4 +705,215 @@ test("tallying does not mutate the walk it was handed", () => {
   const before = structuredClone(entries);
   tallyVerdicts(entries);
   assert.deepEqual(entries, before);
+});
+
+/**
+ * `formatUncheckedReport` — the report about files the arch check did NOT judge.
+ *
+ * Why these exist (KYB-586). This wording used to sit in `verify-package.mjs`,
+ * reading the tally out of module scope, so nothing could call it: the script
+ * runs on import, and the function took no arguments to give it. Deleting its
+ * `foreignPlatform` branch left the whole suite green while every bundle
+ * stopped reporting foreign payload — and this script's way of saying "all is
+ * well" is also to say nothing. A pass and a failure looked identical.
+ *
+ * So the tests below pin two separate things: the words, and the fact that
+ * there are any. The second matters more.
+ */
+
+/** A foreign entry as the walk builds it: `{ ...native, ...header }`. */
+function foreignEntry(shown, format, arches, platform) {
+  return { file: `/abs/${shown}`, shown, format, arches, platform };
+}
+
+const FOREIGN_LINUX_X64 = foreignEntry("…/napi-v6/linux/x64/onnxruntime_binding.node", "ELF", ["x64"], "linux");
+const FOREIGN_WIN32_ARM64 = foreignEntry("…/napi-v6/win32/arm64/onnxruntime_binding.node", "PE", ["arm64"], "win32");
+const FOREIGN_LINUX_ARM64 = foreignEntry("…/napi-v6/linux/arm64/onnxruntime_binding.node", "ELF", ["arm64"], "linux");
+
+/** The tally shape `tallyVerdicts` returns, with only the fields this reads set. */
+function uncheckedTally({ foreignPlatform = [], unrecognised = 0 } = {}) {
+  return { checked: 0, unrecognised, foreignPlatform, wrongArch: [] };
+}
+
+test("nothing unchecked means nothing said", () => {
+  assert.deepEqual(formatUncheckedReport(uncheckedTally()), []);
+});
+
+test("a single foreign file is described in the singular", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64] }));
+  assert.match(lines[0], /1 bundled \.node file is for another platform \(linux ×1\), not arch-checked:/);
+  assert.doesNotMatch(lines[0], /files are/);
+});
+
+test("several foreign files are described in the plural, tallied per platform", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64, FOREIGN_WIN32_ARM64] }));
+  assert.match(lines[0], /2 bundled \.node files are for another platform \(linux ×1, win32 ×1\), not arch-checked:/);
+});
+
+/**
+ * Each file sits directly above its own measurement — pinned with `deepEqual`
+ * on a slice rather than with `includes`.
+ *
+ * This test previously made four `lines.includes(...)` assertions, which are
+ * order-blind: they cannot tell "every file above its own measurement" from
+ * "every path, then every measurement". Splitting the loop in two passed all
+ * four while reporting the linux binary's path above the win32 binary's format
+ * — a reader of a real bundle would conclude an ELF file was a PE. Caught in
+ * review. The test's NAME claimed a pairing its assertions never checked, which
+ * is the defect this whole ticket is about, one level in.
+ */
+test("every foreign file is paired with its own measurement, in order", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64, FOREIGN_WIN32_ARM64] }));
+  assert.deepEqual(lines.slice(1, 5), [
+    `    ${FOREIGN_LINUX_X64.shown}`,
+    "        ELF, x64",
+    `    ${FOREIGN_WIN32_ARM64.shown}`,
+    "        PE, arm64",
+  ]);
+});
+
+/**
+ * Two files on ONE platform — which the two-platform fixture cannot distinguish.
+ *
+ * Every other multi-file case here uses one linux file and one win32 file, so
+ * the file count and the platform count are both 2 and a header keyed off the
+ * wrong one reads correctly. Review mutated the plural ternary to count
+ * platforms instead of files and it survived. This is also the only case that
+ * exercises `×N` for N greater than 1.
+ */
+test("two foreign files on one platform are counted as two files, tallied once", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64, FOREIGN_LINUX_ARM64] }));
+  assert.equal(lines[0], "\n  2 bundled .node files are for another platform (linux ×2), not arch-checked:");
+});
+
+/**
+ * Three slices, not two. With only a two-slice fixture, `arches.slice(0, 2)`
+ * passes and a real three-slice Mach-O — x86_64 + arm64 + arm64e is a shipping
+ * shape — would be silently truncated. Review found that; the name said "every
+ * slice" and the fixture stopped one short of proving it.
+ */
+test("a universal foreign binary lists every slice it carries", () => {
+  const fat = foreignEntry("…/some.node", "Mach-O", ["x64", "arm64", "arm64e"], "darwin");
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [fat] }));
+  assert.equal(lines[2], "        Mach-O, x64 + arm64 + arm64e");
+});
+
+test("one unreadable file is singular, more than one is plural", () => {
+  const one = formatUncheckedReport(uncheckedTally({ unrecognised: 1 }));
+  assert.equal(one.length, 1);
+  assert.match(one[0], /1 bundled \.node file was skipped: not an ELF, Mach-O or PE object\./);
+
+  const three = formatUncheckedReport(uncheckedTally({ unrecognised: 3 }));
+  assert.match(three[0], /3 bundled \.node files were skipped: not an ELF, Mach-O or PE object\./);
+});
+
+/**
+ * The whole report for a known tally, line for line.
+ *
+ * The assertions above sample: they match a substring of the header and two of
+ * the six prose lines. Review found that dropping the leading newline from a
+ * header, or deleting one prose line, left them all green — so "the same lines
+ * in the same order", which is this ticket's first acceptance criterion, was
+ * defended by nothing. This pins it.
+ */
+test("the whole report for a known tally is exactly these lines", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64], unrecognised: 2 }));
+  assert.deepEqual(lines, [
+    "\n  1 bundled .node file is for another platform (linux ×1), not arch-checked:",
+    `    ${FOREIGN_LINUX_X64.shown}`,
+    "        ELF, x64",
+    "  Their platform is not this build's, so the per-platform resolution these",
+    "  packages use does not select them here. That is a property of the files",
+    "  measured above, NOT a load path this check traced — a foreign-container",
+    "  file sitting at a path this target does resolve would still land here.",
+    "  Dead weight in the artefact rather than a fault in it, and trimming them",
+    "  is a packaging change with its own ticket.",
+    "\n  2 bundled .node files were skipped: not an ELF, Mach-O or PE object.",
+  ]);
+});
+
+/**
+ * The same, for more than one foreign file.
+ *
+ * The single-file golden above pins the tail, and the pairing test pins a
+ * four-line window — so between them nothing constrained the lines after the
+ * window when there is more than one file. Review confirmed two survivors
+ * there: the prose block emitted twice, and a stray trailing line.
+ */
+test("the whole report for a two-file tally is exactly these lines", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64, FOREIGN_WIN32_ARM64] }));
+  assert.deepEqual(lines, [
+    "\n  2 bundled .node files are for another platform (linux ×1, win32 ×1), not arch-checked:",
+    `    ${FOREIGN_LINUX_X64.shown}`,
+    "        ELF, x64",
+    `    ${FOREIGN_WIN32_ARM64.shown}`,
+    "        PE, arm64",
+    "  Their platform is not this build's, so the per-platform resolution these",
+    "  packages use does not select them here. That is a property of the files",
+    "  measured above, NOT a load path this check traced — a foreign-container",
+    "  file sitting at a path this target does resolve would still land here.",
+    "  Dead weight in the artefact rather than a fault in it, and trimming them",
+    "  is a packaging change with its own ticket.",
+  ]);
+});
+
+test("both kinds of unchecked file are reported, foreign first", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64], unrecognised: 2 }));
+  const foreignAt = lines.findIndex((l) => l.includes("for another platform"));
+  const skippedAt = lines.findIndex((l) => l.includes("were skipped"));
+  assert.notEqual(foreignAt, -1, "no foreign block");
+  assert.notEqual(skippedAt, -1, "no skipped line");
+  assert.ok(foreignAt < skippedAt, "the skipped line came before the foreign block");
+});
+
+test("the report explains that a foreign file is a measurement, not a traced load path", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64] }));
+  const prose = lines.join("\n");
+  assert.match(prose, /NOT a load path this check traced/);
+  assert.match(prose, /Dead weight in the artefact rather than a fault in it/);
+});
+
+/**
+ * The property the deleted `if` would have violated, stated directly rather
+ * than left to be inferred from the cases above: if anything went unchecked,
+ * the report says so. This is the assertion that a silent report fails.
+ */
+test("the report is empty if and only if nothing went unchecked", () => {
+  for (const nForeign of [0, 1, 2]) {
+    for (const unrecognised of [0, 1, 2]) {
+      const foreignPlatform = [FOREIGN_LINUX_X64, FOREIGN_WIN32_ARM64].slice(0, nForeign);
+      const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform, unrecognised }));
+      const somethingUnchecked = nForeign > 0 || unrecognised > 0;
+      assert.equal(
+        lines.length > 0,
+        somethingUnchecked,
+        `${nForeign} foreign + ${unrecognised} unrecognised produced ${lines.length} lines`,
+      );
+    }
+  }
+});
+
+/**
+ * A malformed tally must not read as a clean one. These four are the reason the
+ * function validates rather than destructuring optimistically: a refactor that
+ * renames or drops a field of `tallyVerdicts`'s return would otherwise make the
+ * report go quiet, which is indistinguishable from a bundle with nothing wrong.
+ */
+test("a tally missing its foreign list throws rather than reporting nothing", () => {
+  assert.throws(() => formatUncheckedReport({ unrecognised: 0 }), /foreignPlatform must be an array/);
+});
+
+test("a tally missing its unrecognised count throws rather than reporting nothing", () => {
+  assert.throws(() => formatUncheckedReport({ foreignPlatform: [] }), /unrecognised must be a non-negative integer/);
+});
+
+test("a negative or fractional unrecognised count is rejected", () => {
+  assert.throws(() => formatUncheckedReport({ foreignPlatform: [], unrecognised: -1 }), /non-negative integer/);
+  assert.throws(() => formatUncheckedReport({ foreignPlatform: [], unrecognised: 1.5 }), /non-negative integer/);
+});
+
+test("something that is not a tally at all throws", () => {
+  assert.throws(() => formatUncheckedReport(null), /a tally is required, got null/);
+  assert.throws(() => formatUncheckedReport(undefined), /a tally is required, got undefined/);
+  assert.throws(() => formatUncheckedReport("3 files"), /a tally is required, got string/);
 });
