@@ -22,6 +22,7 @@
 // first paint could be missing entirely. Two people lost time to that.
 
 import { spawn, spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,7 +34,12 @@ import {
   selectMainStudioProcesses,
 } from "./lib/dev-processes.mjs";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// Resolved through symlinks, because `ps` prints the path a process was
+// actually executed with. A checkout reached through a symlinked home, an NFS
+// /home -> /export/home, or macOS /tmp -> /private/tmp would otherwise match
+// nothing: the count reads zero, the pre-launch check passes vacuously, and we
+// are back to the silent-zero the shell version had on Linux.
+const ROOT = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
 const IS_WINDOWS = process.platform === "win32";
 const NPM = IS_WINDOWS ? "npm.cmd" : "npm";
 
@@ -74,8 +80,11 @@ function countStudio() {
 /**
  * Kill this checkout's Studio processes. Returns how many were signalled.
  *
- * Own pid and parent excluded: `npm run dev` leaves a wrapper in the table
- * carrying this checkout's node_modules.
+ * Own pid and parent excluded. This is insurance rather than a known hazard:
+ * npm's own command line is the global `npm-cli.js run dev` and the script
+ * wrapper is `sh -c "node scripts/dev.mjs"`, neither of which carries this
+ * checkout's node_modules. Cheap to keep, and it means a future change to how
+ * the script is invoked cannot make it kill its own tree.
  */
 function killStudio(signal) {
   const doomed = selectKillableStudioProcesses(readProcessTable(), ROOT, [
@@ -148,6 +157,33 @@ async function reportWhenReady(child) {
   );
 }
 
+/**
+ * The child is gone; whatever it left behind is ours to reap.
+ *
+ * TERM, verify, escalate to KILL, verify again — the same shape as
+ * clearStaleProcesses, and for the same reason. A single TERM issued in the
+ * same tick as `process.exit` is a hope, not a guarantee: the signal is
+ * delivered but nothing ever looks to see whether it worked, which is how
+ * stale windows survived a "clean" exit in the first place.
+ */
+async function shutdown(code, signal) {
+  try {
+    if (killStudio("SIGTERM") > 0) {
+      await sleep(500);
+      if (countStudio() > 0) {
+        killStudio("SIGKILL");
+        await sleep(300);
+      }
+    }
+    const verdict = checkStudioCount(countStudio(), 0);
+    if (!verdict.ok) console.error(`[dev] ${verdict.message}`);
+  } catch (error) {
+    // Reaping is best effort: never turn a clean exit into a crash.
+    console.error(`[dev] could not verify clean-up: ${error.message}`);
+  }
+  process.exit(signal ? 1 : (code ?? 0));
+}
+
 async function main() {
   await clearStaleProcesses();
   runBuild();
@@ -178,12 +214,22 @@ async function main() {
     });
   }
 
-  void reportWhenReady(child);
+  // Reported, never fatal. Voiding this promise instead means an unhandled
+  // rejection kills the parent WITHOUT running the exit handler below, leaving
+  // the child alive and reparented to init — the exact orphan this script
+  // exists to prevent, re-created by its own progress reporting. Review
+  // reproduced that, and the likeliest trigger is the Windows process-table
+  // read, on the platform nobody has run.
+  reportWhenReady(child).catch((error) => {
+    console.error(`\n[dev] could not confirm how many Studios are running: ${error.message}`);
+  });
 
   child.on("error", (error) => fail(`could not run \`npm run start\`: ${error.message}`));
   child.on("exit", (code, signal) => {
-    killStudio("SIGTERM");
-    process.exit(signal ? 1 : (code ?? 0));
+    shutdown(code, signal).catch((error) => {
+      console.error(`[dev] clean-up failed: ${error.message}`);
+      process.exit(1);
+    });
   });
 }
 

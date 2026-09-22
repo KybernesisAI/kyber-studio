@@ -12,6 +12,11 @@
 *.sh            text eol=lf
 *.mjs           text eol=lf
 
+# ...and the other direction, for the same reason: cmd.exe needs CRLF. None of
+# these exist in the tree yet; the rule is here so the first one added is right.
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
 # Binary, never line-ending-mangled and never diffed as text.
 *.png           binary
 *.icns          binary
@@ -21,7 +26,8 @@
 *.wasm          binary
 *.bin           binary
 
-# Generated — kept out of language statistics, but NOT out of diffs. Marking it
-# `-diff` renders it as "Bin 306695 -> 307521 bytes" in review, which is how an
-# unintended dependency change gets waved through.
-package-lock.json  linguist-generated
+# NOTHING here marks package-lock.json. `linguist-generated` HIDES the file in
+# diffs as well as excluding it from language statistics — which is how an
+# unintended dependency change gets waved through — and Linguist already
+# classifies a lockfile as generated without being told. An earlier revision of
+# this file carried that attribute under a comment claiming the opposite.

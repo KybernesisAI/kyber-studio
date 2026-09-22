@@ -61,8 +61,43 @@ export function isHelperProcess(command) {
   return /(^|\s)--type=/.test(String(command));
 }
 
+/**
+ * Characters that may legitimately precede an absolute path on a command line:
+ * the start of the line, whitespace, or a quote.
+ *
+ * Deliberately NOT `=`. A `--some-flag=/our/node_modules/...` on somebody
+ * else's process would then read as ours, and this rule does not only count —
+ * it selects pids for SIGTERM. Narrow is the safe direction for a kill rule.
+ */
+function isPathBoundary(character) {
+  return character === undefined || /[\s"']/.test(character);
+}
+
+/**
+ * Does this command line belong to THIS checkout?
+ *
+ * The marker must sit at a path boundary, not merely appear somewhere in the
+ * string. A bare `includes` matches a checkout whose path differs only in its
+ * PREFIX — `/mnt/data/home/paul/kyber-studio` against a root of
+ * `/home/paul/kyber-studio`, or a container bind mount, or a backup copy — and
+ * the first review of this change demonstrated exactly that: counted, and
+ * selected for killing. The failure mode is signalling another checkout's
+ * running Studio, so this is the one rule in the file that must not be loose.
+ *
+ * Both callers below go through here. Three inline copies of one rule means
+ * three places to get this wrong, and the function the tests exercise is then
+ * not the one the script runs.
+ */
 export function belongsToCheckout(command, root) {
-  return normalisePath(command).includes(checkoutMarker(root));
+  const normalised = normalisePath(command);
+  const marker = checkoutMarker(root);
+  let from = 0;
+  for (;;) {
+    const at = normalised.indexOf(marker, from);
+    if (at === -1) return false;
+    if (at === 0 || isPathBoundary(normalised[at - 1])) return true;
+    from = at + 1;
+  }
 }
 
 /**
@@ -74,9 +109,8 @@ export function belongsToCheckout(command, root) {
  * app counts as three.
  */
 export function isMainStudioProcess(command, root) {
-  const normalised = normalisePath(command);
-  if (!normalised.includes(checkoutMarker(root))) return false;
-  if (!normalised.includes(ELECTRON_DIST)) return false;
+  if (!belongsToCheckout(command, root)) return false;
+  if (!normalisePath(command).includes(ELECTRON_DIST)) return false;
   return !isHelperProcess(command);
 }
 
@@ -88,8 +122,8 @@ export function isMainStudioProcess(command, root) {
  * on screen in the first place.
  */
 export function isKillableStudioProcess(command, root) {
+  if (!belongsToCheckout(command, root)) return false;
   const normalised = normalisePath(command);
-  if (!normalised.includes(checkoutMarker(root))) return false;
   return normalised.includes(ELECTRON_DIST) || normalised.includes(PREVIEW);
 }
 

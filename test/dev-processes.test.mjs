@@ -34,6 +34,7 @@ const DARWIN = {
   main: `${DARWIN_ROOT}/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron .`,
   gpu: `${DARWIN_ROOT}/node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Helper (GPU).app/Contents/MacOS/Electron Helper (GPU) --type=gpu-process`,
   renderer: `${DARWIN_ROOT}/node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Helper (Renderer).app/Contents/MacOS/Electron Helper (Renderer) --type=renderer`,
+  utility: `${DARWIN_ROOT}/node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Helper.app/Contents/MacOS/Electron Helper --type=utility --utility-sub-type=network.mojom.NetworkService`,
   preview: `node ${DARWIN_ROOT}/node_modules/.bin/electron-vite preview`,
 };
 
@@ -41,6 +42,7 @@ const WINDOWS = {
   main: `"${WINDOWS_ROOT}\\node_modules\\electron\\dist\\electron.exe" .`,
   gpu: `"${WINDOWS_ROOT}\\node_modules\\electron\\dist\\electron.exe" --type=gpu-process`,
   renderer: `"${WINDOWS_ROOT}\\node_modules\\electron\\dist\\electron.exe" --type=renderer --enable-sandbox`,
+  utility: `"${WINDOWS_ROOT}\\node_modules\\electron\\dist\\electron.exe" --type=utility --utility-sub-type=network.mojom.NetworkService`,
   preview: `node "${WINDOWS_ROOT}\\node_modules\\.bin\\electron-vite" preview`,
 };
 
@@ -51,6 +53,14 @@ const FOREIGN = {
   otherApp: "/home/paul/other-app/node_modules/electron/dist/electron .",
   siblingCheckout: "/home/paul/kyber-studio-worktree/node_modules/electron/dist/electron .",
   editor: "/usr/share/code/code --type=renderer",
+  // The case the acceptance criterion names: differs from the checkout root
+  // ONLY in its prefix. A bare substring test matches all three, and since
+  // this rule also selects pids for SIGTERM, that means killing somebody
+  // else's Studio. Found by review, not by the author.
+  bindMount: "/mnt/data/home/paul/kyber-studio/node_modules/electron/dist/electron .",
+  backupCopy: "/srv/backup/home/paul/kyber-studio/node_modules/electron/dist/electron .",
+  container:
+    "/var/lib/docker/volumes/studio/_data/home/paul/kyber-studio/node_modules/electron/dist/electron .",
 };
 
 test("normalisePath folds Windows separators so one rule covers three platforms", () => {
@@ -68,10 +78,10 @@ test("a --type= switch marks a helper, on every platform", () => {
   for (const command of [LINUX.gpu, LINUX.renderer, LINUX.utility, LINUX.zygote]) {
     assert.equal(isHelperProcess(command), true, command);
   }
-  for (const command of [DARWIN.gpu, DARWIN.renderer]) {
+  for (const command of [DARWIN.gpu, DARWIN.renderer, DARWIN.utility]) {
     assert.equal(isHelperProcess(command), true, command);
   }
-  for (const command of [WINDOWS.gpu, WINDOWS.renderer]) {
+  for (const command of [WINDOWS.gpu, WINDOWS.renderer, WINDOWS.utility]) {
     assert.equal(isHelperProcess(command), true, command);
   }
   assert.equal(isHelperProcess(LINUX.main), false);
@@ -120,6 +130,7 @@ test("darwin: exactly the main process counts, helpers named for the bundle excl
     { pid: 201, command: DARWIN.main },
     { pid: 202, command: DARWIN.gpu },
     { pid: 203, command: DARWIN.renderer },
+    { pid: 205, command: DARWIN.utility },
     { pid: 204, command: DARWIN.preview },
   ];
   assert.deepEqual(
@@ -133,6 +144,7 @@ test("win32: exactly the main process counts, through backslashes and quoting", 
     { pid: 301, command: WINDOWS.main },
     { pid: 302, command: WINDOWS.gpu },
     { pid: 303, command: WINDOWS.renderer },
+    { pid: 305, command: WINDOWS.utility },
     { pid: 304, command: WINDOWS.preview },
   ];
   assert.deepEqual(
@@ -297,4 +309,56 @@ test("the mutation this ticket names: the old macOS-only rule finds nothing on L
   assert.equal(isMainStudioProcess(DARWIN.gpu, DARWIN_ROOT), false);
   assert.equal(oldKill(DARWIN.main, DARWIN_ROOT), true);
   assert.equal(isKillableStudioProcess(DARWIN.main, DARWIN_ROOT), true);
+});
+
+test("a checkout differing only in its PREFIX is neither counted nor killed", () => {
+  // The marker has to sit at a path boundary. `String.includes` alone says yes
+  // to every one of these, and the consequence is not a wrong number — it is a
+  // SIGTERM sent to another checkout's running Studio.
+  for (const command of [FOREIGN.bindMount, FOREIGN.backupCopy, FOREIGN.container]) {
+    assert.equal(belongsToCheckout(command, LINUX_ROOT), false, command);
+    assert.equal(isMainStudioProcess(command, LINUX_ROOT), false, command);
+    assert.equal(isKillableStudioProcess(command, LINUX_ROOT), false, command);
+  }
+
+  const rows = [
+    { pid: 101, command: LINUX.main },
+    { pid: 401, command: FOREIGN.bindMount },
+    { pid: 402, command: FOREIGN.backupCopy },
+    { pid: 403, command: FOREIGN.container },
+  ];
+  assert.deepEqual(
+    selectMainStudioProcesses(rows, LINUX_ROOT).map((row) => row.pid),
+    [101],
+  );
+  assert.deepEqual(
+    selectKillableStudioProcesses(rows, LINUX_ROOT).map((row) => row.pid),
+    [101],
+  );
+});
+
+test("the boundary admits the forms a real command line actually takes", () => {
+  // Start of line, after whitespace, and after a quote — and nothing else.
+  assert.equal(belongsToCheckout(LINUX.main, LINUX_ROOT), true);
+  assert.equal(belongsToCheckout(LINUX.preview, LINUX_ROOT), true);
+  assert.equal(belongsToCheckout(WINDOWS.main, WINDOWS_ROOT), true);
+  assert.equal(
+    belongsToCheckout(`'${LINUX_ROOT}/node_modules/electron/dist/electron' .`, LINUX_ROOT),
+    true,
+  );
+
+  // A flag VALUE pointing into our tree is somebody else's process mentioning
+  // us, not us. Admitting it would widen a kill rule on a guess.
+  assert.equal(
+    belongsToCheckout(`/usr/lib/electron/electron --user-data-dir=${LINUX_ROOT}/node_modules/x`, LINUX_ROOT),
+    false,
+  );
+});
+
+test("a later occurrence still counts when an earlier one is not at a boundary", () => {
+  // The scan must not stop at the first non-boundary hit: here the real path
+  // follows a mention of a prefixed copy on the same command line.
+  const command = `/mnt/data${LINUX_ROOT}/node_modules/x ${LINUX_ROOT}/node_modules/electron/dist/electron`;
+  assert.equal(belongsToCheckout(command, LINUX_ROOT), true);
+  assert.equal(isMainStudioProcess(command, LINUX_ROOT), true);
 });
