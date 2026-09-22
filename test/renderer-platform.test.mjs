@@ -89,9 +89,15 @@ test("a keyboard hint names a key the keyboard has", () => {
   assert.equal(chordLabel(false, "1"), "Ctrl 1");
 });
 
-test("the exported pair agrees with the exported predicate", () => {
+test("the exported modifier is derived from the exported predicate", () => {
   // A shape check, not a platform check: asserting IS_MAC's VALUE would pin
   // this suite to the machine it runs on and fail on a Mac.
   assert.equal(typeof IS_MAC, "boolean");
-  assert.equal(MODIFIER, modifierFor(IS_MAC));
+  // The mapping is restated literally here, NOT as modifierFor(IS_MAC).
+  // MODIFIER is *defined* as that call, so the two forms are the same
+  // expression and comparing them compared a function's output to itself.
+  // Review substituted five implementations of modifierFor — swapped,
+  // two constants, and one returning 42 — and the old assertion passed
+  // under every one of them. It read as verification and could not fail.
+  assert.equal(MODIFIER, IS_MAC ? "⌘" : "Ctrl");
 });
