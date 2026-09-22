@@ -50,9 +50,24 @@ npm install
 npm run dev          # or: npm run build && npm start
 ```
 
-Use `scripts/dev.sh` rather than launching by hand — it kills the previous run
-by PID and asserts that exactly one app is left. (`pkill -f` matches the caller
-and orphans the child, which is how four Studios end up open at once.)
+Use `npm run dev` rather than launching by hand — it kills the previous run by
+PID, asserts that nothing from this checkout survived, builds, and then streams
+the app's output to your terminal until you stop it. (`pkill -f` matches the
+caller and orphans the child, which is how four Studios end up open at once.)
+
+It is a Node script (`scripts/dev.mjs`) and needs no shell, so it behaves the
+same on all three platforms. Processes are identified as this checkout's
+Electron binary without a `--type=` switch — helpers all carry one — so a second
+clone of the repo running its own Studio is neither counted nor killed.
+
+### Prerequisites
+
+| | |
+| --- | --- |
+| **All platforms** | Node.js 20.19+ or 22.12+ (Vite 6 requires it; the repo pins no version). `npm install` builds nothing native — every native dependency ships prebuilt. |
+| **Linux** | A desktop session. For the packaged **AppImage** on lean installs — Arch, minimal LXQt — `fuse2` and `gtk3`. The **`.deb`** pulls its own dependencies, including `libsecret-1-0` for credential storage. Under VirtualBox, turn 3D acceleration **off**: Chromium falls back to software rendering either way, but the failed GPU handshake slows first paint and litters the log. |
+| **macOS** | Xcode command line tools for the packaging steps only. Running and building need nothing beyond Node. |
+| **Windows** | Node and PowerShell (used to read the process table). Untested on hardware — see KYB-588. |
 
 Sign-in points at `https://agent.kybernesis.ai` by default; override with
 `KYBERNESIS_ISSUER`. Set `KYBER_STUDIO_DEBUG_STREAM=1` to print the raw agent
