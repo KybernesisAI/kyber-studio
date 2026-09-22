@@ -749,12 +749,26 @@ test("several foreign files are described in the plural, tallied per platform", 
   assert.match(lines[0], /2 bundled \.node files are for another platform \(linux ×1, win32 ×1\), not arch-checked:/);
 });
 
-test("every foreign file is named, with what it is and what it was built for", () => {
+/**
+ * Each file sits directly above its own measurement — pinned with `deepEqual`
+ * on a slice rather than with `includes`.
+ *
+ * This test previously made four `lines.includes(...)` assertions, which are
+ * order-blind: they cannot tell "every file above its own measurement" from
+ * "every path, then every measurement". Splitting the loop in two passed all
+ * four while reporting the linux binary's path above the win32 binary's format
+ * — a reader of a real bundle would conclude an ELF file was a PE. Caught in
+ * review. The test's NAME claimed a pairing its assertions never checked, which
+ * is the defect this whole ticket is about, one level in.
+ */
+test("every foreign file is paired with its own measurement, in order", () => {
   const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64, FOREIGN_WIN32_ARM64] }));
-  assert.ok(lines.includes(`    ${FOREIGN_LINUX_X64.shown}`), "the linux file is not named");
-  assert.ok(lines.includes("        ELF, x64"), "the linux file's measurement is missing");
-  assert.ok(lines.includes(`    ${FOREIGN_WIN32_ARM64.shown}`), "the win32 file is not named");
-  assert.ok(lines.includes("        PE, arm64"), "the win32 file's measurement is missing");
+  assert.deepEqual(lines.slice(1, 5), [
+    `    ${FOREIGN_LINUX_X64.shown}`,
+    "        ELF, x64",
+    `    ${FOREIGN_WIN32_ARM64.shown}`,
+    "        PE, arm64",
+  ]);
 });
 
 test("a universal foreign binary lists every slice it carries", () => {
@@ -770,6 +784,31 @@ test("one unreadable file is singular, more than one is plural", () => {
 
   const three = formatUncheckedReport(uncheckedTally({ unrecognised: 3 }));
   assert.match(three[0], /3 bundled \.node files were skipped: not an ELF, Mach-O or PE object\./);
+});
+
+/**
+ * The whole report for a known tally, line for line.
+ *
+ * The assertions above sample: they match a substring of the header and two of
+ * the six prose lines. Review found that dropping the leading newline from a
+ * header, or deleting one prose line, left them all green — so "the same lines
+ * in the same order", which is this ticket's first acceptance criterion, was
+ * defended by nothing. This pins it.
+ */
+test("the whole report for a known tally is exactly these lines", () => {
+  const lines = formatUncheckedReport(uncheckedTally({ foreignPlatform: [FOREIGN_LINUX_X64], unrecognised: 2 }));
+  assert.deepEqual(lines, [
+    "\n  1 bundled .node file is for another platform (linux ×1), not arch-checked:",
+    `    ${FOREIGN_LINUX_X64.shown}`,
+    "        ELF, x64",
+    "  Their platform is not this build's, so the per-platform resolution these",
+    "  packages use does not select them here. That is a property of the files",
+    "  measured above, NOT a load path this check traced — a foreign-container",
+    "  file sitting at a path this target does resolve would still land here.",
+    "  Dead weight in the artefact rather than a fault in it, and trimming them",
+    "  is a packaging change with its own ticket.",
+    "\n  2 bundled .node files were skipped: not an ELF, Mach-O or PE object.",
+  ]);
 });
 
 test("both kinds of unchecked file are reported, foreign first", () => {
