@@ -1,4 +1,6 @@
 import { test } from "node:test";
+import { Worker } from "node:worker_threads";
+import { once } from "node:events";
 import assert from "node:assert/strict";
 import {
   chmodSync,
@@ -162,32 +164,41 @@ test("the temp file is the one derived from the target, not a name of its own ch
  * asserting it on the temp would assert an implementation detail that no longer
  * exists by the time the function returns.
  *
- * Each test below names the step it kills:
+ * Which test kills which step:
  *
  *   - restrictive umask          -> kills dropping the `chmod`
- *   - stale temp, wider mode     -> kills relying on the target's own mode
  *   - stale temp, symlink        -> kills dropping the `rmSync`
+ *   - the concurrent observer    -> kills creating the temp unrestricted
  *
- * TWO MUTANTS SURVIVE, disclosed rather than left for a reader to find. Both
- * are the same shape, and neither is equivalent:
+ * ONE MUTANT SURVIVES: chmod'ing the TARGET after the rename instead of the
+ * temp before it. Its window is two adjacent metadata syscalls with no I/O
+ * between them, and the observer below does not catch it. Disclosed rather
+ * than left for a reader to find, and NOT claimed as equivalent — unobserved
+ * from here is a different thing from harmless.
  *
- *   - removing `mode` from the `writeFileSync` call, creating the temp
- *     unrestricted and relying on the `chmod` alone
- *   - chmod'ing the TARGET after the rename instead of the temp before it
+ * A SECOND MUTANT WAS DISCLOSED AS A SURVIVOR AND WAS NOT ONE. An earlier
+ * version of this file argued that dropping `mode` from the `writeFileSync`
+ * call — creating unrestricted and relying on the `chmod` — was an unobservable
+ * window because "this suite has one process". Review killed it with a worker
+ * thread and a large payload: that window lasts as long as the WRITE, so it
+ * grows with the data, and a concurrent reader sees `0644` on the temp. The
+ * test is below. The lesson is recorded because the reasoning, not the code,
+ * was the defect: "my test cannot see it" had been rounded up to "nothing can".
  *
- * Both end with a `0600` file and pass everything here. What they give up is
- * that the bytes are never on disk under wider permissions — in the first case
- * between the write and the chmod, in the second between the rename and it.
- * That is a WINDOW, and observing one needs a concurrent reader. This suite has
- * one process.
- *
- * The temptation is to call them equivalent and simplify. They are not
- * equivalent — they are unobservable from here, which is a different thing, and
- * confusing the two loses the protection in exactly the direction nobody
- * notices.
+ * NOT COVERED, deliberately and recorded so it is not mistaken for coverage:
+ * Windows. `statSync().mode & 0o777` reports 0666 or 0444 there regardless of
+ * what was asked for, so every mode assertion in this section is skipped on
+ * win32. CI runs Linux only, so those guards are themselves unexercised — they
+ * are there to stop a future Windows lane going red for a reason nobody can
+ * find, not because they have been seen to work.
  */
 
-test("the published file carries the mode the caller asked for", () => {
+test("the published file carries the mode the caller asked for", (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX modes are not reported on win32");
+    return;
+  }
+
   const dir = scratch();
   const target = join(dir, "local-mcp.json");
 
@@ -201,7 +212,12 @@ test("the published file carries the mode the caller asked for", () => {
   assert.equal(existsSync(`${target}.tmp`), false);
 });
 
-test("a restrictive umask does not narrow the mode the caller asked for", () => {
+test("a restrictive umask does not narrow the mode the caller asked for", (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX modes are not reported on win32");
+    return;
+  }
+
   // Creation modes are masked by the umask: under 0o277 a requested 0600 is
   // created as 0400, and the caller ends up with a file it cannot rewrite in
   // place. `chmod` is not masked. Dropping the chmod turns this red at 400.
@@ -218,11 +234,21 @@ test("a restrictive umask does not narrow the mode the caller asked for", () => 
   assert.equal(readFileSync(target, "utf8"), '{"read-file":"never"}');
 });
 
-test("a stale temp of a wider mode does not donate its permissions to the secret", () => {
-  // The state the module's own doc comment says is expected and persistent: a
-  // previous write failed after creating the temp. `writeFileSync`'s mode is
-  // ignored on a file that already exists, so without removing it first the
-  // 0644 below is what gets renamed over the target.
+test("a stale temp of a wider mode still publishes at the requested mode", (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX modes are not reported on win32");
+    return;
+  }
+
+  // An END-TO-END assertion, and deliberately not a discriminating one: it
+  // cannot tell you WHICH step produced the 0600, and dropping either the
+  // removal or the chmod leaves it green because the other one covers. Said
+  // plainly because the first version of this comment claimed it pinned the
+  // removal, and it does not — the chmod repairs the mode either way.
+  //
+  // It earns its place as the composite check: the state the module's doc
+  // comment calls expected and persistent — a previous write that failed after
+  // creating the temp — must not change what a caller gets.
   const dir = scratch();
   const target = join(dir, "local-mcp.json");
   writeFileSync(`${target}.tmp`, "leftover", "utf8");
@@ -262,17 +288,112 @@ test("a stale temp that is a symlink is removed, not written through", (t) => {
   assert.equal((statSync(target).mode & 0o777).toString(8), "600");
 });
 
-test("passing no mode leaves the previous behaviour exactly as it was", () => {
-  // The asymmetry is deliberate and worth pinning: `saveState` passes no mode,
-  // app state is not secret, and nothing about the no-mode path changed. If a
-  // later edit makes the removal unconditional, the three tests above still
-  // pass and this one records what was traded for it.
+test("passing no mode writes THROUGH a stale temp rather than removing it", () => {
+  // The asymmetry is deliberate — `saveState` passes no mode, app state is not
+  // secret — so the traded behaviour is pinned by INODE rather than by content.
+  // Content alone cannot see the difference: an unconditional removal produces
+  // the same bytes at the same path, which is why the earlier version of this
+  // test stayed green under exactly the edit its comment claimed to catch.
   const dir = scratch();
   const target = join(dir, "state.json");
   writeFileSync(`${target}.tmp`, "leftover", "utf8");
+  const staleInode = statSync(`${target}.tmp`).ino;
 
   writeAtomic(target, '{"projects":[]}');
 
   assert.equal(readFileSync(target, "utf8"), '{"projects":[]}');
   assert.equal(existsSync(`${target}.tmp`), false);
+  assert.equal(
+    statSync(target).ino,
+    staleInode,
+    "the no-mode path reuses the stale temp; making the removal unconditional turns this red",
+  );
+});
+
+test("a target that already exists at a wider mode is republished at the requested one", (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX modes are not reported on win32");
+    return;
+  }
+
+  // The one benefit the cross-platform note advertises: the old in-place write
+  // set its mode only when the file was first created, so a file that reached
+  // 0644 by any route stayed there forever. Every publish now re-establishes it.
+  const dir = scratch();
+  const target = join(dir, "local-permissions.json");
+  writeFileSync(target, '{"run-command":"ask"}', "utf8");
+  chmodSync(target, 0o644);
+
+  writeAtomic(target, '{"run-command":"never"}', { mode: 0o600 });
+
+  assert.equal((statSync(target).mode & 0o777).toString(8), "600");
+  assert.equal(readFileSync(target, "utf8"), '{"run-command":"never"}');
+});
+
+/**
+ * The mutant review killed that this suite had written off as unobservable.
+ *
+ * Creating the temp unrestricted and tightening it afterwards ends at the same
+ * 0600, so nothing single-threaded can tell the two apart. The difference is
+ * WHEN: the bytes are on disk at 0644 for as long as the write takes. A big
+ * payload makes that window wide enough for another thread to walk into.
+ *
+ * The observer reports every mode it managed to sample. Two assertions, and the
+ * first one matters more than it looks: if the poll never catches the temp at
+ * all, this FAILS rather than passing vacuously. A timing-dependent test that
+ * can go quietly green is the thing this repo keeps filing tickets about — so
+ * this one is built to go red when it stops working.
+ */
+test("a concurrent reader never sees the temp under wider permissions", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX modes are not reported on win32");
+    return;
+  }
+
+  const dir = scratch();
+  const target = join(dir, "local-mcp.json");
+  const tmp = `${target}.tmp`;
+
+  const observer = new Worker(
+    `
+    const { parentPort, workerData } = require("node:worker_threads");
+    const { statSync } = require("node:fs");
+    const seen = [];
+    let stopping = false;
+    parentPort.on("message", () => { stopping = true; });
+    const poll = () => {
+      try { seen.push(statSync(workerData.tmp).mode & 0o777); } catch { /* not there yet, or already renamed */ }
+      if (stopping) { parentPort.postMessage(seen); return; }
+      setImmediate(poll);
+    };
+    parentPort.postMessage("ready");
+    poll();
+    `,
+    { eval: true, workerData: { tmp } },
+  );
+
+  try {
+    await once(observer, "message");
+
+    // Big enough that the write is not instantaneous. The secret in the real
+    // callers is small, but the window exists at any size — this only makes it
+    // large enough to be caught deterministically.
+    const payload = JSON.stringify({ servers: [{ id: "plaud", env: { KEY: "x".repeat(40_000_000) } }] });
+    writeAtomic(target, payload, { mode: 0o600 });
+
+    observer.postMessage("stop");
+    const [seen] = await once(observer, "message");
+
+    assert.ok(
+      seen.length > 0,
+      "the observer never caught the temp at all — this test proves nothing in that state; enlarge the payload",
+    );
+    assert.deepEqual(
+      [...new Set(seen)].map((m) => m.toString(8)),
+      ["600"],
+      "the temp was readable at a wider mode while it was being written",
+    );
+  } finally {
+    await observer.terminate();
+  }
 });

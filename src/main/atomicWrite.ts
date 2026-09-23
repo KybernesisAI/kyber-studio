@@ -52,36 +52,46 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  * fix, which is why the mode is a parameter here rather than an afterthought at
  * the call sites.
  *
- * Passing a mode does three things, and each closes a hole the other two leave
- * open:
+ * Passing a mode does three things. They are not interchangeable and they are
+ * not redundant, but the division of labour is narrower than it first looks —
+ * stated precisely here because an earlier draft of this comment got it wrong
+ * and review caught it:
  *
- * 1. **Remove any stale temp first.** `writeFileSync`'s `mode` applies only when
- *    it CREATES the file and is ignored when the file already exists. A stale
- *    `foo.tmp` from a previous failed write — the state the paragraph above says
- *    is both expected and persistent — would therefore donate its own, possibly
- *    wider, permissions to the secret about to be written into it. Removing it
- *    means the write below is always a creation.
- *
- *    It also means a stale temp that is a SYMLINK is deleted rather than
- *    followed. `writeFileSync` on a symlink writes through to its destination,
- *    so without this the file's contents could be published somewhere else
- *    entirely by anything able to drop a link into `userData`.
+ * 1. **Remove any stale temp first.** Its job is NOT to keep the final mode
+ *    tight; step 3 does that unaided, and a stale temp of a wider mode still
+ *    ends up published at the requested one. Its job is the SYMLINK: a stale
+ *    `foo.tmp` that is a link — and `userData` is writable by anything running
+ *    as the user — is followed by `writeFileSync`, which writes the file's
+ *    contents through to wherever it points, after which the rename publishes
+ *    the link rather than a file. Unlinking first means the write below is
+ *    always a creation of a real file at a known path.
  *
  * 2. **Create with the mode.** So the bytes are never on disk under wider
- *    permissions, not even for the instant between writing and tightening. A
- *    `chmod` after an unrestricted create would close the hole late, and "late"
- *    is a window a concurrent reader can be inside.
+ *    permissions, not even during the write itself. This is a real window and
+ *    not a theoretical one: it lasts as long as the write takes, so it grows
+ *    with the payload, and `test/atomic-write.test.mjs` observes it from a
+ *    worker thread rather than arguing about it. A `chmod` afterwards closes
+ *    the hole late, and late is long enough for a concurrent reader.
  *
  * 3. **Then set it explicitly.** Creation modes are masked by the process
  *    umask — a restrictive umask turns a requested `0600` into `0400`, and the
  *    next writer to that path is then fighting a read-only file it created
  *    itself. `chmod` is not umask-masked, so this makes the mode the one the
- *    caller asked for rather than the one the environment allowed.
+ *    caller asked for rather than the one the environment allowed. It also
+ *    re-establishes the mode on every publish, where the old in-place
+ *    `writeFileSync(path, data, { mode })` only ever set it when the file was
+ *    first created.
  *
  * Callers that pass no mode keep exactly the previous behaviour, including the
- * stale temp being written through rather than removed. `saveState` is such a
+ * stale temp being written THROUGH rather than removed. `saveState` is such a
  * caller: app state is not secret, wants no `0600`, and its existing tests pin
  * that path.
+ *
+ * **That coupling is incidental, and worth saying out loud.** `options.mode`
+ * currently selects the safer write path as well as the permissions, so a
+ * future caller that wants atomicity without `0600` would silently get the
+ * symlink-following variant. Nothing at such a call site would say so. If one
+ * ever appears, separate the two rather than passing a mode nobody wants.
  */
 export function writeAtomic(target: string, data: string, options: { mode?: number } = {}): void {
   const tmp = `${target}.tmp`;
