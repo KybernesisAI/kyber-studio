@@ -8,7 +8,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bash scripts/dev.sh",
+    "dev": "node scripts/dev.mjs",
     "start": "electron-vite preview",
     "build": "npm run typecheck && npm run test && electron-vite build",
     "typecheck:node": "tsc -p tsconfig.node.json --noEmit",

@@ -1,0 +1,33 @@
+# Normalise line endings in the repository, whatever a working copy uses.
+#
+# There was no .gitattributes at all until KYB-588, which meant every text file
+# was at the mercy of core.autocrlf on whichever machine committed it. That is
+# not cosmetic here: build/linux/deb-postinst.sh and deb-postrm.sh are run by
+# dpkg on the user's machine, and a CRLF shebang makes the interpreter lookup
+# fail with a message naming a program nobody typed.
+
+* text=auto eol=lf
+
+# Scripts executed by the operating system. LF regardless of platform.
+*.sh            text eol=lf
+*.mjs           text eol=lf
+
+# ...and the other direction, for the same reason: cmd.exe needs CRLF. None of
+# these exist in the tree yet; the rule is here so the first one added is right.
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# Binary, never line-ending-mangled and never diffed as text.
+*.png           binary
+*.icns          binary
+*.ico           binary
+*.node          binary
+*.onnx          binary
+*.wasm          binary
+*.bin           binary
+
+# NOTHING here marks package-lock.json. `linguist-generated` HIDES the file in
+# diffs as well as excluding it from language statistics — which is how an
+# unintended dependency change gets waved through — and Linguist already
+# classifies a lockfile as generated without being told. An earlier revision of
+# this file carried that attribute under a comment claiming the opposite.
