@@ -1,4 +1,5 @@
 import { callServer, listServers } from "./localMcp";
+import { writeAtomic } from "./atomicWrite";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { hostname, platform } from "node:os";
@@ -81,7 +82,11 @@ export function readPermissions(): Record<LocalAction, LocalPermission> {
 
 export function setPermission(action: LocalAction, value: LocalPermission): void {
   const next = { ...readPermissions(), [action]: value };
-  writeFileSync(permsPath(), JSON.stringify({ ...readRaw(), ...next }, null, 2), { mode: 0o600 });
+  // Atomic: this is a read-modify-write over readRaw(), which answers a torn
+  // file with {} — so a non-atomic write here does not merely lose a decision,
+  // the NEXT save rewrites the file from defaults and makes the loss
+  // permanent. A discarded `never` becomes a question. KYB-582.
+  writeAtomic(permsPath(), JSON.stringify({ ...readRaw(), ...next }, null, 2), { mode: 0o600 });
 }
 
 /**
@@ -109,7 +114,7 @@ export function serverPermission(serverId: string): LocalPermission {
 }
 
 export function setServerPermission(serverId: string, value: LocalPermission): void {
-  writeFileSync(
+  writeAtomic(
     permsPath(),
     JSON.stringify({ ...readRaw(), [`mcp:${serverId}`]: value }, null, 2),
     { mode: 0o600 },
