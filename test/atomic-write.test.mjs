@@ -168,7 +168,11 @@ test("the temp file is the one derived from the target, not a name of its own ch
  *
  *   - restrictive umask          -> kills dropping the `chmod`
  *   - stale temp, symlink        -> kills dropping the `rmSync`
- *   - the concurrent observer    -> kills creating the temp unrestricted
+ *   - stale temp, inherited mode -> kills removing the stale temp UNconditionally
+ *   - observer, clean directory  -> kills creating the temp unrestricted
+ *   - observer, stale temp there -> kills dropping the `rmSync` again, without
+ *                                   needing the symlink privilege the test
+ *                                   above it self-disables without
  *
  * ONE MUTANT SURVIVES: chmod'ing the TARGET after the rename instead of the
  * temp before it. Its window is two adjacent metadata syscalls with no I/O
@@ -285,28 +289,47 @@ test("a stale temp that is a symlink is removed, not written through", (t) => {
   );
   assert.equal(readFileSync(target, "utf8"), '{"servers":[{"id":"plaud"}]}');
   assert.equal(lstatSync(target).isSymbolicLink(), false);
-  assert.equal((statSync(target).mode & 0o777).toString(8), "600");
+
+  // Guarded separately rather than skipping the whole test: the symlink
+  // behaviour above is worth checking anywhere symlinks can be made, including
+  // a Windows box with Developer Mode on, where this assertion would read 0666
+  // and fail for a reason unrelated to what the test is about.
+  if (process.platform !== "win32") {
+    assert.equal((statSync(target).mode & 0o777).toString(8), "600");
+  }
 });
 
-test("passing no mode writes THROUGH a stale temp rather than removing it", () => {
-  // The asymmetry is deliberate — `saveState` passes no mode, app state is not
-  // secret — so the traded behaviour is pinned by INODE rather than by content.
-  // Content alone cannot see the difference: an unconditional removal produces
-  // the same bytes at the same path, which is why the earlier version of this
-  // test stayed green under exactly the edit its comment claimed to catch.
+test("passing no mode writes THROUGH a stale temp rather than removing it", (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX modes are not reported on win32");
+    return;
+  }
+
+  // Pinned by the INHERITED MODE, and the choice of 0o777 is the whole point:
+  // writing through a stale temp keeps its permissions, whereas creating a
+  // fresh one cannot produce 777 under any umask. So the two paths are
+  // distinguishable by the published mode alone.
+  //
+  // This replaces an inode comparison, which could not fail: inode numbers are
+  // reused after an unlink — measured 200/200 on the overlayfs that backs
+  // os.tmpdir() here — so the published file had the stale file's inode either
+  // way. That assertion carried the message "making the removal unconditional
+  // turns this red" and it did not. Third time in this file that a comment
+  // claimed a check it could not perform; recorded so it stops happening.
   const dir = scratch();
   const target = join(dir, "state.json");
   writeFileSync(`${target}.tmp`, "leftover", "utf8");
-  const staleInode = statSync(`${target}.tmp`).ino;
+  chmodSync(`${target}.tmp`, 0o777);
 
   writeAtomic(target, '{"projects":[]}');
 
   assert.equal(readFileSync(target, "utf8"), '{"projects":[]}');
   assert.equal(existsSync(`${target}.tmp`), false);
   assert.equal(
-    statSync(target).ino,
-    staleInode,
-    "the no-mode path reuses the stale temp; making the removal unconditional turns this red",
+    (statSync(target).mode & 0o777).toString(8),
+    "777",
+    "the no-mode path writes through the stale temp and inherits its mode; " +
+      "making the removal unconditional publishes a fresh 644 and turns this red",
   );
 });
 
@@ -344,15 +367,25 @@ test("a target that already exists at a wider mode is republished at the request
  * can go quietly green is the thing this repo keeps filing tickets about — so
  * this one is built to go red when it stops working.
  */
-test("a concurrent reader never sees the temp under wider permissions", async (t) => {
-  if (process.platform === "win32") {
-    t.skip("POSIX modes are not reported on win32");
-    return;
-  }
-
-  const dir = scratch();
-  const target = join(dir, "local-mcp.json");
+/**
+ * Watch the temp path from another thread for the duration of one write, and
+ * report the modes seen while the file was PART-WRITTEN.
+ *
+ * The size filter is what makes the result mean anything. Samples are only
+ * counted when the file is larger than whatever was sitting there before and
+ * smaller than the finished payload — so a sample cannot be the stale file, and
+ * cannot be the finished article after the chmod has run. Without it the
+ * "at least one sample" guard proves only that the poll fired, not that it
+ * fired during the window the test is about.
+ */
+async function modesDuringWrite(target, payload, stale) {
   const tmp = `${target}.tmp`;
+  let floor = 0;
+  if (stale) {
+    writeFileSync(tmp, stale.contents, "utf8");
+    chmodSync(tmp, stale.mode);
+    floor = Buffer.byteLength(stale.contents);
+  }
 
   const observer = new Worker(
     `
@@ -362,7 +395,16 @@ test("a concurrent reader never sees the temp under wider permissions", async (t
     let stopping = false;
     parentPort.on("message", () => { stopping = true; });
     const poll = () => {
-      try { seen.push(statSync(workerData.tmp).mode & 0o777); } catch { /* not there yet, or already renamed */ }
+      try {
+        const st = statSync(workerData.tmp);
+        const last = seen[seen.length - 1];
+        // Only on change: the poll fires thousands of times to express a
+        // handful of distinct states, and every one of them would otherwise be
+        // structured-cloned back to the test.
+        if (!last || last[0] !== (st.mode & 0o777) || last[1] !== st.size) {
+          seen.push([st.mode & 0o777, st.size]);
+        }
+      } catch { /* not there yet, or already renamed */ }
       if (stopping) { parentPort.postMessage(seen); return; }
       setImmediate(poll);
     };
@@ -374,26 +416,62 @@ test("a concurrent reader never sees the temp under wider permissions", async (t
 
   try {
     await once(observer, "message");
-
-    // Big enough that the write is not instantaneous. The secret in the real
-    // callers is small, but the window exists at any size — this only makes it
-    // large enough to be caught deterministically.
-    const payload = JSON.stringify({ servers: [{ id: "plaud", env: { KEY: "x".repeat(40_000_000) } }] });
     writeAtomic(target, payload, { mode: 0o600 });
-
     observer.postMessage("stop");
     const [seen] = await once(observer, "message");
 
-    assert.ok(
-      seen.length > 0,
-      "the observer never caught the temp at all — this test proves nothing in that state; enlarge the payload",
-    );
-    assert.deepEqual(
-      [...new Set(seen)].map((m) => m.toString(8)),
-      ["600"],
-      "the temp was readable at a wider mode while it was being written",
-    );
+    // Hoisted deliberately: this is O(payload) and the filter runs once per
+    // sample. Evaluated inside the predicate it cost 118 seconds for this file.
+    const finished = Buffer.byteLength(payload);
+    const mid = seen.filter(([, size]) => size > floor && size < finished);
+    return { midCount: mid.length, modes: [...new Set(mid.map(([m]) => m.toString(8)))].sort() };
   } finally {
     await observer.terminate();
   }
+}
+
+// Big enough that the write is not instantaneous. The real callers write a few
+// hundred bytes; the window exists at any size, and this only widens it enough
+// to be caught every time rather than sometimes.
+const BIG = JSON.stringify({ servers: [{ id: "plaud", env: { KEY: "x".repeat(40_000_000) } }] });
+
+test("a concurrent reader never sees the temp under wider permissions", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX modes are not reported on win32");
+    return;
+  }
+
+  const target = join(scratch(), "local-mcp.json");
+  const { midCount, modes } = await modesDuringWrite(target, BIG);
+
+  assert.ok(
+    midCount > 0,
+    "the observer never caught the temp mid-write — this test proves nothing in that state; enlarge the payload",
+  );
+  assert.deepEqual(modes, ["600"], "the temp was readable at a wider mode while it was being written");
+});
+
+test("nor when a stale temp of a wider mode was there first", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX modes are not reported on win32");
+    return;
+  }
+
+  // The second killer for step 1, and the one that does not need symlink
+  // privilege to work. Without the removal, `mode` is ignored on the existing
+  // file and the payload is written into a 0644 inode — so the bytes are
+  // world-readable for the whole write, and only the closing chmod tightens
+  // them. That is exactly the guarantee step 2 claims and cannot keep alone.
+  const target = join(scratch(), "local-permissions.json");
+  const { midCount, modes } = await modesDuringWrite(target, BIG, {
+    contents: "leftover",
+    mode: 0o644,
+  });
+
+  assert.ok(midCount > 0, "the observer never caught the temp mid-write; enlarge the payload");
+  assert.deepEqual(
+    modes,
+    ["600"],
+    "a stale temp's permissions survived into the write — the removal in step 1 is what prevents this",
+  );
 });

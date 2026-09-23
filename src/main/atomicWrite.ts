@@ -66,6 +66,15 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  *    the link rather than a file. Unlinking first means the write below is
  *    always a creation of a real file at a known path.
  *
+ *    It is also what lets step 2 be true at all, and review caught this comment
+ *    claiming otherwise in BOTH directions before it got here. Because `mode`
+ *    is ignored on a file that already exists, a stale temp makes step 2's
+ *    create-with-mode silently do nothing, and the payload then sits at the
+ *    STALE file's permissions for the whole duration of the write. So step 2's
+ *    guarantee is joint with this one, not independent of it. Both halves are
+ *    measured in the tests: the observer runs twice, once against a clean
+ *    directory and once with a `0644` temp pre-placed.
+ *
  * 2. **Create with the mode.** So the bytes are never on disk under wider
  *    permissions, not even during the write itself. This is a real window and
  *    not a theoretical one: it lasts as long as the write takes, so it grows
