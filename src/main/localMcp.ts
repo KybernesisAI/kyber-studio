@@ -1,7 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { app } from "electron";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeAtomic } from "./atomicWrite";
 
 /**
  * MCP servers running on the user's own machine, reachable by a remote agent.
@@ -67,7 +68,11 @@ export function listServers(): LocalMcpServer[] {
 }
 
 export function saveServers(servers: LocalMcpServer[]): void {
-  writeFileSync(configPath(), JSON.stringify({ servers }, null, 2), { mode: 0o600 });
+  // Atomic, and 0600, and both halves matter here — see ./atomicWrite. A torn
+  // write of this file loses the user's configured servers including `env`,
+  // and `listServers` answers a torn file with `[]`, which the next save then
+  // makes permanent. KYB-582.
+  writeAtomic(configPath(), JSON.stringify({ servers }, null, 2), { mode: 0o600 });
 }
 
 /**

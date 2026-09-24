@@ -1,4 +1,4 @@
-import { renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
 
 /**
  * Write a file so a reader sees either the old contents or the new ones, never
@@ -40,11 +40,78 @@ import { renameSync, rmSync, writeFileSync } from "node:fs";
  *
  * Throws on failure. Callers decide whether losing this particular write is
  * survivable; this function does not decide that for them.
+ *
+ * ## The mode, and why it takes three steps rather than one — KYB-582
+ *
+ * A rename publishes the TEMP FILE'S INODE, so the published file carries the
+ * temp's permissions and not the target's. Callers that used to write their own
+ * file with `{ mode: 0o600 }` — the permission store and the MCP config, which
+ * hold consent decisions and provider credentials — would therefore be widened
+ * to the umask default by the mere act of becoming atomic. Measured at `0644`
+ * under umask 022. That is a security regression hiding inside a reliability
+ * fix, which is why the mode is a parameter here rather than an afterthought at
+ * the call sites.
+ *
+ * Passing a mode does three things. They are not interchangeable and they are
+ * not redundant, but the division of labour is narrower than it first looks —
+ * stated precisely here because an earlier draft of this comment got it wrong
+ * and review caught it:
+ *
+ * 1. **Remove any stale temp first.** Its job is NOT to keep the final mode
+ *    tight; step 3 does that unaided, and a stale temp of a wider mode still
+ *    ends up published at the requested one. Its job is the SYMLINK: a stale
+ *    `foo.tmp` that is a link — and `userData` is writable by anything running
+ *    as the user — is followed by `writeFileSync`, which writes the file's
+ *    contents through to wherever it points, after which the rename publishes
+ *    the link rather than a file. Unlinking first means the write below is
+ *    always a creation of a real file at a known path.
+ *
+ *    It is also what lets step 2 be true at all, and review caught this comment
+ *    claiming otherwise in BOTH directions before it got here. Because `mode`
+ *    is ignored on a file that already exists, a stale temp makes step 2's
+ *    create-with-mode silently do nothing, and the payload then sits at the
+ *    STALE file's permissions for the whole duration of the write. So step 2's
+ *    guarantee is joint with this one, not independent of it. Both halves are
+ *    measured in the tests: the observer runs twice, once against a clean
+ *    directory and once with a `0644` temp pre-placed.
+ *
+ * 2. **Create with the mode.** So the bytes are never on disk under wider
+ *    permissions, not even during the write itself. This is a real window and
+ *    not a theoretical one: it lasts as long as the write takes, so it grows
+ *    with the payload, and `test/atomic-write.test.mjs` observes it from a
+ *    worker thread rather than arguing about it. A `chmod` afterwards closes
+ *    the hole late, and late is long enough for a concurrent reader.
+ *
+ * 3. **Then set it explicitly.** Creation modes are masked by the process
+ *    umask — a restrictive umask turns a requested `0600` into `0400`, and the
+ *    next writer to that path is then fighting a read-only file it created
+ *    itself. `chmod` is not umask-masked, so this makes the mode the one the
+ *    caller asked for rather than the one the environment allowed. It also
+ *    re-establishes the mode on every publish, where the old in-place
+ *    `writeFileSync(path, data, { mode })` only ever set it when the file was
+ *    first created.
+ *
+ * Callers that pass no mode keep exactly the previous behaviour, including the
+ * stale temp being written THROUGH rather than removed. `saveState` is such a
+ * caller: app state is not secret, wants no `0600`, and its existing tests pin
+ * that path.
+ *
+ * **That coupling is incidental, and worth saying out loud.** `options.mode`
+ * currently selects the safer write path as well as the permissions, so a
+ * future caller that wants atomicity without `0600` would silently get the
+ * symlink-following variant. Nothing at such a call site would say so. If one
+ * ever appears, separate the two rather than passing a mode nobody wants.
  */
-export function writeAtomic(target: string, data: string): void {
+export function writeAtomic(target: string, data: string, options: { mode?: number } = {}): void {
   const tmp = `${target}.tmp`;
   try {
-    writeFileSync(tmp, data, "utf8");
+    if (options.mode === undefined) {
+      writeFileSync(tmp, data, "utf8");
+    } else {
+      rmSync(tmp, { force: true });
+      writeFileSync(tmp, data, { encoding: "utf8", mode: options.mode });
+      chmodSync(tmp, options.mode);
+    }
     renameSync(tmp, target);
   } catch (error) {
     try {
