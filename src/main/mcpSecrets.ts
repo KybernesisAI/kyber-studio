@@ -43,11 +43,19 @@ import type { SafeStorageLike } from "./credentialStorage";
  *   different machine, a reset keyring, a torn blob.
  *
  * No Electron import: `safeStorage` is passed in, the same arrangement
- * `credentialStorage.ts` uses, so `node --test` can load this without the
- * uncatchable `SyntaxError` that importing `electron` produces under
- * `--experimental-strip-types`. Both `localMcp.ts` and `localExec.ts` import
- * `electron` and are therefore permanently untestable; this module exists so
- * that the logic they depend on is not.
+ * `credentialStorage.ts` uses. That is worth keeping for its own sake — the
+ * logic is pure and a pure module is cheaper to test than a mocked one.
+ *
+ * It is NOT, as this comment used to claim, because `localMcp.ts` and
+ * `localExec.ts` are "permanently untestable" for importing `electron`. They
+ * are not. `mock.module("electron", { exports: ... })` loads both of them
+ * under `node --test`, and `test/local-mcp-call-sites.test.mjs` and
+ * `test/local-exec-relay.test.mjs` do exactly that. The real obstacle was
+ * mundane and unrelated: this repo writes extensionless relative imports
+ * (`./atomicWrite`), which tsc and esbuild resolve and native ESM does not.
+ * `test/ts-ext-resolve.mjs` closes it in fifteen lines with no dependency.
+ * Verified independently by removing that hook and re-running: the failure is
+ * `ERR_MODULE_NOT_FOUND` for `./atomicWrite`, not a link error on `electron`.
  */
 
 /** The parts of Electron's `safeStorage` this module needs. */
@@ -88,8 +96,16 @@ export function isSealed(value: string): boolean {
  * construct a string that fools this. The consequence is bounded — that one
  * value reports as needing re-entry — and the alternative, trusting the prefix
  * alone, is worse.
+ *
+ * **Exported because every decision about a value must use the same test.**
+ * `localMcp.ts` once filtered with {@link isSealed} when deciding which typed
+ * values to keep for the session, so a key a user typed as `kyb:v1:my key` was
+ * classified as ciphertext, dropped from the write, and — because the filtered
+ * set then came out empty — dropped from the warning too. Silently discarded
+ * input. Use this, not the prefix, anywhere the answer decides what happens to
+ * a user's value.
  */
-function looksSealed(value: string): boolean {
+export function looksSealed(value: string): boolean {
   if (!isSealed(value)) return false;
   const payload = value.slice(SEAL_PREFIX.length);
   if (payload.length === 0) return false;

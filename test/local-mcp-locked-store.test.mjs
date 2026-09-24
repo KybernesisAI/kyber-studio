@@ -20,6 +20,8 @@ import { join } from "node:path";
  */
 
 const dir = mkdtempSync(join(tmpdir(), "kyb-locked-"));
+/** See the same counter in local-mcp-call-sites.test.mjs for why it exists. */
+let availabilityAsks = 0;
 
 mock.module("electron", {
   exports: {
@@ -27,7 +29,10 @@ mock.module("electron", {
     safeStorage: {
       // Measured behaviour of a locked keyring: available is false, and both
       // directions throw. Electron latches this for the process.
-      isEncryptionAvailable: () => false,
+      isEncryptionAvailable: () => {
+        availabilityAsks += 1;
+        return false;
+      },
       getSelectedStorageBackend: () => "gnome_libsecret",
       encryptString: () => {
         throw new Error("Encryption is not available");
@@ -39,7 +44,7 @@ mock.module("electron", {
   },
 });
 
-const { listServers, saveServers, serverStatus, testServer } = await import(
+const { credentialFailureIds, listServers, saveServers, serverStatus, testServer } = await import(
   "../src/main/localMcp.ts"
 );
 
@@ -144,4 +149,82 @@ test("the child process is never handed ciphertext — it refuses, and says unlo
 test("listServers still reports the servers — a locked keyring is not an empty configuration", () => {
   givenStored({ API_KEY: sealed("precious") });
   assert.equal(listServers().length, 1);
+});
+
+test("store-unavailable is app-level: nothing is recorded against a server id", () => {
+  // The criterion, and the mutation that has to kill this: re-adding
+  //
+  //   credentialFailure.set(server.id, { reason: opened.reason, ... })
+  //
+  // for BOTH reasons — which is what the code did — turns this red.
+  //
+  // Why it matters, rather than being a tidiness preference. Availability is
+  // latched for the life of the process, so it is ONE fact; a map keyed by
+  // server id holds N copies of it and they drift. A server added after the
+  // failure, or one the user never pressed Test on, has no entry at all — and
+  // since only `ensure()` ever wrote to that map, a user who never started
+  // anything was never told the store was shut. The assertions below are the
+  // two halves of that: nothing stored, and the answer available anyway.
+  assert.deepEqual(
+    credentialFailureIds(),
+    [],
+    "a locked keyring was recorded per server, where it is a fact about the process",
+  );
+});
+
+test("a server that was never started still reports the store is shut", () => {
+  // Derived, not remembered. `never-touched` has never been passed to ensure(),
+  // has no entry anywhere, and is not even in the config — and the honest
+  // answer about its credentials is still that nothing here can be decrypted.
+  assert.deepEqual(serverStatus("never-touched").credentials, {
+    reason: "store-unavailable",
+    keys: [],
+  });
+  assert.deepEqual(credentialFailureIds(), [], "asking about status recorded a failure");
+});
+
+test("a typed value that merely starts with kyb:v1: is kept, not silently dropped", () => {
+  // `isSealed` is a claim about the shape of a string; `looksSealed` is the
+  // prefix AND a base64 round-trip. saveServers filtered with the former, so a
+  // key the user typed as `kyb:v1:my key` was classified as ciphertext:
+  // dropped from the write, and — the filtered set being empty — dropped from
+  // the warning as well. The user's input disappeared without a word.
+  //
+  // Mutation: putting `isSealed` back at that filter turns this red.
+  givenStored({ API_KEY: sealed("precious") });
+
+  const said = [];
+  const warn = console.warn;
+  console.warn = (...args) => said.push(args.join(" "));
+  try {
+    saveServers([
+      {
+        id: "s1",
+        name: "db",
+        command: "npx",
+        args: [],
+        enabled: true,
+        // Not valid base64 after the prefix — a space is not a base64 digit —
+        // so this is a plaintext value that happens to look official.
+        env: { API_KEY: sealed("precious"), TYPED: "kyb:v1:my key" },
+      },
+    ]);
+  } finally {
+    console.warn = warn;
+  }
+
+  assert.equal(said.length, 1, `the user was not warned their value could not be stored: ${said}`);
+  assert.match(said[0], /kept in memory only/i);
+  assert.match(said[0], /unlock/i, "the warning did not name the remedy");
+
+  const after = raw();
+  assert.ok(!after.includes("my key"), "an unsealable value was written in the clear");
+  assert.ok(after.includes(sealed("precious")), "the stored value was disturbed");
+});
+
+test("the OS is asked about encryption at most once for the whole process", () => {
+  assert.ok(
+    availabilityAsks <= 1,
+    `asked the OS ${availabilityAsks} times; the answer is latched and each ask can prompt`,
+  );
 });

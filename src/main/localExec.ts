@@ -443,7 +443,17 @@ function listLocalDir(payload: Record<string, unknown>): unknown {
   return { root, count: entries.length, entries };
 }
 
-async function execute(
+/**
+ * Run one approved action and answer with what the relay will carry.
+ *
+ * Exported for one reason: this is the last point before a result leaves the
+ * machine, and the SHAPE of what it returns is a security property rather than
+ * a detail. `servers/list` in particular must project, and nothing was
+ * executing this function until KYB-590 — replacing the projection with
+ * `.map(server => server)` left the whole suite green while shipping every
+ * server's sealed `env` and command line to a remote agent.
+ */
+export async function executeLocalAction(
   action: LocalAction,
   payload: Record<string, unknown>,
   onFrame?: (chunk: string) => void,
@@ -465,6 +475,11 @@ async function execute(
       // Discovery is answered from config, without starting anything: an agent
       // asking what exists should not spin up a database connection to find out.
       if (payload.method === "servers/list") {
+        // Project to id and name, and do not be tempted to pass the server
+        // through. `listServers` returns values SEALED as of KYB-590, so a
+        // regression here does not merely over-share: it hands a remote agent
+        // `kyb:v1:` ciphertext, the command line, and the working directory,
+        // for every enabled server. See test/local-exec-relay.test.mjs.
         return {
           servers: listServers()
             .filter((server) => server.enabled)
@@ -605,7 +620,7 @@ export function startLocalExec(): void {
         buffered = "";
         void post("/api/local-exec/frames", { id: request.id, chunk });
       };
-      const result = await execute(request.action, request.payload, (chunk) => {
+      const result = await executeLocalAction(request.action, request.payload, (chunk) => {
         buffered += chunk;
         flush();
       });

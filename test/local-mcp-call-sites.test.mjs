@@ -1,6 +1,6 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,12 +26,26 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "kyb-mcp-"));
 const undecryptable = new Set();
+/**
+ * How many times the module asked the OS about encryption.
+ *
+ * Counted because neither electron mock counted anything, and a reviewer
+ * showed what that hid: replacing the whole availability cache in
+ * `localMcp.ts` with a bare `return safeStorage.isEncryptionAvailable()` left
+ * the suite green. The cache is not an optimisation — every ask is what can
+ * raise an unlock dialog, and the answer is latched by the OS anyway, so a
+ * second ask can only ever repeat the first at the price of a prompt.
+ */
+let availabilityAsks = 0;
 
 mock.module("electron", {
   exports: {
     app: { getPath: () => dir },
     safeStorage: {
-      isEncryptionAvailable: () => true,
+      isEncryptionAvailable: () => {
+        availabilityAsks += 1;
+        return true;
+      },
       getSelectedStorageBackend: () => "gnome_libsecret",
       encryptString: (s) => Buffer.from(`ENC(${s})`, "utf8"),
       decryptString: (b) => {
@@ -45,9 +59,14 @@ mock.module("electron", {
   },
 });
 
-const { listServers, saveServers, serverStatus, testServer } = await import(
-  "../src/main/localMcp.ts"
-);
+const {
+  ConfigUnreadableError,
+  credentialFailureIds,
+  listServers,
+  saveServers,
+  serverStatus,
+  testServer,
+} = await import("../src/main/localMcp.ts");
 
 const configPath = () => join(dir, "local-mcp.json");
 const read = () => JSON.parse(readFileSync(configPath(), "utf8"));
@@ -106,18 +125,97 @@ test("an absent file is still an honest empty list", () => {
   assert.deepEqual(listServers(), []);
 });
 
-test("an unreadable file throws rather than answering with an empty list", () => {
+test("an unreadable file throws a distinguishable error, not an empty list", () => {
   // Mutation: restoring `catch { return [] }` turns this red. That catch is
   // what let a damaged file become an empty one — the renderer holds the [] and
   // the next toggle writes it back over the user's servers.
   saveServers([server()]);
   writeFileSync(configPath(), '{"servers":[{"id":"s1",', "utf8");
-  assert.throws(() => listServers(), /JSON|Unexpected|Unterminated/i);
+
+  assert.throws(
+    () => listServers(),
+    (error) => {
+      // Distinguishable is the requirement, not merely "throws": KYB-594 has to
+      // tell "your config is damaged, here is the way out" apart from a disk
+      // fault, and it cannot do that from a SyntaxError. Both the class and the
+      // `code` are asserted, because `instanceof` does not survive the
+      // structured clone that carries an error across IPC.
+      assert.ok(error instanceof ConfigUnreadableError, `wrong type: ${error?.name}`);
+      assert.equal(error.code, "MCP_CONFIG_UNREADABLE");
+      assert.equal(error.path, configPath());
+      return true;
+    },
+  );
 
   // Leave the fixture readable for whatever runs next — a corrupt file also
-  // blocks every write, which is the point of the assertion above and would
-  // otherwise leak into the next test.
+  // blocks every write by default, which is the point of the assertion above
+  // and would otherwise leak into the next test.
   writeFileSync(configPath(), '{"servers":[]}', "utf8");
+});
+
+test("a file that parses but carries no servers array is unreadable, not empty", () => {
+  // The same dishonest empty, one level up. `return parsed.servers ?? []`
+  // answered every one of these with `[]`, and the next save made it true.
+  for (const damaged of [
+    "{}",
+    '{"servers":null}',
+    "[]",
+    '{"servers":{}}',
+    '{"servers":"none"}',
+    '{"servers":[{"name":"no id here"}]}',
+  ]) {
+    writeFileSync(configPath(), damaged, "utf8");
+    assert.throws(
+      () => listServers(),
+      ConfigUnreadableError,
+      `${damaged} was answered with a list instead of a refusal`,
+    );
+  }
+
+  // And the honest empty case must survive the fix: absent is a first run.
+  rmSync(configPath(), { force: true });
+  assert.deepEqual(listServers(), [], "fixing the dishonest empty broke the honest one");
+});
+
+test("by default a damaged config blocks the write rather than replacing it", () => {
+  saveServers([server()]);
+  const damaged = '{"servers":[{"id":"s1",';
+  writeFileSync(configPath(), damaged, "utf8");
+
+  assert.throws(() => saveServers([server()]), ConfigUnreadableError);
+  assert.equal(readFileSync(configPath(), "utf8"), damaged, "the damaged file was overwritten");
+
+  // A damaged file blocks every later write, which is exactly the behaviour
+  // asserted above and exactly why it must not leak into the next test.
+  rmSync(configPath(), { force: true });
+});
+
+test("the opt-in recovery moves the damaged file aside, bytes intact, and then writes", () => {
+  // The defect this closes: `saveServers` reads the old config first to
+  // recover sealed values, so a damaged file blocked add, remove AND toggle.
+  // The user could not even delete the broken server from inside the app.
+  // Refusing stays the default; this is the explicit way out.
+  saveServers([server()]);
+  const damaged = '{"servers":[{"id":"s1","env":{"API_KEY":"kyb:v1:tRunCaT';
+  writeFileSync(configPath(), damaged, "utf8");
+
+  const before = readdirSync(dir).filter((f) => f.includes(".corrupt-")).length;
+  saveServers([server({ id: "fresh", name: "fresh" })], { onUnreadableConfig: "quarantine" });
+
+  const aside = readdirSync(dir).filter((f) => f.includes(".corrupt-"));
+  assert.equal(aside.length, before + 1, "the damaged file was not moved aside");
+  assert.equal(
+    readFileSync(join(dir, aside.at(-1)), "utf8"),
+    damaged,
+    "the damaged bytes were altered or discarded — they are the user's only copy",
+  );
+
+  assert.ok(existsSync(configPath()), "no new config was written");
+  assert.deepEqual(
+    listServers().map((s) => s.id),
+    ["fresh"],
+    "the write did not go through after the recovery",
+  );
 });
 
 test("a value that will not decrypt is reported, and the file is not blanked", async () => {
@@ -142,4 +240,64 @@ test("a value that will not decrypt is reported, and the file is not blanked", a
   saveServers(listServers());
   assert.equal(readFileSync(configPath(), "utf8"), before, "the file changed after a failed open");
   undecryptable.delete("doomed");
+});
+
+test("command, args and cwd stay legible on disk — only env is sealed", () => {
+  // Mutation: sealing `command` alongside `env` left the suite green. The file
+  // is meant to stay hand-editable; sealing the command line would also make
+  // every save opaque to the person who wrote it, for no secret gained.
+  saveServers([
+    server({
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-postgres"],
+      cwd: "/home/someone/work",
+      env: { API_KEY: "sk-live-2" },
+    }),
+  ]);
+
+  const stored = read().servers[0];
+  assert.equal(stored.command, "npx", "command was sealed");
+  assert.deepEqual(stored.args, ["-y", "@modelcontextprotocol/server-postgres"], "args were sealed");
+  assert.equal(stored.cwd, "/home/someone/work", "cwd was sealed");
+  assert.equal(stored.name, "db");
+  assert.equal(stored.enabled, true);
+  assert.ok(stored.env.API_KEY.startsWith("kyb:v1:"), "env stopped being sealed");
+
+  // Said the other way round, so a future scheme that seals more cannot slip
+  // past by keeping the shape: exactly one field is ciphertext.
+  const sealedFields = Object.entries(stored)
+    .filter(([, v]) => typeof v === "string" && v.startsWith("kyb:v1:"))
+    .map(([k]) => k);
+  assert.deepEqual(sealedFields, [], "a top-level field was sealed");
+});
+
+test("needs-re-entry IS recorded per server — it is genuinely per server", () => {
+  // The counterpart to the locked-store file's assertion that nothing is
+  // recorded there. This failure names the values on one server that would not
+  // open, which is not a fact about the app, so it belongs in the map.
+  saveServers([server({ id: "re", name: "re", env: { API_KEY: "will-not-open" } })]);
+  undecryptable.add("will-not-open");
+  return testServer("re").then((result) => {
+    assert.equal(result.ok, false);
+    assert.ok(
+      credentialFailureIds().includes("re"),
+      "a per-server decrypt failure was not recorded against the server",
+    );
+    assert.deepEqual(serverStatus("re").credentials, {
+      reason: "needs-re-entry",
+      keys: ["API_KEY"],
+    });
+    undecryptable.delete("will-not-open");
+  });
+});
+
+test("the OS is asked about encryption at most once for the whole process", () => {
+  // Deliberately last: it measures everything the file did above. Mutation —
+  // replacing the `availabilityAnswer` cache in localMcp.ts with a bare
+  // `return safeStorage.isEncryptionAvailable()` — turns this red, where
+  // before it was invisible to every test in the repo.
+  assert.ok(
+    availabilityAsks <= 1,
+    `asked the OS ${availabilityAsks} times; each ask is a chance to raise an unlock dialog`,
+  );
 });

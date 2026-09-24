@@ -2,10 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 // No Electron imports in the module under test — the safeStorage object is
-// passed in — so node --test can load it directly under --experimental-strip-types.
-// This matters more here than usual: localMcp.ts and localExec.ts both import
-// electron and can never be unit-tested, so this module is the only place the
-// sealing logic is reachable by a test at all.
+// passed in — so node --test loads it directly under --experimental-strip-types.
+//
+// This comment used to add that localMcp.ts and localExec.ts "can never be
+// unit-tested" for importing electron, making this module the only reachable
+// place. That was false. mock.module("electron", { exports: ... }) loads both
+// of them, as test/local-mcp-call-sites.test.mjs, test/local-mcp-locked-store
+// .test.mjs and test/local-exec-relay.test.mjs now do. The real obstacle was
+// extensionless relative imports (./atomicWrite), which tsc and esbuild
+// resolve and native ESM does not; test/ts-ext-resolve.mjs closes it.
+// Verified by removing that hook: the failure is ERR_MODULE_NOT_FOUND for
+// ./atomicWrite, not a link error on electron.
 import {
   SEAL_PREFIX,
   isSealed,
