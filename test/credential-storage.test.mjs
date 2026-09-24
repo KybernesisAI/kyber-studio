@@ -180,19 +180,28 @@ test("the reporter does not touch the keyring until it is called", () => {
   //
   // Construction must therefore be inert; only the call may ask.
   let asked = 0;
+  let availabilityAsked = 0;
   const safeStorage = {
     isEncryptionAvailable: () => {
-      asked += 1;
+      availabilityAsked += 1;
       return true;
     },
-    getSelectedStorageBackend: () => "gnome_libsecret",
+    getSelectedStorageBackend: () => {
+      asked += 1;
+      return "gnome_libsecret";
+    },
   };
 
   const report = createCredentialStorageReporter(safeStorage, () => {}, immediately);
-  assert.equal(asked, 0, "constructing the reporter asked the OS about encryption");
+  assert.equal(asked, 0, "constructing the reporter asked the OS anything at all");
 
   report();
   assert.equal(asked, 1);
+  // KYB-590: the startup line is prompt-free. Measured on Linux Mint with a
+  // locked keyring — getSelectedStorageBackend() raised no dialog across thirty
+  // seconds, isEncryptionAvailable() raised one immediately. The diagnostic
+  // keeps the backend name and defers the question that costs a prompt.
+  assert.equal(availabilityAsked, 0, "the startup diagnostic asked about encryption and would prompt");
 });
 
 test("the call returns before the OS is asked, so nothing waits inside the handler", async () => {
@@ -208,12 +217,16 @@ test("the call returns before the OS is asked, so nothing waits inside the handl
   // blank window behind the prompt is accepted; not blocking the handler is
   // the property worth keeping.
   let asked = 0;
+  let availabilityAsked = 0;
   const safeStorage = {
     isEncryptionAvailable: () => {
-      asked += 1;
+      availabilityAsked += 1;
       return true;
     },
-    getSelectedStorageBackend: () => "gnome_libsecret",
+    getSelectedStorageBackend: () => {
+      asked += 1;
+      return "gnome_libsecret";
+    },
   };
 
   const lines = [];
@@ -226,8 +239,10 @@ test("the call returns before the OS is asked, so nothing waits inside the handl
   await nextTick();
 
   assert.equal(asked, 1);
+  assert.equal(availabilityAsked, 0, "the deferred report asked about encryption and would prompt");
   assert.equal(lines.length, 1);
   assert.match(lines[0], /^\[storage\] /);
+  assert.match(lines[0], /encryptionAvailable=deferred/);
 });
 
 test("two calls before the deferred report runs still ask once", async () => {
@@ -235,12 +250,16 @@ test("two calls before the deferred report runs still ask once", async () => {
   // scheduled work runs — otherwise two windows opening in the same tick queue
   // two keyring questions, which is two password dialogs.
   let asked = 0;
+  let availabilityAsked = 0;
   const safeStorage = {
     isEncryptionAvailable: () => {
-      asked += 1;
+      availabilityAsked += 1;
       return true;
     },
-    getSelectedStorageBackend: () => "gnome_libsecret",
+    getSelectedStorageBackend: () => {
+      asked += 1;
+      return "gnome_libsecret";
+    },
   };
 
   const lines = [];

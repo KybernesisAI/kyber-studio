@@ -1,8 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { app } from "electron";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { app, safeStorage } from "electron";
 import { writeAtomic } from "./atomicWrite";
+import { sealEnv, unsealEnv } from "./mcpSecrets";
 
 /**
  * MCP servers running on the user's own machine, reachable by a remote agent.
@@ -57,14 +58,36 @@ function configPath(): string {
   return join(dir, "local-mcp.json");
 }
 
+/**
+ * Values the user typed that could not be sealed, kept for this session only.
+ *
+ * Same protocol as the session token: if the OS will not encrypt, we do not
+ * write the secret in the clear, but we do not throw the user's work away
+ * either. The server runs with what they typed until Studio restarts, and the
+ * warning says so.
+ */
+const unpersistedEnv = new Map<string, Record<string, string>>();
+
+/** Why a server's stored credentials would not open, once we have tried. */
+const credentialFailure = new Map<
+  string,
+  { reason: "store-unavailable" | "needs-re-entry"; keys: string[] }
+>();
+
 export function listServers(): LocalMcpServer[] {
-  try {
-    const raw = readFileSync(configPath(), "utf8");
-    const parsed = JSON.parse(raw) as { servers?: LocalMcpServer[] };
-    return parsed.servers ?? [];
-  } catch {
-    return [];
-  }
+  const path = configPath();
+  // Absent is a first run, and `[]` is the honest answer to it.
+  if (!existsSync(path)) return [];
+  // Present-but-unreadable is NOT a first run, and answering `[]` is what let a
+  // damaged file become an empty one: the renderer holds that `[]` and the next
+  // toggle writes it back over the user's servers. Let it throw. KYB-590.
+  //
+  // Note this deliberately does NOT decrypt. `listServers` runs on every agent
+  // request, and asking the OS about the keyring is what raises the unlock
+  // prompt — see `ensure`, which opens the values at the one point that needs
+  // them.
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as { servers?: LocalMcpServer[] };
+  return parsed.servers ?? [];
 }
 
 export function saveServers(servers: LocalMcpServer[]): void {
@@ -72,7 +95,36 @@ export function saveServers(servers: LocalMcpServer[]): void {
   // write of this file loses the user's configured servers including `env`,
   // and `listServers` answers a torn file with `[]`, which the next save then
   // makes permanent. KYB-582.
-  writeAtomic(configPath(), JSON.stringify({ servers }, null, 2), { mode: 0o600 });
+  // Read what is stored BEFORE writing. A value we cannot seal is left exactly
+  // as it was rather than replaced by a plaintext copy of itself — and if this
+  // read throws, the file is damaged and we must not write over it.
+  const stored = new Map(listServers().map((s) => [s.id, s] as const));
+
+  const next = servers.map((server) => {
+    if (!server.env || Object.keys(server.env).length === 0) {
+      unpersistedEnv.delete(server.id);
+      return server;
+    }
+
+    const sealed = sealEnv(safeStorage, server.env);
+    if (sealed.ok) {
+      unpersistedEnv.delete(server.id);
+      return { ...server, env: sealed.env };
+    }
+
+    // store-unavailable. controlPlane.ts makes the same call for the session
+    // token: if the OS refuses encryption we do not silently fall back to
+    // plaintext. Keep the values usable for this session, persist nothing new,
+    // and leave anything already stored untouched.
+    unpersistedEnv.set(server.id, server.env);
+    console.warn(
+      `[mcp] OS encryption unavailable — ${server.id}'s environment is kept in memory only and will not survive a restart.`,
+    );
+    const previous = stored.get(server.id)?.env;
+    return { ...server, env: previous ?? {} };
+  });
+
+  writeAtomic(configPath(), JSON.stringify({ servers: next }, null, 2), { mode: 0o600 });
 }
 
 /**
@@ -89,10 +141,37 @@ function ensure(server: LocalMcpServer): Running {
   // app inherits a minimal PATH, and `npx` installed by nvm or Homebrew is not
   // on it. Spawning directly fails with ENOENT for a command that works
   // perfectly in the user's terminal.
+  // Open the stored credentials HERE, at the one point in the codebase that
+  // needs the plaintext — not at list time, which is hot and would prompt.
+  const opened = unsealEnv(safeStorage, server.env ?? {});
+  const pending = unpersistedEnv.get(server.id);
+  let env: Record<string, string>;
+  if (opened.ok) {
+    credentialFailure.delete(server.id);
+    env = { ...opened.env, ...(pending ?? {}) };
+  } else if (pending) {
+    // Nothing on disk opens, but the user typed values this session.
+    credentialFailure.delete(server.id);
+    env = { ...pending };
+  } else {
+    credentialFailure.set(server.id, {
+      reason: opened.reason,
+      keys: opened.reason === "needs-re-entry" ? opened.keys : [],
+    });
+    // Refuse loudly rather than starting a server that cannot authenticate and
+    // failing later in a way nobody can read. The two messages are different
+    // because the remedies are: one is the environment, the other is the value.
+    throw new Error(
+      opened.reason === "store-unavailable"
+        ? `${server.name}'s credentials could not be read: the OS credential store is not open. Unlock your keyring and restart Studio.`
+        : `${server.name}'s stored credentials could not be decrypted (${opened.keys.join(", ")}). Remove the server and add it again.`,
+    );
+  }
+
   const line = [server.command, ...server.args].join(" ");
   const child = spawn(process.env.SHELL ?? "/bin/bash", ["-lc", line], {
     cwd: server.cwd ?? app.getPath("home"),
-    env: { ...process.env, ...(server.env ?? {}) },
+    env: { ...process.env, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   }) as ChildProcessWithoutNullStreams;
 
@@ -274,9 +353,11 @@ export function serverStatus(id: string): {
   running: boolean;
   log: string[];
   signInUrl?: string;
+  credentials?: { reason: "store-unavailable" | "needs-re-entry"; keys: string[] };
 } {
+  const failure = credentialFailure.get(id);
   const state = running.get(id);
-  if (!state) return { running: false, log: [] };
+  if (!state) return { running: false, log: [], ...(failure ? { credentials: failure } : {}) };
   const joined = state.log.join(" ");
   const url = /https?:\/\/[^\s"']+/.exec(joined)?.[0];
   return { running: !state.child.killed, log: state.log.slice(-12), ...(url ? { signInUrl: url } : {}) };
