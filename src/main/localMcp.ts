@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, safeStorage } from "electron";
 import { writeAtomic } from "./atomicWrite";
-import { sealEnv, unsealEnv } from "./mcpSecrets";
+import { isSealed, sealEnv, unsealEnv } from "./mcpSecrets";
 
 /**
  * MCP servers running on the user's own machine, reachable by a remote agent.
@@ -68,6 +68,26 @@ function configPath(): string {
  */
 const unpersistedEnv = new Map<string, Record<string, string>>();
 
+/**
+ * Ask the OS about encryption at most once.
+ *
+ * Measured: the answer is latched for the life of the process anyway — a run
+ * that starts with the keyring locked stays broken after an unlock, and one
+ * that starts unlocked keeps working after a lock. Asking twice cannot produce
+ * a different answer, and each ask is what can raise an unlock dialog. So the
+ * first answer is the answer.
+ */
+let availabilityAnswer: boolean | null = null;
+const credentialStore = {
+  isEncryptionAvailable: (): boolean => {
+    if (availabilityAnswer === null) availabilityAnswer = safeStorage.isEncryptionAvailable();
+    return availabilityAnswer;
+  },
+  getSelectedStorageBackend: () => safeStorage.getSelectedStorageBackend(),
+  encryptString: (plain: string) => safeStorage.encryptString(plain),
+  decryptString: (buf: Buffer) => safeStorage.decryptString(buf),
+};
+
 /** Why a server's stored credentials would not open, once we have tried. */
 const credentialFailure = new Map<
   string,
@@ -101,12 +121,36 @@ export function saveServers(servers: LocalMcpServer[]): void {
   const stored = new Map(listServers().map((s) => [s.id, s] as const));
 
   const next = servers.map((server) => {
+    const previous = stored.get(server.id)?.env;
+
+    // The store is shut: stored secrets are untouchable, in BOTH directions.
+    // Not merely "we cannot write a new one" — we must not destroy one either,
+    // and clearing the env box is a destruction. Review found the asymmetry:
+    // an empty env used to be written through before this check ran, so on a
+    // machine that provably cannot re-seal, a stored value could be deleted
+    // and never recreated. Whatever is on disk stays on disk until the user is
+    // somewhere the OS will encrypt.
+    if (!credentialStore.isEncryptionAvailable()) {
+      const typed = Object.fromEntries(
+        Object.entries(server.env ?? {}).filter(([, value]) => !isSealed(value)),
+      );
+      if (Object.keys(typed).length > 0) {
+        unpersistedEnv.set(server.id, typed);
+        console.warn(
+          `[mcp] OS encryption unavailable — ${server.id}'s environment is kept in memory only. Unlock your keyring and restart Studio to store it.`,
+        );
+      } else {
+        unpersistedEnv.delete(server.id);
+      }
+      return previous ? { ...server, env: previous } : { ...server, env: {} };
+    }
+
     if (!server.env || Object.keys(server.env).length === 0) {
       unpersistedEnv.delete(server.id);
       return server;
     }
 
-    const sealed = sealEnv(safeStorage, server.env);
+    const sealed = sealEnv(credentialStore, server.env);
     if (sealed.ok) {
       unpersistedEnv.delete(server.id);
       return { ...server, env: sealed.env };
@@ -116,13 +160,17 @@ export function saveServers(servers: LocalMcpServer[]): void {
     // token: if the OS refuses encryption we do not silently fall back to
     // plaintext. Keep the values usable for this session, persist nothing new,
     // and leave anything already stored untouched.
+    // Unreachable: availability was checked above. Kept as a total function
+    // rather than a cast, so a future change to sealEnv cannot silently fall
+    // through into writing plaintext.
     unpersistedEnv.set(server.id, server.env);
-    console.warn(
-      `[mcp] OS encryption unavailable — ${server.id}'s environment is kept in memory only and will not survive a restart.`,
-    );
-    const previous = stored.get(server.id)?.env;
     return { ...server, env: previous ?? {} };
   });
+
+  // A deleted server's key must not outlive the delete. Plugins.tsx removes by
+  // saving the list without it, so neither delete above ever runs for it.
+  const live = new Set(servers.map((s) => s.id));
+  for (const id of unpersistedEnv.keys()) if (!live.has(id)) unpersistedEnv.delete(id);
 
   writeAtomic(configPath(), JSON.stringify({ servers: next }, null, 2), { mode: 0o600 });
 }
@@ -143,17 +191,24 @@ function ensure(server: LocalMcpServer): Running {
   // perfectly in the user's terminal.
   // Open the stored credentials HERE, at the one point in the codebase that
   // needs the plaintext — not at list time, which is hot and would prompt.
-  const opened = unsealEnv(safeStorage, server.env ?? {});
+  const opened = unsealEnv(credentialStore, server.env ?? {});
   const pending = unpersistedEnv.get(server.id);
   let env: Record<string, string>;
   if (opened.ok) {
     credentialFailure.delete(server.id);
+    // Session-typed values layer OVER the opened ones. Both halves are
+    // plaintext here: `pending` is filtered to unsealed values at save time.
     env = { ...opened.env, ...(pending ?? {}) };
-  } else if (pending) {
-    // Nothing on disk opens, but the user typed values this session.
-    credentialFailure.delete(server.id);
-    env = { ...pending };
   } else {
+    // Review found the hole this closes. The previous code fell back to
+    // `pending` whenever it existed — but `pending` came from the renderer,
+    // and the renderer holds SEALED strings for every value the user did not
+    // personally retype. That handed the child process `kyb:v1:...` as its
+    // DATABASE_URL, and cleared the failure marker on the way past, so the
+    // server reported healthy while its connection string was base64.
+    //
+    // If the stored values will not open we cannot build a correct
+    // environment, whatever the user typed this session. Refuse and say so.
     credentialFailure.set(server.id, {
       reason: opened.reason,
       keys: opened.reason === "needs-re-entry" ? opened.keys : [],
