@@ -113,3 +113,68 @@ test("a disabled server is not offered at all", async () => {
     "a server the user switched off was advertised to the agent",
   );
 });
+
+/**
+ * What the relay sends back when the config is DAMAGED.
+ *
+ * Deliberately last in this file: it replaces the fixture with an unreadable
+ * one, and every test above wants the good one.
+ *
+ * This is a leak we introduced. Before KYB-590 `listServers` swallowed
+ * everything and answered `[]`, so nothing about a damaged config ever reached
+ * the relay. It now throws — correctly, that was the KYB-582 fix — and
+ * `servers/list` is on the relay path, which puts the thrown message straight
+ * into `/api/local-exec/responses`. A message that named the config file
+ * therefore sent the user's `userData` directory, and with it their home
+ * directory and their username, to a remote agent that asked only which
+ * servers exist. Discovery does not even prompt, so nobody saw it go.
+ *
+ * TWO routes, and they are separate bugs with separate fixes. Both fixtures
+ * below are here because each one leaves the other alive:
+ *
+ *   1. the config path interpolated into `ConfigUnreadableError.message`;
+ *   2. the SyntaxError's own message, which V8 builds by quoting the offending
+ *      source back — `Unexpected token ']', ..."/tmp/x"},]}" is not valid
+ *      JSON`. The source is the user's config, which carries `cwd`. Only the
+ *      "Unexpected token" form quotes, and only a short window around the
+ *      position, which is why fixture 2 is shaped the way it is: a longer path
+ *      is truncated by V8 and the test would pass while the leak stayed real.
+ */
+
+const homeish = "/home/someone/private-project";
+
+/** `${label}: ${damaged JSON}`, each reaching the message by a different route. */
+const damagedFixtures = [
+  ["a truncated file, whose message can only name the path", `{"servers":[{"cwd":"${homeish}"`],
+  // Short enough that V8's quoted window holds the whole path — checked.
+  ["a file V8 quotes back at us", '{"servers":[{"cwd":"/home/b"},]}'],
+];
+
+for (const [label, damaged] of damagedFixtures) {
+  test(`${label} tells the relay nothing about the filesystem`, async () => {
+    writeFileSync(join(dir, "local-mcp.json"), damaged, "utf8");
+
+    // Exactly what localExec.ts does with the throw at the relay boundary:
+    // `error: e instanceof Error ? e.message : String(e)`.
+    let payload;
+    try {
+      await executeLocalAction("local-mcp", { method: "servers/list" });
+      assert.fail("a damaged config was answered instead of refused");
+    } catch (e) {
+      payload = { error: e instanceof Error ? e.message : String(e) };
+    }
+
+    const wire = JSON.stringify(payload);
+
+    for (const forbidden of [dir, homeish, "/home/", "/tmp/", "local-mcp.json"]) {
+      assert.ok(!wire.includes(forbidden), `\`${forbidden}\` was sent to the agent: ${wire}`);
+    }
+    // Said generally as well, so a future detail cannot smuggle a path past the
+    // specific strings above: nothing shaped like a path at all.
+    assert.ok(!/[/\\]/.test(payload.error), `a path separator reached the agent: ${wire}`);
+
+    // And it must still be useful to whoever reads it. Saying nothing at all is
+    // not the fix; saying nothing about the filesystem is.
+    assert.match(payload.error, /could not be read/i, "the relay was told nothing at all");
+  });
+}

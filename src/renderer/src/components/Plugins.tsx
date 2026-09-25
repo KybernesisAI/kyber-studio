@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react";
-import type { LocalMcpServer } from "@shared/ipc";
+import type { LocalMcpServer, SaveMcpServersOptions } from "@shared/ipc";
 import { useStore } from "@/lib/store";
+import { applyMcpServersResult } from "@/lib/mcpPanel";
 import { Spinner } from "./Spinner";
 import { Icon } from "./primitives";
 
@@ -310,6 +311,10 @@ function ConnectorDetail({
  */
 function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   const [local, setLocal] = useState<LocalMcpServer[] | null>(null);
+  /** Set when the config on disk cannot be read — a distinct state, not Loading. */
+  const [unreadable, setUnreadable] = useState<{ path: string } | null>(null);
+  /** The last write that did not go through. `void save(...)` would otherwise eat it. */
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [remote, setRemote] = useState<
     {
       slug: string;
@@ -335,8 +340,14 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   >({});
 
   const refresh = async (): Promise<void> => {
-    const servers = await window.studio?.mcpServers();
-    if (servers) setLocal(servers);
+    const answer = await window.studio?.mcpServers();
+    // Branch on the answer. Handling only the happy one is what left `local`
+    // null on a damaged config, and null is what renders `Loading…` for ever.
+    if (answer) {
+      const next = applyMcpServersResult(answer);
+      setLocal(next.servers);
+      setUnreadable(next.unreadable);
+    }
     const cards = await window.studio?.connectors(agent);
     setRemote(
       (cards?.connectors ?? [])
@@ -403,8 +414,21 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
 
   if (!local) return <div className="empty">Loading…</div>;
 
-  const save = async (next: LocalMcpServer[]): Promise<void> => {
-    setLocal(await window.studio!.saveMcpServers(next));
+  const save = async (
+    next: LocalMcpServer[],
+    options?: SaveMcpServersOptions,
+  ): Promise<void> => {
+    try {
+      const applied = applyMcpServersResult(await window.studio!.saveMcpServers(next, options));
+      setLocal(applied.servers);
+      setUnreadable(applied.unreadable);
+      setSaveError(null);
+    } catch (error) {
+      // Every caller below is `void save(...)`, so without this a rejected
+      // write vanished into an unhandled promise and the row simply did not
+      // change — the user pressed Remove and nothing said no.
+      setSaveError(error instanceof Error ? error.message : String(error));
+    }
   };
 
   const term = query.trim().toLowerCase();
@@ -547,7 +571,31 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
       <div className="pl__group" style={{ marginTop: shownRemote.length ? 18 : 0 }}>
         On this computer
       </div>
-      {shownLocal.length ? (
+      {saveError ? (
+        <div className="pl__meta" style={{ marginBottom: 8 }}>
+          That didn’t save: {saveError}
+        </div>
+      ) : null}
+      {unreadable ? (
+        // Distinct from `Loading…` and distinct from “you have none”, because the
+        // user’s response is distinct: we cannot tell what is configured, and
+        // the only thing this panel can honestly offer is the way out.
+        // Quarantine renames the damaged file aside — the bytes survive — and
+        // writes an empty list, which is what makes the panel usable again.
+        <div className="empty" style={{ paddingBottom: 8 }}>
+          Your list of servers on this computer is damaged and can’t be read, so
+          nothing here can be changed.
+          <div className="pl__desc" style={{ marginTop: 6 }}>{unreadable.path}</div>
+          <div className="ask__options" style={{ marginTop: 10 }}>
+            <button
+              className="btn"
+              onClick={() => void save([], { onUnreadableConfig: "quarantine" })}
+            >
+              Move it aside and start again
+            </button>
+          </div>
+        </div>
+      ) : shownLocal.length ? (
         <div className="pl__grid">
           {shownLocal.map((s) => (
             <div className="pl__row" key={s.id}>

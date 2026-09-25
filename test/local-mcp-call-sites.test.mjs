@@ -135,14 +135,29 @@ test("an unreadable file throws a distinguishable error, not an empty list", () 
   assert.throws(
     () => listServers(),
     (error) => {
-      // Distinguishable is the requirement, not merely "throws": KYB-594 has to
-      // tell "your config is damaged, here is the way out" apart from a disk
-      // fault, and it cannot do that from a SyntaxError. Both the class and the
-      // `code` are asserted, because `instanceof` does not survive the
-      // structured clone that carries an error across IPC.
+      // IN-PROCESS, and the comment now says so. The previous version of this
+      // block asserted the same three things and justified them with "because
+      // `instanceof` does not survive the structured clone that carries an
+      // error across IPC" — a sentence about a boundary this file has never
+      // crossed and cannot cross. Worse, it was false in the other direction
+      // too: `code` does not survive either, so the renderer could not tell
+      // this failure from a disk fault however hard this assertion tried.
+      // What crosses is asserted in test/mcp-ipc-handlers.test.mjs, against
+      // the handler that turns this error into a value.
+      //
+      // These assertions still earn their place: they are what the MAIN
+      // process needs in order to build that value at all.
       assert.ok(error instanceof ConfigUnreadableError, `wrong type: ${error?.name}`);
       assert.equal(error.code, "MCP_CONFIG_UNREADABLE");
       assert.equal(error.path, configPath());
+
+      // The path is a property and MUST NOT be in the message. `listServers`
+      // is on the relay path, and localExec.ts posts `e.message` to a remote
+      // agent — see test/local-exec-relay.test.mjs for the leak itself.
+      assert.ok(
+        !error.message.includes(configPath()) && !error.message.includes(dir),
+        `the config path is in the message: ${error.message}`,
+      );
       return true;
     },
   );

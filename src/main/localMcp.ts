@@ -122,16 +122,35 @@ export function credentialFailureIds(): string[] {
  *
  * A distinct type because the caller's response is distinct. Every other
  * failure out of `listServers` is a bug or a disk fault; this one is a state a
- * user can be in and can be walked out of, and KYB-594 renders it. Carries a
- * `code` as well as the class so it survives structured clone across IPC, where
- * `instanceof` does not.
+ * user can be in and can be walked out of, and KYB-594 renders it.
+ *
+ * Two things this carries, and one it deliberately does not:
+ *
+ * `code` is here so a handler can copy it onto a value. An earlier comment
+ * claimed it was here so the error "survives structured clone across IPC, where
+ * `instanceof` does not". That was FALSE and is worth recording, because it
+ * made an unreachable recovery path look wired: Electron answers a rejected
+ * `ipcMain.handle` with the error's `toString()` — a string — and the renderer
+ * throws a fresh plain `Error` built from it. `instanceof` is gone AND so is
+ * `code`, and so is `path`; `name` is `"Error"`. Nothing of this class reaches
+ * web content by being thrown. It reaches it by being turned into a
+ * `McpServersResult` in `ipc.ts`, which is why that function exists.
+ *
+ * `path` is a PROPERTY and not part of the message, which is the other half of
+ * the same point. `listServers` is on the relay path — a `servers/list` request
+ * against a damaged config throws through `executeLocalAction`, and
+ * `localExec.ts` posts `e.message` to the control plane. Interpolating the
+ * config path into the message therefore sent the user's `userData` directory,
+ * and with it their home directory and their username, to a remote agent that
+ * asked only which servers exist. The main process may read `path`; the wire
+ * gets the message, and the message names no file.
  */
 export class ConfigUnreadableError extends Error {
   readonly code = "MCP_CONFIG_UNREADABLE";
   readonly path: string;
 
   constructor(path: string, detail: string, options?: { cause?: unknown }) {
-    super(`${path} could not be read: ${detail}`, options);
+    super(`the MCP server list could not be read: ${detail}`, options);
     this.name = "ConfigUnreadableError";
     this.path = path;
   }
@@ -167,7 +186,13 @@ export function listServers(): LocalMcpServer[] {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new ConfigUnreadableError(path, (error as Error).message, { cause: error });
+    // A fixed detail, not the SyntaxError's message, for the same reason the
+    // path is not in the message: this travels to a remote agent. V8 quotes the
+    // offending source back at you — `Unexpected token ']', ..."project"},]}"
+    // is not valid JSON` — and the source here is the user's config, which
+    // carries `cwd` and so carries their home directory. The real error is kept
+    // as `cause` for whoever is reading the main-process console.
+    throw new ConfigUnreadableError(path, "it is not valid JSON", { cause: error });
   }
 
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
