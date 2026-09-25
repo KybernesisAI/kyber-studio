@@ -43,7 +43,7 @@ mock.module("electron", {
   },
 });
 
-const { executeLocalAction } = await import("../src/main/localExec.ts");
+const { executeLocalAction, relayErrorPayload } = await import("../src/main/localExec.ts");
 
 const sealed = (plain) => `kyb:v1:${Buffer.from(`ENC(${plain})`, "utf8").toString("base64")}`;
 
@@ -154,14 +154,16 @@ for (const [label, damaged] of damagedFixtures) {
   test(`${label} tells the relay nothing about the filesystem`, async () => {
     writeFileSync(join(dir, "local-mcp.json"), damaged, "utf8");
 
-    // Exactly what localExec.ts does with the throw at the relay boundary:
-    // `error: e instanceof Error ? e.message : String(e)`.
+    // `relayErrorPayload` is the function localExec.ts calls in its catch, so
+    // this is the body a remote agent receives rather than a reconstruction of
+    // it. It used to be rebuilt by hand here under a comment claiming the two
+    // matched, which is only as good as the comment.
     let payload;
     try {
       await executeLocalAction("local-mcp", { method: "servers/list" });
       assert.fail("a damaged config was answered instead of refused");
     } catch (e) {
-      payload = { error: e instanceof Error ? e.message : String(e) };
+      payload = relayErrorPayload("req-1", e);
     }
 
     const wire = JSON.stringify(payload);

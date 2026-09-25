@@ -44,9 +44,8 @@ mock.module("electron", {
   },
 });
 
-const { credentialFailureIds, listServers, saveServers, serverStatus, testServer } = await import(
-  "../src/main/localMcp.ts"
-);
+const { callServer, credentialFailureIds, listServers, saveServers, serverStatus, testServer } =
+  await import("../src/main/localMcp.ts");
 
 const configPath = () => join(dir, "local-mcp.json");
 const raw = () => readFileSync(configPath(), "utf8");
@@ -144,6 +143,37 @@ test("the child process is never handed ciphertext — it refuses, and says unlo
     "needs-re-entry",
     "a locked keyring was blamed on the credential",
   );
+});
+
+test("a locked keyring reaches the relay as a remedy, and as nothing else", async () => {
+  // The DELIBERATE half of the round-5 redaction, recorded here so the decision
+  // is visible rather than implied. `ensure()` is on the relay path, so this
+  // message goes to a remote agent that asked to call a tool. It is kept
+  // because it names no key, no path and no value: it is a fact about the
+  // machine's state, and it is the one thing an agent could usefully report
+  // back to the person — "your keyring is locked". Stripping it would cost that
+  // and buy nothing.
+  //
+  // What must never appear here is what the needs-re-entry message used to
+  // carry: the names of the user's environment variables.
+  givenStored({ DATABASE_URL: sealed("postgres://real"), ACME_INTERNAL_TOKEN: sealed("t") });
+
+  let thrown;
+  try {
+    await callServer({ serverId: "s1", method: "tools/list" });
+    assert.fail("a server was started on a machine that cannot open its credentials");
+  } catch (error) {
+    thrown = error;
+  }
+
+  assert.equal(thrown.reason, "store-unavailable", "a locked keyring was blamed on the credential");
+  assert.match(thrown.message, /unlock your keyring and restart studio/i, "the remedy was lost");
+  assert.ok(!/\bretry\b/i.test(thrown.message), "offered a retry for a latched condition");
+  for (const key of ["DATABASE_URL", "ACME_INTERNAL_TOKEN"]) {
+    assert.ok(!thrown.message.includes(key), `\`${key}\` reached a message that goes to the relay`);
+  }
+  assert.ok(!thrown.message.includes("_"), `an environment variable name leaked: ${thrown.message}`);
+  assert.deepEqual(thrown.keys, [], "a locked keyring named values as though they were broken");
 });
 
 test("listServers still reports the servers — a locked keyring is not an empty configuration", () => {

@@ -156,6 +156,58 @@ export class ConfigUnreadableError extends Error {
   }
 }
 
+/**
+ * The stored environment for a server could not be opened.
+ *
+ * A distinct class for the same reason `ConfigUnreadableError` is one, and with
+ * the same discipline about what goes in the message.
+ *
+ * **`keys` is a PROPERTY and is never interpolated into `message`.** `ensure`
+ * is on the relay path: `callServer` runs from `executeLocalAction`, and the
+ * catch in `localExec.ts` posts `e.message` to `/api/local-exec/responses`. A
+ * message that named the values that would not open therefore told a remote
+ * agent the SCHEMA of the user's secrets — `DATABASE_URL`,
+ * `ACME_INTERNAL_TOKEN` — and with it which vendors and internal systems this
+ * machine talks to, in answer to a request to call a tool. That is the same
+ * species as the two path leaks closed in 4163f64, on the same wire, in the
+ * same file, and we introduced it in this branch: before it, nothing of this
+ * kind reached the relay at all.
+ *
+ * The names are not thrown away, only kept off the wire. The main process logs
+ * them, and the renderer gets them through `serverStatus().credentials.keys` —
+ * the user owns the machine and needs to know which values to retype.
+ *
+ * **The store-unavailable message is deliberately NOT redacted.** It says the
+ * OS credential store is shut and names the remedy, and it names no key, no
+ * path and no value: it is a fact about the machine's state, not about the
+ * user's data. Stripping it would cost the one diagnosable thing a remote agent
+ * could report back — "your keyring is locked" — and buy nothing, because the
+ * message discloses nothing the request itself did not already imply.
+ */
+export class ServerCredentialsError extends Error {
+  readonly code = "MCP_CREDENTIALS_UNAVAILABLE";
+  readonly reason: "store-unavailable" | "needs-re-entry";
+  /** Names of the values that would not open. Empty for `store-unavailable`. */
+  readonly keys: string[];
+
+  constructor(
+    reason: "store-unavailable" | "needs-re-entry",
+    serverName: string,
+    keys: string[] = [],
+  ) {
+    // Two messages because the remedies are two: one is the environment, the
+    // other is the value. Neither says "retry" — neither is retryable.
+    super(
+      reason === "store-unavailable"
+        ? `${serverName}'s credentials could not be read: the OS credential store is not open. Unlock your keyring and restart Studio.`
+        : `${serverName}'s stored credentials could not be decrypted. Remove the server and add it again.`,
+    );
+    this.name = "ServerCredentialsError";
+    this.reason = reason;
+    this.keys = keys;
+  }
+}
+
 export function listServers(): LocalMcpServer[] {
   const path = configPath();
   // Absent is a first run, and `[]` is the honest answer to it.
@@ -377,17 +429,18 @@ function ensure(server: LocalMcpServer): Running {
     // Only `needs-re-entry` is recorded per server. `store-unavailable` is a
     // fact about the process, derived in `serverStatus` from the one cached
     // availability answer — see the comment on `credentialFailure`.
+    // Refuse loudly rather than starting a server that cannot authenticate and
+    // failing later in a way nobody can read. Which values would not open is
+    // carried as a property and logged here, NOT put in the message: the
+    // message goes to a remote agent over the relay. See ServerCredentialsError.
     if (opened.reason === "needs-re-entry") {
       credentialFailure.set(server.id, { reason: "needs-re-entry", keys: opened.keys });
+      console.warn(
+        `[mcp] ${server.name}: stored values that would not open: ${opened.keys.join(", ")}`,
+      );
+      throw new ServerCredentialsError("needs-re-entry", server.name, opened.keys);
     }
-    // Refuse loudly rather than starting a server that cannot authenticate and
-    // failing later in a way nobody can read. The two messages are different
-    // because the remedies are: one is the environment, the other is the value.
-    throw new Error(
-      opened.reason === "store-unavailable"
-        ? `${server.name}'s credentials could not be read: the OS credential store is not open. Unlock your keyring and restart Studio.`
-        : `${server.name}'s stored credentials could not be decrypted (${opened.keys.join(", ")}). Remove the server and add it again.`,
-    );
+    throw new ServerCredentialsError("store-unavailable", server.name);
   }
 
   const line = [server.command, ...server.args].join(" ");

@@ -1,7 +1,14 @@
 import { type ReactNode, useEffect, useState } from "react";
 import type { LocalMcpServer, SaveMcpServersOptions } from "@shared/ipc";
 import { useStore } from "@/lib/store";
-import { applyMcpServersResult } from "@/lib/mcpPanel";
+import {
+  type McpPanelState,
+  initialMcpPanelState,
+  panelAfterLoad,
+  panelAfterLoadFailure,
+  panelAfterSave,
+  panelAfterSaveFailure,
+} from "@/lib/mcpPanel";
 import { Spinner } from "./Spinner";
 import { Icon } from "./primitives";
 
@@ -310,11 +317,19 @@ function ConnectorDetail({
  * they can paste a line from a README.
  */
 function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
-  const [local, setLocal] = useState<LocalMcpServer[] | null>(null);
-  /** Set when the config on disk cannot be read — a distinct state, not Loading. */
-  const [unreadable, setUnreadable] = useState<{ path: string } | null>(null);
-  /** The last write that did not go through. `void save(...)` would otherwise eat it. */
-  const [saveError, setSaveError] = useState<string | null>(null);
+  /**
+   * ONE piece of state, applied whole.
+   *
+   * It was three — `local`, `unreadable`, `saveError` — and each answer set
+   * them one at a time. Review round 4 showed what that cost: deleting either
+   * of the two `unreadable` setters was a free mutation, green across the whole
+   * suite, and it turned a config the app cannot read into "Nothing running
+   * here yet" on the load path and into a silently-failing Remove on the save
+   * path. The decision now lives in `mcpPanel.ts`, where a test can call it;
+   * this component applies what that returns and has no half to drop.
+   */
+  const [panel, setPanel] = useState<McpPanelState>(initialMcpPanelState);
+  const { servers: local, unreadable, saveError, loadError } = panel;
   const [remote, setRemote] = useState<
     {
       slug: string;
@@ -340,13 +355,15 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   >({});
 
   const refresh = async (): Promise<void> => {
-    const answer = await window.studio?.mcpServers();
-    // Branch on the answer. Handling only the happy one is what left `local`
-    // null on a damaged config, and null is what renders `Loading…` for ever.
-    if (answer) {
-      const next = applyMcpServersResult(answer);
-      setLocal(next.servers);
-      setUnreadable(next.unreadable);
+    // Branch on the answer, and catch a rejection. Handling only the happy one
+    // is what left `local` null on a damaged config, and null is what renders
+    // `Loading…` for ever; `void refresh()` discards a rejection just as
+    // thoroughly, so an unexpected throw here had exactly the same symptom.
+    try {
+      const answer = await window.studio?.mcpServers();
+      if (answer) setPanel((prev) => panelAfterLoad(prev, answer));
+    } catch (error) {
+      setPanel((prev) => panelAfterLoadFailure(prev, error));
     }
     const cards = await window.studio?.connectors(agent);
     setRemote(
@@ -419,15 +436,13 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
     options?: SaveMcpServersOptions,
   ): Promise<void> => {
     try {
-      const applied = applyMcpServersResult(await window.studio!.saveMcpServers(next, options));
-      setLocal(applied.servers);
-      setUnreadable(applied.unreadable);
-      setSaveError(null);
+      const answer = await window.studio!.saveMcpServers(next, options);
+      setPanel((prev) => panelAfterSave(prev, answer));
     } catch (error) {
       // Every caller below is `void save(...)`, so without this a rejected
       // write vanished into an unhandled promise and the row simply did not
       // change — the user pressed Remove and nothing said no.
-      setSaveError(error instanceof Error ? error.message : String(error));
+      setPanel((prev) => panelAfterSaveFailure(prev, error));
     }
   };
 
@@ -576,6 +591,11 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
           That didn’t save: {saveError}
         </div>
       ) : null}
+      {loadError ? (
+        <div className="pl__meta" style={{ marginBottom: 8 }}>
+          Couldn’t read your servers: {loadError}
+        </div>
+      ) : null}
       {unreadable ? (
         // Distinct from `Loading…` and distinct from “you have none”, because the
         // user’s response is distinct: we cannot tell what is configured, and
@@ -722,7 +742,22 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
           <button className="btn" onClick={() => setMode("remote")}>
             <Icon name="plus" size={13} /> Add by URL
           </button>
-          <button className="btn" onClick={() => setMode("local")}>
+          {/*
+            Dead over a damaged config: `saveServers` refuses by default, so the
+            form would take a name, a command and — worst — a set of secrets,
+            and then decline to write any of it. Adding by URL is untouched,
+            because a remote server has nothing to do with this file.
+          */}
+          <button
+            className="btn"
+            disabled={!!unreadable}
+            title={
+              unreadable
+                ? "Move the damaged list aside first — nothing here can be written until then"
+                : undefined
+            }
+            onClick={() => setMode("local")}
+          >
             <Icon name="plus" size={13} /> Add one on this computer
           </button>
         </div>

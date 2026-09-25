@@ -494,6 +494,25 @@ export async function executeLocalAction(
   }
 }
 
+/**
+ * The exact body posted to `/api/local-exec/responses` when an action throws.
+ *
+ * Exported, and called from the catch below rather than written out inline, so
+ * a test can assert what a REMOTE AGENT receives instead of rebuilding the
+ * shape by hand and hoping the two stay in step. Two fixtures in
+ * `test/local-exec-relay.test.mjs` did exactly that, and a hand-built payload
+ * is only as good as the comment claiming it matches.
+ *
+ * It is a DUMB projection on purpose. Redacting here was offered in round 3 and
+ * refused: it would mask this leak rather than remove it, and mask the next one
+ * too. Anything that must not reach a remote agent must not be in `message` —
+ * see `ConfigUnreadableError.path` and `ServerCredentialsError.keys`, both of
+ * which are properties for this reason.
+ */
+export function relayErrorPayload(id: string, error: unknown): { id: string; error: string } {
+  return { id, error: error instanceof Error ? error.message : String(error) };
+}
+
 // ── the loop ────────────────────────────────────────────────────────────────
 
 let running = false;
@@ -626,10 +645,7 @@ export function startLocalExec(): void {
       });
       await post("/api/local-exec/responses", { id: request.id, result });
     } catch (e) {
-      await post("/api/local-exec/responses", {
-        id: request.id,
-        error: e instanceof Error ? e.message : String(e),
-      });
+      await post("/api/local-exec/responses", relayErrorPayload(request.id, e));
     }
     if (sender && !sender.isDestroyed()) sender.send("studio:local-done", { id: request.id });
   };
