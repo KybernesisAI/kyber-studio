@@ -300,6 +300,7 @@ export function Conversation(): ReactNode {
   const agent = agents.find((a) => a.id === activeAgentId);
   const rooms = useStore((s) => s.rooms);
   const sessions = useStore((s) => s.sessions);
+  const newConversation = useStore((s) => s.resetConversation);
   const openOrb = (): void => {
     if (!agent?.url) return;
     void window.studio.toggleOrb({
@@ -345,6 +346,23 @@ export function Conversation(): ReactNode {
         accent: agents.find((a) => a.id === peer.id || a.name === peer.name)?.accent,
       }));
   const blocks = conversations[activeAgentId] ?? [];
+  /**
+   * "New conversation" archives rather than deletes: the old blocks stay in the
+   * transcript behind a divider, and the view starts at the latest divider. The
+   * earlier conversation is one click away, never gone.
+   */
+  const [showEarlier, setShowEarlier] = useState(false);
+  useEffect(() => setShowEarlier(false), [activeAgentId]);
+  let lastDivider = -1;
+  blocks.forEach((b, i) => {
+    if (b.kind === "divider") lastDivider = i;
+  });
+  const earlierCount =
+    lastDivider < 0 ? 0 : blocks.slice(0, lastDivider).filter((b) => b.kind !== "divider").length;
+  const visible = showEarlier || lastDivider < 0 ? blocks : blocks.slice(lastDivider);
+  const freshStart = visible.length > 0 && visible[visible.length - 1].kind === "divider";
+  // Something to start fresh FROM: a live session, or words since the last divider.
+  const canStartNew = !room && (Boolean(sessions[activeAgentId]) || (blocks.length > 0 && !freshStart));
   const [draft, setDraft] = useState("");
   const [acCursor, setAcCursor] = useState(0);
   const [folderMenu, setFolderMenu] = useState(false);
@@ -741,6 +759,17 @@ export function Conversation(): ReactNode {
             Folder
           </button>
         )}
+        {room ? null : (
+          <button
+            className="workspace"
+            title="Retire this session and start a fresh conversation. The current one is kept — use “Show earlier conversation” to see it."
+            disabled={!canStartNew}
+            onClick={() => newConversation(activeAgentId)}
+          >
+            <Icon name="plus" size={13} />
+            New conversation
+          </button>
+        )}
         <button
           className={`topbar__btn${panel !== "none" ? " topbar__btn--on" : ""}`}
           title="Agent panel"
@@ -761,8 +790,21 @@ export function Conversation(): ReactNode {
         }}
       >
         <div className="thread__inner" ref={innerRef}>
-          {blocks.map((b, i) => {
-            const when = whenLabel(b.at, i > 0 ? blocks[i - 1].at : undefined);
+          {earlierCount > 0 ? (
+            <button className="thread__earlier" onClick={() => setShowEarlier((v) => !v)}>
+              {showEarlier
+                ? "Hide earlier conversation"
+                : `Show earlier conversation (${earlierCount} ${earlierCount === 1 ? "message" : "messages"})`}
+            </button>
+          ) : null}
+          {visible.map((b, i) => {
+            if (b.kind === "divider")
+              return (
+                <div key={b.id} className="thread__divider" role="separator">
+                  <span>New conversation · {whenLabel(b.at)}</span>
+                </div>
+              );
+            const when = whenLabel(b.at, i > 0 ? visible[i - 1].at : undefined);
             const marker = when ? (
               <div className="thread__when" key={`w${b.id}`}>
                 {when}
@@ -825,6 +867,9 @@ export function Conversation(): ReactNode {
               body
             );
           })}
+          {freshStart && !room ? (
+            <div className="empty">Fresh start — {agent?.name} won't see the earlier messages. Say hello.</div>
+          ) : null}
           {blocks.length === 0 ? (
             <div className="empty">
               {room

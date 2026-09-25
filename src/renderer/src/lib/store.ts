@@ -727,6 +727,14 @@ interface State {
   closeExchange: () => void;
   /** Per-agent eve session id, so a conversation keeps its thread across turns. */
   sessions: Record<string, string | undefined>;
+  /**
+   * Sessions this device retired with "New conversation", which it must never
+   * adopt again. Without this the account directory still lists the retired
+   * session as the agent's newest thread, and the next sync (≤30 s) adopts it
+   * back — wiping the fresh view and replaying the conversation that was just
+   * left. That is what made Reset look like it did nothing.
+   */
+  retiredSessions: string[];
   streamIndexes: Record<string, number | undefined>;
   /** Per-agent "what it is doing right now", or null when idle. */
   activity: Record<string, string | null>;
@@ -796,7 +804,12 @@ interface State {
   /** Ask the agent to stop the turn it is running. */
   stopTurn(agentId: string): void;
   /**
-   * Retire the eve session and start a fresh one.
+   * "New conversation": retire the eve session and start a fresh one.
+   *
+   * The one behaviour behind both the header button and the Settings card. The
+   * old transcript is ARCHIVED, not deleted: a divider block is appended and
+   * the view collapses what came before it, so it stays on disk and one click
+   * away.
    *
    * The escape hatch for a conversation that cannot move: a turn interrupted by
    * an agent restart never settles, so the session never parks and every later
@@ -884,6 +897,7 @@ export const useStore = create<State>((set, get) => ({
   issuer: "agent.kybernesis.ai",
   account: null,
   sessions: {},
+  retiredSessions: [],
   streamIndexes: {},
   rooms: [],
   roomQueue: {},
@@ -953,8 +967,12 @@ export const useStore = create<State>((set, get) => ({
     }
 
     const newest = new Map<string, (typeof indexed)[number]>();
+    const retired = new Set(get().retiredSessions);
     for (const entry of indexed) {
       if (entry.label && isRoomId(entry.label)) continue;
+      // Retired here with "New conversation" — never a candidate, or the
+      // directory would hand the old thread straight back.
+      if (retired.has(entry.sessionId)) continue;
       const agent = resolve(entry.agent);
       if (!agent) continue;
       const at = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
@@ -1558,19 +1576,39 @@ export const useStore = create<State>((set, get) => ({
     if (!agent?.url || !window.studio) return;
     const url = agent.url;
     const sessionId = get().sessions[agentId];
+    const blocks = get().conversations[agentId] ?? [];
+    // Nothing to start fresh from: no session, and nothing said since the last
+    // divider. Stacking dividers would only mark the same empty spot twice.
+    if (!sessionId && (blocks.length === 0 || blocks[blocks.length - 1].kind === "divider")) return;
     // Drop the local handles first. Even if the agent cannot retire the session
     // (its owner may already be gone), the next message must not be posted into
     // the session that was stuck — that is the whole point of resetting.
     disarmDeadMan(agentId);
     retireGeneration(agentId);
+    const at = Date.now();
     set((s) => ({
       sessions: { ...s.sessions, [agentId]: undefined },
+      retiredSessions: sessionId ? [...s.retiredSessions, sessionId] : s.retiredSessions,
       streamIndexes: { ...s.streamIndexes, [agentId]: 0 },
       inflight: { ...s.inflight, [agentId]: undefined },
       activity: { ...s.activity, [agentId]: null },
+      conversations: {
+        ...s.conversations,
+        [agentId]: [
+          ...(s.conversations[agentId] ?? []),
+          { kind: "divider", id: `new-${at}`, at, ...(sessionId ? { retiredSessionId: sessionId } : {}) },
+        ],
+      },
     }));
     get().persist();
-    void window.studio.resetSession({ url, sessionId }).catch(() => undefined);
+    if (sessionId) {
+      void window.studio.resetSession({ url, sessionId }).catch(() => undefined);
+      // Best effort, for the person's other devices; this device's guard is
+      // `retiredSessions`, which does not depend on the directory honouring it.
+      void window.studio
+        .recordSession({ agent: agent.registeredName ?? agent.id, sessionId, label: agent.id, archived: true })
+        .catch(() => undefined);
+    }
   },
 
   answerQuestion: (agentId, blockId, answer) => {
@@ -1814,6 +1852,7 @@ export const useStore = create<State>((set, get) => ({
     const saved = await window.studio.loadState<{
       conversations: Record<string, Block[]>;
       sessions: Record<string, string | undefined>;
+      retiredSessions?: string[];
       streamIndexes: Record<string, number | undefined>;
       prefs: State["prefs"];
       rooms: Room[];
@@ -1824,6 +1863,7 @@ export const useStore = create<State>((set, get) => ({
       set({
         conversations: saved.conversations,
         sessions: saved.sessions ?? {},
+        retiredSessions: saved.retiredSessions ?? [],
         streamIndexes: saved.streamIndexes ?? {},
         prefs: saved.prefs ?? {},
         rooms: saved.rooms ?? [],
@@ -1845,6 +1885,7 @@ export const useStore = create<State>((set, get) => ({
       value: {
         conversations: get().conversations,
         sessions: get().sessions,
+        retiredSessions: get().retiredSessions,
         streamIndexes: get().streamIndexes,
         prefs: get().prefs,
         rooms: get().rooms,
@@ -2065,7 +2106,12 @@ export const useStore = create<State>((set, get) => ({
     const named = canonical.ok
       ? (canonical.data as { session?: { sessionId?: string } | null }).session?.sessionId
       : undefined;
-    if (typeof named === "string" && named !== "" && get().sessions[agentId] !== named) {
+    if (
+      typeof named === "string" &&
+      named !== "" &&
+      get().sessions[agentId] !== named &&
+      !get().retiredSessions.includes(named)
+    ) {
       set((st) => {
         const streamIndexes = { ...st.streamIndexes };
         // The cursor belongs to the thread being left; carrying it over would

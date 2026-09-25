@@ -103,6 +103,12 @@ export type Block =
       speaker?: { id: string; name: string; accent: string };
     }
   | { kind: "peer-activity"; id: string; at: number; events: PeerEvent[] }
+  /**
+   * Where a new conversation began. Everything before it is the previous
+   * conversation — kept, not deleted, and collapsed out of view by default.
+   * `retiredSessionId` names the session that was retired at this point.
+   */
+  | { kind: "divider"; id: string; at: number; retiredSessionId?: string }
   | {
       kind: "authorization";
       id: string;

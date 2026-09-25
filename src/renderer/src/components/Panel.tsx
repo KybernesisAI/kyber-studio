@@ -733,16 +733,17 @@ function Settings(): ReactNode {
             <div>Start a fresh conversation</div>
             <div className="muted">
               {sessions[activeAgentId]
-                ? "Retires the agent's current session. Use this if replies stopped arriving — an agent that restarted mid-turn leaves a session that can never finish."
+                ? "Same as “New conversation” in the header: retires the agent's current session and starts fresh. The old conversation is kept, collapsed above a divider. Use this too if replies stopped arriving — an agent that restarted mid-turn leaves a session that can never finish."
                 : "No session yet; the next message starts one."}
             </div>
           </div>
+          {/* One behaviour, two places: this is the header button's action. */}
           <button
             className="btn"
             disabled={!sessions[activeAgentId]}
             onClick={() => resetConversation(activeAgentId)}
           >
-            Reset
+            New conversation
           </button>
         </div>
 

@@ -85,3 +85,19 @@ test("order follows time, not source", () => {
   );
   assert.deepEqual(out.map((b) => b.text), ["first", "second", "later local"]);
 });
+
+test("a New-conversation divider survives the new session's replay, and the old conversation stays above it", () => {
+  // The archive promise: pressing "New conversation" appends a divider and
+  // keeps every earlier block. When the NEW session is replayed and merged, the
+  // replay knows nothing of the old session — so if reconcile dropped local
+  // blocks it could not match, the archive would vanish on the first refresh.
+  const archived = [local("u1", "user", "old question", 100), local("a1", "agent", "old answer", 101)];
+  const divider = { kind: "divider", id: "new-200", at: 200, retiredSessionId: "sess_old" };
+  const fresh = [local("u2", "user", "hello again", 300)];
+  const out = reconcile([...archived, divider, ...fresh], [fromAgent("evt_9", "user", "hello again", 300)]);
+  assert.deepEqual(
+    out.map((b) => b.id),
+    ["u1", "a1", "new-200", "evt_9"],
+    "old blocks kept, divider in place, the new session's message after it",
+  );
+});
