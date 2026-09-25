@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
 import { Avatar, Icon } from "./primitives";
+import { MODIFIER } from "@/lib/platform";
 
 /**
  * The command palette.
@@ -179,7 +180,10 @@ export function Palette(): ReactNode {
             e.preventDefault();
             runAt(cursor);
           }
-          if (e.metaKey && /^[1-9]$/.test(e.key)) {
+          // Either modifier, matching the palette's own open shortcut in App.tsx.
+          // Deliberately NOT gated on the platform: a wrong guess should cost a
+          // mislabelled hint, never a key that does nothing.
+          if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) {
             e.preventDefault();
             runAt(Number(e.key) - 1);
           }
@@ -224,7 +228,7 @@ export function Palette(): ReactNode {
                   <span className="palette__title">{item.title}</span>
                   {item.subtitle ? <span className="palette__sub">{item.subtitle}</span> : null}
                 </span>
-                {i < 9 ? <span className="kbd">⌘ {i + 1}</span> : null}
+                {i < 9 ? <span className="kbd">{MODIFIER} {i + 1}</span> : null}
               </button>
             ))
           )}

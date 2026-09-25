@@ -45,7 +45,20 @@ export function Autocomplete({
     if (s.icon) return <span style={{ fontSize: 15 }}>{s.icon}</span>;
     if (s.type === "Skill") return <Icon name="package" size={15} />;
     if (s.type === "Routine") return <Icon name="clock" size={15} />;
-    return <span style={{ fontSize: 13, color: "var(--ink-tertiary)" }}>⌘</span>;
+    // Whatever has no icon of its own and is not a Skill or Routine. Action and
+    // Plugin in practice — but `Suggestion.type` has FIVE members, and an Agent
+    // carrying no `icon` lands here too, so this is not the closed pair an
+    // earlier version of this comment claimed.
+    //
+    // They used to share a ⌘ glyph, which named a key rather than a thing, was
+    // the wrong metaphor for a Plugin, and on a desktop whose fallback font
+    // lacks U+2318 renders as a blank box.
+    //
+    // `Icon` takes `name: string`, not a union, and renders nothing for a name
+    // the map lacks — so typecheck does NOT cover these two. Checked by hand
+    // against primitives.tsx: chevronRight at :9, plug at :19.
+    if (s.type === "Plugin") return <Icon name="plug" size={15} />;
+    return <Icon name="chevronRight" size={15} />;
   };
 
   return (
