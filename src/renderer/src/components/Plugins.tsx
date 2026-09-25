@@ -327,15 +327,24 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
    * path. The decision now lives in `mcpPanel.ts`, where a test can call it;
    * this component applies what that returns and has no half to drop.
    *
-   * Round 6 moved the ASKING there as well. `setPanel` is handed to
-   * `loadMcpPanel` and `saveMcpPanel` and is never invoked in this file, which
-   * is asserted rather than described — and so there is no site at which a
-   * condition could stand in front of an answer and drop it. That is the
-   * mutation round 5
-   * blocked on: `if (answer)` narrowed to `if (answer?.ok)` discarded a damaged
-   * config's `{ ok: false }`, left `servers` null, and restored the permanent
-   * `Loading…` with the whole suite green. The equivalent edit now has to be
-   * made inside `loadMcpPanel`, where a test drives it and fails.
+   * Round 6 moved the ASKING there as well: `setPanel` is handed to
+   * `loadMcpPanel` and `saveMcpPanel` and is not invoked in this file. That
+   * killed round 5's mutation — `if (answer)` narrowed to `if (answer?.ok)`
+   * discarded a damaged config's `{ ok: false }`, left `servers` null and
+   * restored the permanent `Loading…` with the whole suite green — because the
+   * equivalent edit now has to be written inside `loadMcpPanel`, where
+   * `test/mcp-panel-state.test.mjs` drives it.
+   *
+   * **WITHDRAWN 25 Sep.** This comment used to go on to say that there was
+   * therefore "no site at which a condition could stand in front of an answer
+   * and drop it". That was false, and round 6 found two of them in this very
+   * file — the CALLS, at the end of `refresh()` and inside `save()`. Both
+   * `if (window.studio) await loadMcpPanel(...)` and `if (!unreadable) await
+   * saveMcpPanel(...)` typechecked under both tsconfigs, built, and left the
+   * suite green at 304/304. Moving the decision one level further would only
+   * move the call site again. What holds those two now is
+   * `test/mcp-panel-dom.test.mjs`, which mounts this component, presses the
+   * recovery button and reads what is on screen.
    */
   const [panel, setPanel] = useState<McpPanelState>(initialMcpPanelState);
   const { servers: local, unreadable, saveError, loadError } = panel;
@@ -364,9 +373,14 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   >({});
 
   const refresh = async (): Promise<void> => {
-    // No branch, and none possible: `loadMcpPanel` folds the answer, the
-    // ABSENCE of an answer and a rejection, each into a stated state, and
-    // `test/mcp-panel-state.test.mjs` drives all three. Handling only the happy
+    // No branch here, and putting one back is exactly what round 6 did:
+    // `if (window.studio)` in front of this line skipped the load whenever the
+    // preload script had not run, left `servers` null and brought the permanent
+    // `Loading…` back, with the whole suite green.
+    // `test/mcp-panel-dom.test.mjs` mounts the panel with no bridge at all and
+    // fails on it. `loadMcpPanel` itself folds the answer, the ABSENCE of an
+    // answer and a rejection each into a stated state, and
+    // `test/mcp-panel-state.test.mjs` drives all three; handling only the happy
     // one is what left `local` null on a damaged config, and null is what
     // renders `Loading…` for ever.
     await loadMcpPanel(window.studio, setPanel);
@@ -445,7 +459,11 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
 
   // What the local half shows, decided in `mcpPanel.ts` and switched on here.
   // The decision used to be a chain of ternaries in the JSX below, which no
-  // test in this repo can render and therefore no test could hold.
+  // test reached until round 7 added `test/mcp-panel-dom.test.mjs`.
+  //
+  // `shownLocal` is an argument and not a detail. Passing `servers` here
+  // instead silently disables the search box for local servers, which round 6
+  // found green; the DOM harness types into the box and reads what is left.
   const view = panelView(panel, shownLocal);
 
   if (view.kind === "loading") return <div className="empty">Loading…</div>;

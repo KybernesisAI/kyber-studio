@@ -6,11 +6,18 @@ import type { LocalMcpServer, McpServersResult, SaveMcpServersOptions } from "..
  *
  * @remarks
  * This is a module and not a handful of `useState` calls inside `Plugins.tsx`
- * for one reason: nothing under `test/` can render a `.tsx`, so a decision left
- * in the component is a decision no test can reach — and the decision here is
- * the one review keeps finding unmade. `listServers` began refusing to answer a
- * damaged config, `Plugins.tsx` never handled the refusal, and the panel sat on
- * `Loading…` for ever with the escape hatch three lines away and unreachable.
+ * because the decision here is the one review keeps finding unmade, and a
+ * decision that returns a value is a sharper thing to assert on than a rendered
+ * one. `listServers` began refusing to answer a damaged config, `Plugins.tsx`
+ * never handled the refusal, and the panel sat on `Loading…` for ever with the
+ * escape hatch three lines away and unreachable.
+ *
+ * This used to say the move was FORCED, because "nothing under `test/` can
+ * render a `.tsx`". That stopped being true in round 7:
+ * `test/mcp-panel-dom.test.mjs` mounts `Plugins` under jsdom and drives it.
+ * The split is still worth having, but it is no longer the only way to reach
+ * this code — and believing it was is what produced four rounds of moving the
+ * defect one level further out.
  *
  * **Why ONE object and one application, rather than four pieces of state.**
  * Round 4 found that the earlier shape left a free mutation: the component held
@@ -44,15 +51,20 @@ import type { LocalMcpServer, McpServersResult, SaveMcpServersOptions } from "..
  *   accept `McpServersResult | undefined`, and `undefined` produces a STATED
  *   error, never a silent no-op. There is nothing left for an `if` to protect.
  * - **The asking moved here too.** `loadMcpPanel` and `saveMcpPanel` own the
- *   await, the branch-free application and the catch, so `Plugins.tsx` contains
- *   no `setPanel(` call at all — it hands the setter over and has no site to
- *   put a condition in front of. Re-introducing the condition means writing it
- *   in THIS file, where `test/mcp-panel-state.test.mjs` calls both functions
- *   with a fake bridge and asserts the state that came out. That is an
- *   assertion about a returned value, not a grep over source text.
+ *   await, the unconditioned application and the catch, so `Plugins.tsx`
+ *   contains no `setPanel(` call at all: re-introducing a condition AROUND A
+ *   FOLD means writing it in THIS file, where
+ *   `test/mcp-panel-state.test.mjs` calls both functions with a fake bridge and
+ *   asserts the state that came out. That is an assertion about a returned
+ *   value, not a grep over source text.
+ *
+ *   It does not follow that the component has no site left for a condition.
+ *   This comment used to say exactly that, and round 6 falsified it by
+ *   conditioning the CALLS rather than the applications. Those two sites are
+ *   held by `test/mcp-panel-dom.test.mjs`, which mounts the panel.
  *
  * `panelView` is the same move applied to the render decision, which was the
- * other half still living in JSX no test can reach.
+ * other half, and which lived in JSX that no test reached until round 7.
  *
  * The invariant, stated so a test can hold it: `servers` is `null` ONLY while
  * the first answer is outstanding. `panelView` returns `"loading"` exactly when
@@ -234,12 +246,20 @@ export type ApplyMcpPanel = (fold: (previous: McpPanelState) => McpPanelState) =
 /**
  * Ask for the servers and fold whatever comes back — value, absence or throw.
  *
- * Unconditional by construction, and that is the whole reason this function
- * exists rather than sitting inline in the component: exactly one `apply` per
- * outcome, no `if` in front of any of them, and the outcomes are lines a test
- * can drive. Adding a condition here — `if (answer?.ok)`, `if (answer)` —
- * fails `test/mcp-panel-state.test.mjs` on a returned value, which is what
- * round 5 asked for and what a source-level guard could not give.
+ * Exactly one `apply` per outcome, with nothing conditioning them INSIDE THIS
+ * FUNCTION, and each outcome is a line a test can drive: adding
+ * `if (answer?.ok)` or `if (answer)` here fails
+ * `test/mcp-panel-state.test.mjs` on a returned value rather than on source
+ * text, which is what round 5 asked for.
+ *
+ * That is a statement about this function's BODY and says nothing about
+ * whether it is called. An earlier version of this comment said
+ * "unconditional by construction", which read as the stronger claim and was
+ * false: round 6 wrote `if (window.studio)` in front of the call in
+ * `Plugins.tsx` and the whole suite stayed green — the fold was correct,
+ * reachable, and skipped. The CALLER is pinned separately, by
+ * `test/mcp-panel-dom.test.mjs`, which mounts the panel with no bridge at all
+ * and fails on the permanent `Loading…`.
  */
 export async function loadMcpPanel(
   api: McpPanelApi | undefined,
@@ -297,7 +317,7 @@ export type McpPanelView =
  *
  * Round 5's second half. The state decision was pinned and the RENDER decision
  * was not: `unreadable ? … : shownLocal.length ? … : …` sat in the component,
- * where no test in this repo can reach it, so deleting the `unreadable` arm put
+ * which no test in this repo reached at the time, so deleting the `unreadable` arm put
  * "Nothing running here yet — a server on this machine is reachable by your
  * agents" over a config the app cannot read, with the recovery button gone, and
  * the suite stayed green. Moving the decision here makes that deletion an
@@ -313,10 +333,18 @@ export type McpPanelView =
  * 3. `list` — there is something for the user to look at.
  * 4. `empty` — there genuinely is not.
  *
- * What this does NOT prove: that `Plugins.tsx` renders each `kind` the way the
- * names suggest. There is no DOM harness in this repo, so the mapping from
- * `kind` to markup is still read by eye and pinned only by a source-level
- * check, which is labelled as such in the test file.
+ * What this function does NOT decide is what the user actually sees; that is
+ * `Plugins.tsx`. It is pinned by `test/mcp-panel-dom.test.mjs`, which mounts
+ * the panel and reads the rendered text: the damaged-config screen and its
+ * path, the recovery button and whether it can be pressed, the list, and the
+ * empty state.
+ *
+ * This comment used to describe the remaining gap as the `kind`-to-markup
+ * mapping alone, and that was too narrow. `visible` is an ARGUMENT, and round
+ * 6 showed that passing the unfiltered list at the call site silently disabled
+ * the search box with every test green. Both the mapping and the argument are
+ * now driven from the DOM harness. NOT covered there: the remote half of the
+ * panel, the two add forms, and the per-row menu.
  */
 export function panelView(state: McpPanelState, visible: LocalMcpServer[]): McpPanelView {
   if (state.servers === null) return { kind: "loading" };

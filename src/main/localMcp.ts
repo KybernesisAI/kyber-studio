@@ -182,7 +182,8 @@ export class ConfigUnreadableError extends Error {
  * "serverStatus" src/` finds only this file, whose in-`src` callers are
  * `testServer` and `authenticate` and neither reads `.credentials`; `ipc.ts`
  * registers no handler for it; and `grep -rn "credentials" src/renderer
- * src/preload src/shared src/main/ipc.ts` finds nothing at all. What a person
+ * src/preload src/shared src/main/ipc.ts` finds no code that reads it — one
+ * hit, a prose comment at `src/preload/index.ts:7`. What a person
  * actually sees is the panel row that `testServer` fills, and `said` is empty
  * there because `ensure` throws before any child spawns — so the row falls back
  * to this error's message and reads "…stored credentials could not be

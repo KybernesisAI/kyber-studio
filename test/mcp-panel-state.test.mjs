@@ -32,12 +32,14 @@ import {
  *   3. THE RENDER DECISION. Given a state, which of the four things does the
  *      panel show. `panelView`.
  *
- * It does NOT prove what a person sees. Nothing under `test/` can render a
- * `.tsx` — there is no DOM harness and no React test renderer in this repo, and
- * adding one is not this change. The bridge from a `panelView` kind to the
- * markup for that kind is still read by eye, and the last test in this file is
- * a SOURCE-LEVEL check of that wiring, labelled as such and deliberately kept
- * out of the load-bearing assertions.
+ * It does NOT prove what a person sees. That is `test/mcp-panel-dom.test.mjs`,
+ * added in round 7, which mounts `Plugins` under jsdom and drives it through
+ * `act()`: this file holds the decisions, that one holds the screen.
+ *
+ * The last test here is a SOURCE-LEVEL check of the wiring between the two,
+ * labelled as such and kept out of the load-bearing assertions. Round 6 and
+ * round 7 each found a mutation it could not see, both times because the text
+ * it greps for was still there and only the code around it had changed.
  *
  * WHY THE SHAPE CHANGED IN ROUND 5. The earlier version of this file tested a
  * single `applyMcpServersResult(result)` while `Plugins.tsx` held three pieces
@@ -302,9 +304,14 @@ test("IN: a damaged config reaches state — the caller gets no say in it", () =
   // THE ROUND 5 MUTATION, killed. Writing `if (answer?.ok) apply(...)` inside
   // `loadMcpPanel` drops this answer, leaves `servers` null, and fails on the
   // first assertion. Writing `if (answer) apply(...)` passes this one and fails
-  // the absent-bridge test below. There is no third place to put the condition:
-  // `Plugins.tsx` does not invoke the setter at all, which the source check at
-  // the bottom of this file holds.
+  // the absent-bridge test below.
+  //
+  // WITHDRAWN 25 Sep: this note used to add that there was "no third place to
+  // put the condition". There is, and round 6 used it — a condition in front of
+  // the CALL to `loadMcpPanel`, in `Plugins.tsx`. The source check at the
+  // bottom of this file cannot see that, because the call is still written
+  // there and still matches. What sees it is `test/mcp-panel-dom.test.mjs`,
+  // which mounts the component with no bridge and fails on `Loading…`.
   const panel = panelUnderTest();
 
   return loadMcpPanel({ mcpServers: async () => DAMAGED }, panel.apply).then(() => {
@@ -425,7 +432,7 @@ test("IN: the servers and the quarantine option both reach the bridge", async ()
 // ── the render decision (mcpPanel `panelView`) ──────────────────────────────
 //
 // The other half of round 5's finding. This decision used to be a chain of
-// ternaries in the JSX, where no test in this repo can reach it.
+// ternaries in the JSX, which nothing reached until `test/mcp-panel-dom.test.mjs`.
 
 test("VIEW: nothing has arrived yet, so the panel is loading — and only then", () => {
   assert.equal(panelView(initialMcpPanelState, []).kind, "loading");
@@ -507,10 +514,15 @@ test("SOURCE ONLY: the component decides nothing — it hands over the setter an
     );
   }
 
-  // THE ROUND 6 INVARIANT. The component never invokes the state setter, so
-  // there is no application for a condition to stand in front of and no answer
-  // for an override to trim on its way past. Both mutation shapes have to be
-  // written inside `mcpPanel.ts` instead, where the section above drives them.
+  // The component does not invoke the state setter, so a condition in front of
+  // an APPLICATION — or an override trimming an answer on its way past — has to
+  // be written inside `mcpPanel.ts`, where the section above drives it.
+  //
+  // WITHDRAWN 25 Sep: this was headed "THE ROUND 6 INVARIANT" and read as
+  // though it closed the class. It does not. Round 6 conditioned the two CALLS
+  // instead, and round 7 disabled the button one of them sits behind; all three
+  // edits leave every string this test greps for matching.
+  // `test/mcp-panel-dom.test.mjs` is what holds them.
   assert.ok(
     !source.includes("setPanel("),
     "Plugins.tsx applies state itself again: that is where `if (answer?.ok)` came in",
