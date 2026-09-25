@@ -371,20 +371,36 @@ test("a target that already exists at a wider mode is republished at the request
  * Watch the temp path from another thread for the duration of one write, and
  * report the modes seen while the file was PART-WRITTEN.
  *
- * The size filter is what makes the result mean anything. Samples are only
- * counted when the file is larger than whatever was sitting there before and
- * smaller than the finished payload — so a sample cannot be the stale file, and
- * cannot be the finished article after the chmod has run. Without it the
- * "at least one sample" guard proves only that the poll fired, not that it
- * fired during the window the test is about.
+ * "Part-written" means: the temp exists, it is shorter than the finished
+ * payload, and it is not the untouched stale file. Shorter-than-finished rules
+ * out the finished article after the chmod has run; the stale file is ruled out
+ * by IDENTITY — same inode, same size as the one this helper planted. Without
+ * the filter the "at least one sample" guard proves only that the poll fired,
+ * not that it fired during the window the test is about.
+ *
+ * An earlier version ruled the stale file out by SIZE instead, counting only
+ * samples strictly larger than it. That relied on the size growing in steps the
+ * observer could catch, and on APFS it does not: one `write()` of the whole
+ * payload publishes the new length all at once, so the samples go 0 → finished
+ * with nothing between. On a fast machine the observer caught hundreds of
+ * samples of the freshly created, still-empty temp — squarely inside the
+ * window, at the mode being tested — and discarded every one, so the positive
+ * control went red and the real assertion never ran. Enlarging the payload
+ * cannot fix that; it only widens a window the filter was throwing away.
+ *
+ * Identity is also what keeps the stale-temp case honest. If step 1 (removing
+ * the stale temp) were dropped, the write would go through the stale inode:
+ * `O_TRUNC` takes it to size 0 at 0644, which no longer matches the planted
+ * file, so it is counted and the mode assertion goes red for the right reason.
  */
 async function modesDuringWrite(target, payload, stale) {
   const tmp = `${target}.tmp`;
-  let floor = 0;
+  let planted = null;
   if (stale) {
     writeFileSync(tmp, stale.contents, "utf8");
     chmodSync(tmp, stale.mode);
-    floor = Buffer.byteLength(stale.contents);
+    const st = statSync(tmp);
+    planted = { ino: st.ino, size: st.size };
   }
 
   const observer = new Worker(
@@ -401,8 +417,8 @@ async function modesDuringWrite(target, payload, stale) {
         // Only on change: the poll fires thousands of times to express a
         // handful of distinct states, and every one of them would otherwise be
         // structured-cloned back to the test.
-        if (!last || last[0] !== (st.mode & 0o777) || last[1] !== st.size) {
-          seen.push([st.mode & 0o777, st.size]);
+        if (!last || last[0] !== (st.mode & 0o777) || last[1] !== st.size || last[2] !== st.ino) {
+          seen.push([st.mode & 0o777, st.size, st.ino]);
         }
       } catch { /* not there yet, or already renamed */ }
       if (stopping) { parentPort.postMessage(seen); return; }
@@ -423,7 +439,8 @@ async function modesDuringWrite(target, payload, stale) {
     // Hoisted deliberately: this is O(payload) and the filter runs once per
     // sample. Evaluated inside the predicate it cost 118 seconds for this file.
     const finished = Buffer.byteLength(payload);
-    const mid = seen.filter(([, size]) => size > floor && size < finished);
+    const untouchedStale = (size, ino) => planted !== null && ino === planted.ino && size === planted.size;
+    const mid = seen.filter(([, size, ino]) => size < finished && !untouchedStale(size, ino));
     return { midCount: mid.length, modes: [...new Set(mid.map(([m]) => m.toString(8)))].sort() };
   } finally {
     await observer.terminate();
