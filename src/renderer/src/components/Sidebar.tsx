@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { UpdateRow } from "./UpdateRow";
 import type { Agent, Block, Room } from "@shared/types";
+import { currentConversation } from "@shared/conversationView";
 import { useStore } from "@/lib/store";
 import { Avatar, Icon, timeLabel } from "./primitives";
 
@@ -112,8 +113,11 @@ function ContextMenu({
  * right there — every row read "No messages yet" above a chat full of messages.
  * One source of truth: the messages.
  */
-function lastOf(blocks: Block[] | undefined): { text: string; at: number } | null {
-  if (!blocks?.length) return null;
+function lastOf(stored: Block[] | undefined): { text: string; at: number } | null {
+  // The CURRENT conversation only: after "New conversation" the row reads "No
+  // messages yet" until the person speaks, not the last archived message.
+  const blocks = currentConversation(stored ?? []);
+  if (!blocks.length) return null;
   for (let i = blocks.length - 1; i >= 0; i--) {
     const b = blocks[i];
     if (b?.kind === "text" && b.text.trim()) {

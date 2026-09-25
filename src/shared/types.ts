@@ -105,7 +105,7 @@ export type Block =
   | { kind: "peer-activity"; id: string; at: number; events: PeerEvent[] }
   /**
    * Where a new conversation began. Everything before it is the previous
-   * conversation — kept, not deleted, and collapsed out of view by default.
+   * conversation — kept in storage, not deleted, and not shown in the chat.
    * `retiredSessionId` names the session that was retired at this point.
    */
   | { kind: "divider"; id: string; at: number; retiredSessionId?: string }

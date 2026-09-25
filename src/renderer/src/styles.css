@@ -860,22 +860,6 @@ input, textarea { font: inherit; color: inherit; }
 }
 .thread__when:first-child { margin-top: var(--sp-2); }
 
-/* Where "New conversation" was pressed. Everything above it is archived, not
-   deleted — collapsed behind .thread__earlier. */
-.thread__divider {
-  display: flex; align-items: center; gap: var(--sp-3);
-  margin: var(--sp-5) 0 var(--sp-3);
-  font-size: var(--fs-xs); color: var(--ink-secondary); user-select: none;
-}
-.thread__divider::before, .thread__divider::after {
-  content: ""; flex: 1; border-top: 0.5px solid var(--stroke);
-}
-.thread__earlier {
-  align-self: center; margin-top: var(--sp-2);
-  padding: 4px 12px; border-radius: 999px;
-  font-size: var(--fs-xs); color: var(--ink-tertiary); background: var(--hover);
-}
-.thread__earlier:hover { background: var(--selected); color: var(--ink-secondary); }
 .workspace:disabled { opacity: 0.45; cursor: default; }
 .workspace:disabled:hover { background: var(--hover); }
 

@@ -4,6 +4,7 @@ import type { AgentSummary } from "@shared/ipc";
 import { summarize } from "./agentInfo";
 import type { Agent, Block, PeerEvent, Room } from "@shared/types";
 import { adoptedState, decideAdoption, freshStartPending } from "@shared/sessionAdoption";
+import { currentConversation } from "@shared/conversationView";
 import { ROOM_PREFIX, isRoomId } from "@shared/types";
 import { recipientsFor, type RoomPolicy } from "@shared/addressing";
 import { reconcile } from "@shared/sessionReplay";
@@ -808,9 +809,10 @@ interface State {
    * "New conversation": retire the eve session and start a fresh one.
    *
    * The one behaviour behind both the header button and the Settings card. The
-   * old transcript is ARCHIVED, not deleted: a divider block is appended and
-   * the view collapses what came before it, so it stays on disk and one click
-   * away.
+   * view CLEARS, but the old transcript is archived, not deleted: a divider
+   * block is appended and the view shows only what comes after it
+   * (@shared/conversationView). The earlier blocks stay in conversations.json
+   * for a future "past conversations" list.
    *
    * The escape hatch for a conversation that cannot move: a turn interrupted by
    * an agent restart never settles, so the session never parks and every later
@@ -1011,7 +1013,7 @@ export const useStore = create<State>((set, get) => ({
           sessionId: localSession,
           label: agent.id,
           lastMessageAt: decision.localAt || Date.now(),
-          lastMessagePreview: [...(get().conversations[agent.id] ?? [])].reverse().find((b) => b.kind === "text")?.["text" as never] ?? undefined,
+          lastMessagePreview: [...currentConversation(get().conversations[agent.id] ?? [])].reverse().find((b) => b.kind === "text")?.["text" as never] ?? undefined,
         });
         continue;
       }

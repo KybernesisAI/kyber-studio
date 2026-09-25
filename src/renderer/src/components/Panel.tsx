@@ -733,7 +733,7 @@ function Settings(): ReactNode {
             <div>Start a fresh conversation</div>
             <div className="muted">
               {sessions[activeAgentId]
-                ? "Same as “New conversation” in the header: retires the agent's current session and starts fresh. The old conversation is kept, collapsed above a divider. Use this too if replies stopped arriving — an agent that restarted mid-turn leaves a session that can never finish."
+                ? "Same as “New conversation” in the header: retires the agent's current session and starts fresh. The view clears; the old conversation is kept on this device, not deleted. Use this too if replies stopped arriving — an agent that restarted mid-turn leaves a session that can never finish."
                 : "No session yet; the next message starts one."}
             </div>
           </div>
