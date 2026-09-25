@@ -1,5 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 
 /**
@@ -37,19 +38,90 @@ import { JSDOM } from "jsdom";
  *  - the search box filters the local list, and a search matching nothing shows
  *    the empty state rather than the full list
  *
+ * AND TWO THINGS THAT ARE COVERED AS A CLASS RATHER THAN AS EXAMPLES, because
+ * round 7 blocked on both — each of the four previous rounds fixed the instance
+ * it was handed and the next round found the same defect one state along.
+ *
+ *  - THE AFFORDANCE CENSUS. Every button the panel body renders, in every state
+ *    it renders one, with whether it can actually be PRESSED. Round 7's first
+ *    blocking finding was that `disabled` on the recovery button was pinned in
+ *    the fresh damaged state and nowhere else, so `disabled={!!saveError}` on it
+ *    was green: a user whose quarantine was refused once saw the escape hatch
+ *    and a second press that wrote nothing. Presence is not pressability, and
+ *    pressability in ONE state is not pressability. The census asserts the whole
+ *    button list per state by exact equality, so an affordance added to any
+ *    state it lists — or one that changes its `disabled` in one — fails until it
+ *    is described. States it does not list are the limit, and the guard below is
+ *    what makes those hard to add. A test below reads the `McpPanelView` union
+ *    out of `mcpPanel.ts` and fails if a `kind` exists with no census row, which
+ *    is what makes an N+1th STATE hard to add without a test.
+ *  - THE BRIDGE FAILING. The fake bridge can reject OR hang on every method it
+ *    exposes, not just the one a reviewer happened to ask about, and every
+ *    method has a stated expected behaviour in `WHEN_IT_FAILS` with a test that
+ *    drives it. Two of the three are driven as rejections; `connectors` is
+ *    driven as a call that never returns, and the test says at length why a
+ *    rejecting one cannot be asserted from a mounted panel today. Round 7's
+ *    second blocking finding was that swapping the two awaits in `refresh()` —
+ *    `connectors()` first, `loadMcpPanel` second — was green, because no bridge
+ *    in this file had ever failed at anything. MEASURED 25 Sep: with that swap
+ *    applied and a remote call that does not return, the whole LOCAL half goes
+ *    to a permanent `Loading…`, damaged screen and way out gone.
+ *
  * WHAT IT DOES NOT PIN, and this list is the honest part. The Apps, Marketplace
  * and Yours tabs are never opened; `AppsTab` mounts only because the panel opens
- * on it. `AddRemoteServer` is never rendered. Nothing here submits the local Add
- * form, opens the per-row menu, or drives Remove, Turn off, Connect or Check —
- * on either half. The remote server list is always empty. Styling, layout and
- * the modal's own open/close are not looked at. A regression in any of those is
- * NOT covered here.
+ * on it. Nothing here SUBMITS either Add form, and nothing drives Remove, Turn
+ * off, Connect or Check to their effects — the census reaches those buttons and
+ * says they are pressable, which is not the same as saying what pressing them
+ * does. The remote server list is always empty, so no remote ROW is ever
+ * rendered, and the buttons one carries — the primary slot, which is a four-way
+ * branch between a spinner, Check and two kinds of Connect, plus Change/Share
+ * and Remove — are all outside the census.
+ * Styling, layout and the modal's own open/close are not looked at. A regression
+ * in any of those is NOT covered here.
  *
- * ONE TRAP, MEASURED WHILE BUILDING THIS. Never let a jsdom node be the `actual`
- * of an assertion — `assert.equal(node, null)` rather than `assert.ok(!node)`.
- * On failure the runner serialises `actual` for the report, and serialising an
- * element took 134 seconds and then reported the FILE as failed instead of the
- * test. It reads exactly like the hang a mutant produces.
+ * ONE TRAP, AND IT IS THE MOST EXPENSIVE THING IN THIS FILE. Never let a jsdom
+ * node be the `actual` of an assertion. Write
+ *
+ *     assert.ok(!node)          // right
+ *     assert.equal(node, null)  // WRONG — this is the form that blows up
+ *
+ * An earlier version of this comment recommended those the wrong way round. On
+ * failure the runner serialises `actual` for the report, and a React-attached
+ * element drags a live fibre graph behind it.
+ *
+ * MEASURED on this box, 25 Sep, on the SAME failing assertion in this suite
+ * written both ways:
+ *
+ *     assert.equal(node, null)    772 s   5,891 MB peak RSS   0 bytes of output
+ *     assert.ok(!node)              2 s     274 MB            1,563-byte failure
+ *
+ * Corroborated separately against a BARE React `<button>` rather than the whole
+ * panel, which is as far as it is safe to reproduce deliberately: `assert.equal`
+ * built a 22,221-byte message there where `assert.ok` built 30, in milliseconds
+ * rather than minutes. Same mechanism, and the gap between 22 KB and 5,891 MB is
+ * the size of the fibre graph behind the node — a button inside the mounted
+ * panel drags very much more of one than a button on its own. Treat the small
+ * number as evidence of the direction only; the cost is not bounded by anything
+ * you can see at the call site.
+ *
+ * Two things that look as though they would bound that, and DO NOT:
+ *
+ *  - `--max-old-space-size` does not bound it. The 772 s probe ran under a
+ *    1024 MB cap and still reached 5,891 MB RSS. The cap in the `test` script is
+ *    worth keeping against ordinary runaway allocation, but it is not a limit on
+ *    this and must not be described as one.
+ *  - A parent-level `timeout` does not stop it. That probe ran under
+ *    `timeout -s KILL 90` and lasted 772 s, because the runner's per-file CHILD
+ *    survives a signal sent only to the parent. Kill the process GROUP.
+ *
+ * So nothing in the toolchain holds this. The discipline does: every assertion
+ * in this file takes PLAIN DATA as its `actual` — a boolean, a string, or the
+ * census objects below — and never a node. That is why the census returns
+ * `{ label, pressable }` records rather than the elements it found them on.
+ *
+ * It also reads exactly like the hang a mutant produces, which is the second
+ * cost: an earlier, smaller instance was measured at 134 s in round 7 and
+ * reported the FILE as failed rather than the test that did it.
  */
 
 // ── the DOM, installed before react-dom is imported ─────────────────────────
@@ -97,15 +169,49 @@ const { NO_ANSWER_MESSAGE } = await import("@/lib/mcpPanel");
 
 after(() => dom.window.close());
 
+/**
+ * Rejections that ESCAPE the component, recorded instead of fatal.
+ *
+ * `useEffect(() => { void refresh(); }, [agent])` discards whatever `refresh()`
+ * rejects with, so a rejecting bridge method reaches process-level
+ * `unhandledRejection` — which, with no listener, aborts the entire runner and
+ * takes the other tests in this file with it. Recording them keeps the file
+ * alive AND turns "what escapes" into something the tests below state
+ * deliberately rather than discover.
+ *
+ * As it stands NOTHING in this file escapes, and the last test in the file is
+ * the receipt for that. The machinery is here because the absence is a fact
+ * worth holding, not because a test depends on it.
+ *
+ * PRE-EXISTING and NOT fixed by KYB-590: a rejecting `connectors()` IS a silent
+ * failure at head. The rejection is dropped, the remote half stays empty, and
+ * nothing on screen says why — which is also why no test here can reject on it,
+ * since the escape fails whichever test happens to be running. Being filed
+ * separately; see the `connectors` test below.
+ */
+const escaped = [];
+process.on("unhandledRejection", (reason) => escaped.push(reason));
+
+/** Drain and describe what escaped since the last drain. */
+function takeEscaped() {
+  return escaped.splice(0).map((e) => (e instanceof Error ? e.message : String(e)));
+}
+
 // ── driving it ──────────────────────────────────────────────────────────────
 
 // ── runaway guard ───────────────────────────────────────────────────────────
 //
-// An effect that sets state on an unstable dependency renders for ever. The
-// runner's --test-timeout CANNOT interrupt that: the loop is synchronous
-// allocation, so the process reaches OOM long before any timer is allowed to
-// fire. Measured on this box: 6.0GB in 103 seconds, which takes the whole VM
-// down rather than failing a test.
+// An effect that sets state on an unstable dependency renders for ever, and
+// nothing in the runner stops it:
+//
+//  - `--test-timeout` cannot interrupt it. The loop is synchronous allocation,
+//    so no timer is ever allowed to fire. Measured in round 7: 6.0 GB in 103
+//    seconds, which takes the whole VM down rather than failing a test.
+//  - `--max-old-space-size=512` in the `test` script does not bound it either,
+//    and is not there as a defence against it. Keep the cap — it is cheap and it
+//    helps against ordinary allocation — but do not read it as a ceiling: a
+//    probe capped at 1024 MB was measured on 25 Sep reaching 5,891 MB RSS.
+//
 //
 // Counting commits is the only hook inside the loop. The soft limit is asserted
 // between interactions, where a throw is a clean failure; the hard ceiling
@@ -237,35 +343,99 @@ const arcana = {
 };
 
 /**
- * A bridge that records what the panel asked it to do.
+ * Every method the fake bridge exposes to the panel.
+ *
+ * Named as data because two things below are driven from it: the failure table,
+ * which requires a stated expected behaviour for each, and a test that fails if
+ * this list and the object `bridge()` builds ever disagree. Adding a method the
+ * panel calls therefore costs a line here and an entry in `WHEN_IT_FAILS`, and
+ * a method with no stated failure behaviour cannot be added quietly.
+ */
+const BRIDGE_METHODS = ["connectors", "mcpServers", "saveMcpServers"];
+
+/** What a rejecting bridge method throws. Asserted on, so it is a constant. */
+const BRIDGE_FAILURE = "the bridge refused";
+
+/**
+ * A bridge that records what the panel asked it to do, and can FAIL AT ANY OF
+ * IT.
  *
  * `damage()` flips it AFTER mounting, which is how the config-goes-bad-while-
  * you-are-typing case below is reached: the panel re-reads on a change of
  * agent, and that is a thing a user does.
+ *
+ * `rejects` and `pending` are the round 7 addition, and the reason is the
+ * finding rather than the fix. Every bridge in this file used to answer
+ * everything, always, so `refresh()` awaiting `connectors()` BEFORE
+ * `loadMcpPanel` was a free mutation: the remote call rejects, the rejection
+ * propagates out of `refresh()` before the local half is ever loaded, `servers`
+ * stays `null`, and the panel sits on `Loading…` with no error and no way out.
+ * Green across the whole suite, because nothing here could fail at anything.
+ *
+ * They are applied by WRAPPING every method uniformly rather than by patching
+ * one of them, so a method added to this bridge inherits the ability to fail
+ * without anyone remembering to give it one.
+ *
+ *   rejects  — these methods throw instead of answering
+ *   pending  — these methods return a promise that never settles, which is how
+ *              the panel is held in its `loading` state long enough to take a
+ *              census of it, and how a dependency that hangs rather than fails
+ *              is driven
  */
-function bridge({ servers = [], damaged = false, onSave } = {}) {
+function bridge({ servers = [], damaged = false, onSave, rejects = [], pending = [] } = {}) {
   const saves = [];
   const loads = [];
+  const connectorCalls = [];
   let bad = damaged;
+
+  const answers = {
+    connectors: async () => {
+      connectorCalls.push(Date.now());
+      return { configured: true, connectors: [] };
+    },
+    mcpServers: async () => {
+      loads.push(Date.now());
+      return bad ? { ok: false, path: DAMAGED_PATH } : { ok: true, servers };
+    },
+    saveMcpServers: async (next, options) => {
+      saves.push({ servers: next, options });
+      return onSave ? onSave(next, options) : { ok: true, servers: next };
+    },
+  };
+
+  // Recorded in the WRAPPER, before the outcome is decided: a method that
+  // rejects still proves the panel asked, and `saves` below would not, because
+  // a rejecting `saveMcpServers` never reaches the line that appends to it.
+  const calls = [];
+
+  const api = {};
+  for (const [name, answer] of Object.entries(answers)) {
+    api[name] = async (...args) => {
+      calls.push(name);
+      if (pending.includes(name)) return new Promise(() => {});
+      if (rejects.includes(name)) throw new Error(`${name}: ${BRIDGE_FAILURE}`);
+      return answer(...args);
+    };
+  }
+
   return {
     saves,
     loads,
+    calls,
+    connectorCalls,
     damage: () => {
       bad = true;
     },
-    api: {
-      connectors: async () => ({ configured: true, connectors: [] }),
-      mcpServers: async () => {
-        loads.push(Date.now());
-        return bad ? { ok: false, path: DAMAGED_PATH } : { ok: true, servers };
-      },
-      saveMcpServers: async (next, options) => {
-        saves.push({ servers: next, options });
-        return onSave ? onSave(next, options) : { ok: true, servers: next };
-      },
-    },
+    api,
   };
 }
+
+test("DOM: the fake bridge exposes exactly the methods the failure table covers", () => {
+  // The guard on the two tables above. A method added to `bridge()` and not to
+  // `BRIDGE_METHODS` fails here; a method in `BRIDGE_METHODS` with no stated
+  // expected behaviour fails in the failure table's own guard further down.
+  assert.deepEqual(Object.keys(bridge().api).sort(), [...BRIDGE_METHODS].sort());
+});
 
 /** Switch agent, which is what makes the panel re-read the config. */
 async function switchAgent(id) {
@@ -346,10 +516,10 @@ test("DOM: pressing the way out writes, and asks for the quarantine", async () =
       !panel.text().includes(DAMAGED_PATH),
       "the panel is still showing the damaged config after recovering from it",
     );
-    // `assert.ok(!node)` and never `assert.equal(node, undefined)`: a failing
-    // assertion carries its `actual` to the reporter, and asking it to
-    // serialise a jsdom element takes the runner over two minutes and then
-    // reports the FILE rather than this test. Measured while building this.
+    // `assert.ok(!node)`, and never `assert.equal(node, null)`. A failing
+    // assertion carries its `actual` to the reporter, and handing it a jsdom
+    // element is the 772-second, 5,891 MB blow-up measured at the top of this
+    // file — which neither the heap cap nor a parent-level `timeout` bounds.
     assert.ok(!button(panel.host, RECOVER), "the way out is still on screen");
     assert.match(panel.text(), /Nothing running here yet/, "the recovered panel is not usable");
   } finally {
@@ -542,4 +712,428 @@ test("DOM: a search that matches nothing shows the empty state, not a list", asy
   } finally {
     await panel.unmount();
   }
+});
+
+// ── the second press, and the class the census generalises it to ────────────
+
+test("DOM: a refused recovery can be pressed AGAIN, and the second press writes", async () => {
+  // PAUL'S DOOR, round 7, first blocking finding. The refused-write test above
+  // asserted only that the recovery button was still PRESENT, which is the
+  // assertion this file's own round-7 door had already proved insufficient one
+  // state earlier. `disabled={!!saveError}` on that button is green against
+  // presence: a user with a damaged config whose quarantine is refused once
+  // then sees "That didn't save", an escape hatch on screen, and a second press
+  // that issues no write at all — the round 7 review measured `after press 2:
+  // saves = 1` with the damaged path still on screen. MEASURED HERE, 25 Sep:
+  // with that mutation applied this test fails on `recover.disabled`, and the
+  // census row for the same state reports
+  // `{ label: "Move it aside and start again", pressable: false }` where it
+  // expects `true`.
+  //
+  // The INSTANCE is fixed here. The CLASS is fixed by the census below, which
+  // asserts pressability for every button in every state rather than for this
+  // one button in the two states a reviewer happened to name.
+  let attempt = 0;
+  const b = bridge({
+    damaged: true,
+    onSave: (next) => {
+      attempt += 1;
+      return attempt === 1 ? { ok: false, path: DAMAGED_PATH } : { ok: true, servers: next };
+    },
+  });
+  const panel = await mount(b.api);
+  try {
+    await click(button(panel.host, RECOVER));
+    await settle();
+    assert.equal(b.saves.length, 1, "the first press issued no write");
+    assert.match(panel.text(), /That didn’t save/, "a refused write is not reported to the user");
+
+    const again = button(panel.host, RECOVER);
+    assert.ok(again, "a refused recovery took the way out off screen");
+    assert.equal(again.disabled, false, "the way out is unpressable after one refusal");
+
+    await click(again);
+    await settle();
+
+    assert.equal(b.saves.length, 2, "the second press issued no write");
+    assert.deepEqual(
+      b.saves[1].options,
+      { onUnreadableConfig: "quarantine" },
+      "the second press stopped asking for the damaged file to be moved aside",
+    );
+    assert.ok(
+      !panel.text().includes(DAMAGED_PATH),
+      "the panel is still showing the damaged config after a recovery that worked",
+    );
+    assert.ok(!panel.text().includes("That didn’t save"), "a write that worked still says it did not");
+    assert.ok(!button(panel.host, RECOVER), "the way out is still on screen after recovering");
+  } finally {
+    await panel.unmount();
+  }
+});
+
+// ── THE AFFORDANCE CENSUS ───────────────────────────────────────────────────
+//
+// Every button the panel body renders, in every state it renders one, with
+// whether it can actually be PRESSED — asserted by EXACT equality against a
+// stated list, not by looking up the one button a test cares about.
+//
+// Why exact equality rather than a lookup. Four rounds on this PR each pinned
+// the instance they were handed: round 5 pinned that the local Add button is
+// dead over a damaged config, round 6 pinned that the recovery button exists,
+// round 7 pinned that it is pressable in the FRESH damaged state — and each
+// time the next mutation moved one state along and was green. A lookup can only
+// fail for a button someone thought to look up. An exact census fails for any
+// button that appears, disappears or changes its `disabled` anywhere in the
+// panel, including ones nobody has written a test for yet.
+//
+// `pressable` is deliberately BOTH checks. `disabled` the property and
+// `disabled` the attribute can disagree, and React writes the attribute.
+//
+// The records are PLAIN DATA. That is not a readability preference: it is the
+// trap at the top of this file. `assert.deepEqual` on a mismatch hands `actual`
+// to the reporter, and a census of jsdom nodes would be the 772-second,
+// 5,891 MB failure rather than a one-line diff.
+
+/** A stable name for a button, including the icon-only ones that have no text. */
+function affordance(element) {
+  const text = (element.textContent ?? "").replace(/\s+/g, " ").trim();
+  if (text) return text;
+  const title = element.getAttribute("title");
+  if (title) return `[${title}]`;
+  return `[${element.className || "unlabelled"}]`;
+}
+
+/**
+ * Every button in the panel BODY, in DOM order, as `{ label, pressable }`.
+ *
+ * Scoped to `.modal__body`, which is the tab content. The modal's own chrome —
+ * the close button and the four tab buttons — belongs to the dialog rather than
+ * to this panel, and is driven by `mount()` instead.
+ */
+function censusOf(host) {
+  const body = host.querySelector(".modal__body");
+  assert.ok(body, "the modal body is not on screen");
+  return [...body.querySelectorAll("button")].map((element) => ({
+    label: affordance(element),
+    pressable: element.disabled === false && !element.hasAttribute("disabled"),
+  }));
+}
+
+const ADD_REMOTE = { label: "Add by URL", pressable: true };
+const addLocal = (pressable) => ({ label: "Add one on this computer", pressable });
+const ROW = [
+  { label: "Connect", pressable: true },
+  { label: "[More]", pressable: true },
+];
+
+/**
+ * Every state the panel body can be in that this harness can reach, with the
+ * exact set of affordances it offers there.
+ *
+ * `view` names the `McpPanelView` kind the state is in. A test below reads the
+ * union out of `mcpPanel.ts` and fails if a kind has no row here, which is what
+ * makes an N+1th STATE hard to add without a test.
+ */
+const STATES = [
+  {
+    name: "the first answer has not arrived",
+    view: "loading",
+    // A bridge that never answers is how this state is held still. It
+    // is also the state the last four rounds of this PR kept producing by
+    // accident, which is why it is worth a row: the panel offers NOTHING here,
+    // so anything that strands a user in it strands them with no way out.
+    reach: () => mount(bridge({ pending: ["mcpServers"] }).api),
+    expect: [],
+  },
+  {
+    name: "a damaged config, freshly read",
+    view: "unreadable",
+    reach: () => mount(bridge({ damaged: true }).api),
+    expect: [{ label: RECOVER, pressable: true }, ADD_REMOTE, addLocal(false)],
+  },
+  {
+    name: "a damaged config whose quarantine was refused",
+    view: "unreadable",
+    // THE ROUND 7 DOOR. `disabled={!!saveError}` on the recovery button is
+    // green everywhere except this row.
+    reach: async () => {
+      const b = bridge({ damaged: true, onSave: () => ({ ok: false, path: DAMAGED_PATH }) });
+      const panel = await mount(b.api);
+      await click(button(panel.host, RECOVER));
+      await settle();
+      return panel;
+    },
+    expect: [{ label: RECOVER, pressable: true }, ADD_REMOTE, addLocal(false)],
+  },
+  {
+    name: "a damaged config whose next read then threw",
+    view: "unreadable",
+    // Two failures stacked: `unreadable` survives a later load failure, so the
+    // way out has to survive it too. A third unreadable sub-state, and the
+    // reason the census is a table rather than two assertions.
+    reach: async () => {
+      const b = bridge({ damaged: true });
+      const panel = await mount(b.api);
+      b.api.mcpServers = async () => {
+        throw new Error("disk");
+      };
+      await switchAgent("another-agent");
+      return panel;
+    },
+    expect: [{ label: RECOVER, pressable: true }, ADD_REMOTE, addLocal(false)],
+  },
+  {
+    name: "a readable config with servers",
+    view: "list",
+    reach: () => mount(bridge({ servers: [plaud, arcana] }).api),
+    expect: [...ROW, ...ROW, ADD_REMOTE, addLocal(true)],
+  },
+  {
+    name: "a readable config with a row menu open",
+    view: "list",
+    // The per-row menu was on this file's NOT-COVERED list until round 7. Two
+    // of the three buttons in it call `save()`, which is the same write path
+    // the damaged-config work is about.
+    reach: async () => {
+      const panel = await mount(bridge({ servers: [plaud, arcana] }).api);
+      await click(button(panel.host, "More") ?? panel.host.querySelector('button[title="More"]'));
+      await settle();
+      return panel;
+    },
+    expect: [
+      ...ROW,
+      { label: "Check again", pressable: true },
+      { label: "Turn off", pressable: true },
+      { label: "Remove", pressable: true },
+      ...ROW,
+      ADD_REMOTE,
+      addLocal(true),
+    ],
+  },
+  {
+    name: "a readable config with no servers",
+    view: "empty",
+    reach: () => mount(bridge({ servers: [] }).api),
+    expect: [ADD_REMOTE, addLocal(true)],
+  },
+  {
+    name: "a search that matches nothing",
+    view: "empty",
+    reach: async () => {
+      const panel = await mount(bridge({ servers: [plaud, arcana] }).api);
+      await type(panel.host.querySelector('input[placeholder="Search plugins"]'), "zzzz");
+      await settle();
+      return panel;
+    },
+    expect: [ADD_REMOTE, addLocal(true)],
+  },
+  {
+    name: "no preload bridge at all",
+    view: "empty",
+    reach: () => mount(undefined),
+    expect: [ADD_REMOTE, addLocal(true)],
+  },
+  {
+    name: "a read that threw",
+    view: "empty",
+    // `loadError` is a banner and not a state of its own, so the affordances
+    // are the empty ones. Pinned because a read failure that ALSO took the Add
+    // buttons away would leave a user with a working app and nothing to press.
+    reach: () => mount(bridge({ rejects: ["mcpServers"] }).api),
+    expect: [ADD_REMOTE, addLocal(true)],
+  },
+  {
+    name: "the local Add form open",
+    view: "list",
+    reach: async () => {
+      const panel = await mount(bridge({ servers: [plaud] }).api);
+      await click(button(panel.host, "Add one on this computer"));
+      await settle();
+      return panel;
+    },
+    expect: [...ROW, { label: "Add", pressable: true }, { label: "Cancel", pressable: true }],
+  },
+  {
+    name: "the remote Add form open",
+    view: "list",
+    // `AddRemoteServer` was on the NOT-COVERED list too. It is rendered here
+    // and nothing is submitted: the census says what it offers, not what its
+    // buttons do.
+    reach: async () => {
+      const panel = await mount(bridge({ servers: [plaud] }).api);
+      await click(button(panel.host, "Add by URL"));
+      await settle();
+      return panel;
+    },
+    expect: [...ROW, { label: "Add", pressable: true }, { label: "Cancel", pressable: true }],
+  },
+];
+
+for (const state of STATES) {
+  test(`DOM: affordance census — ${state.name}`, async () => {
+    const panel = await state.reach();
+    try {
+      assert.deepEqual(censusOf(panel.host), state.expect);
+    } finally {
+      await panel.unmount();
+      takeEscaped();
+    }
+  });
+}
+
+test("DOM: every view kind the panel can be in has a census row", async () => {
+  // A COVERAGE assertion, and deliberately the only source-reading one in this
+  // file. It does not claim anything about behaviour — the census rows do that
+  // — it claims that the census has a row for each `kind` the panel can render.
+  // Adding a fifth kind to `McpPanelView` fails here until someone writes down
+  // what the panel offers in it.
+  //
+  // NOT covered by this: a new state that is not a new KIND, such as a fourth
+  // value of `mode`. The exactness of each census row is what catches those,
+  // and only once someone reaches the state.
+  const source = readFileSync(new URL("../src/renderer/src/lib/mcpPanel.ts", import.meta.url), "utf8");
+  const start = source.indexOf("export type McpPanelView");
+  assert.notEqual(start, -1, "McpPanelView is no longer declared where this test looks for it");
+  // To the blank line, not to the first `;`: the members themselves contain
+  // semicolons — `{ kind: "unreadable"; path: string }` — and slicing to the
+  // first one found two kinds and silently under-checked. That is why the
+  // length assertion below exists rather than trusting the parse.
+  const union = source.slice(start, source.indexOf("\n\n", start));
+  const kinds = [...new Set([...union.matchAll(/kind:\s*"([a-z]+)"/g)].map((m) => m[1]))].sort();
+  assert.ok(kinds.length >= 4, `only found ${kinds.length} kinds — the union is not being parsed`);
+  assert.deepEqual(
+    [...new Set(STATES.map((s) => s.view))].sort(),
+    kinds,
+    "a view kind has no row in the affordance census, or a census row names a kind that no longer exists",
+  );
+});
+
+// ── THE BRIDGE FAILING, on every method it exposes ──────────────────────────
+//
+// Round 7's second blocking finding was not that `connectors()` can reject. It
+// was that NOTHING in this file could fail at anything, so a whole category of
+// mutation was invisible. The fix is the category: every method the bridge
+// exposes can reject, and every one of them has a stated expected behaviour
+// here. The table is guarded against a method being added without one.
+
+const WHEN_IT_FAILS = {
+  connectors:
+    "the REMOTE call. The local half must be completely unaffected: the damaged " +
+    "screen, its path, and a way out that is pressable AND still writes. Driven " +
+    "as a call that never answers rather than one that rejects — see the test, " +
+    "which says why a rejecting one cannot be observed from a mounted panel.",
+  mcpServers:
+    "the LOCAL read. Never a permanent `Loading…`: an empty list, the reason on " +
+    "screen, and the Add buttons still usable. The remote half is still asked for.",
+  saveMcpServers:
+    "the LOCAL write. The refusal is reported, and the way out stays on screen and " +
+    "stays pressable so the user can try again.",
+};
+
+test("DOM: every bridge method has a stated behaviour for when it fails", () => {
+  assert.deepEqual(Object.keys(WHEN_IT_FAILS).sort(), [...BRIDGE_METHODS].sort());
+});
+
+test("DOM: a connectors() that never answers leaves the whole local half working", async () => {
+  // PAUL'S DOOR, round 7, second blocking finding. Swapping the two awaits in
+  // `refresh()` — `connectors()` first, `loadMcpPanel` second — typechecks and
+  // leaves the suite green without this test: the remote call is awaited before
+  // the local half is ever loaded, `servers` stays null, and the panel sits on
+  // `Loading…` with no error and no recovery button.
+  //
+  // WHY A HANG AND NOT A REJECTION, since a rejection is what the review asked
+  // for. MEASURED 25 Sep: `rejects: ["connectors"]` here does close the same
+  // door, but the rejection then FAILS THIS TEST whatever it asserts. The
+  // component's `useEffect(() => { void refresh(); }, [agent])` discards it, so
+  // it arrives as a process-level unhandled rejection, and the node:test runner
+  // attributes one to whichever test is running — a `process.on(
+  // "unhandledRejection")` listener does not take that away, and the escape can
+  // land after the test that caused it, failing the NEXT one instead.
+  //
+  // That is not a gap in this harness. It IS the pre-existing defect the review
+  // named: a rejecting `connectors()` is a silent failure at head too, dropped
+  // on the floor with nothing on screen saying why. Fixing it is outside
+  // KYB-590 and is being filed separately. Until it is fixed, a remote call
+  // that never answers is the strongest form of this door a mounted-panel test
+  // can hold — and it is the same shape of failure, an await that does not
+  // return, which is what the mutation exploits.
+  const b = bridge({ damaged: true, pending: ["connectors"] });
+  const panel = await mount(b.api);
+  try {
+    assert.ok(
+      !panel.text().includes("Loading…"),
+      "a REMOTE call that never answers left the whole panel loading for ever",
+    );
+    assert.ok(b.calls.includes("mcpServers"), "the local half was never asked for at all");
+    assert.match(panel.text(), /damaged and can’t be read/, "the damaged state is not shown");
+    assert.ok(panel.text().includes(DAMAGED_PATH), "the path to repair by hand is not shown");
+
+    const recover = button(panel.host, RECOVER);
+    assert.ok(recover, "a stuck remote call took the way out off screen");
+    assert.equal(recover.disabled, false, "a stuck remote call left the way out unpressable");
+
+    // And it still WORKS, not merely renders.
+    await click(recover);
+    await settle();
+    assert.equal(b.saves.length, 1, "the way out issued no write while the remote call was stuck");
+    assert.ok(
+      !panel.text().includes(DAMAGED_PATH),
+      "recovering did not clear the damaged screen while the remote call was stuck",
+    );
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test("DOM: a rejecting mcpServers() states the reason and leaves the panel usable", async () => {
+  const b = bridge({ rejects: ["mcpServers"] });
+  const panel = await mount(b.api);
+  try {
+    assert.ok(!panel.text().includes("Loading…"), "a failing local read leaves the panel loading");
+    assert.match(panel.text(), /Couldn’t read your servers/, "a failing read says nothing at all");
+    assert.ok(
+      panel.text().includes(BRIDGE_FAILURE),
+      "the panel says a read failed without saying what the failure was",
+    );
+    // The mirror of the `connectors` case: a failing LOCAL read must not take
+    // the REMOTE half down either.
+    assert.ok(b.calls.includes("connectors"), "a failing local read stopped the remote half loading");
+    assert.deepEqual(takeEscaped(), [], "a failing read escaped the component instead of being folded");
+  } finally {
+    await panel.unmount();
+    takeEscaped();
+  }
+});
+
+test("DOM: a rejecting saveMcpServers() reports it and keeps the way out pressable", async () => {
+  const b = bridge({ damaged: true, rejects: ["saveMcpServers"] });
+  const panel = await mount(b.api);
+  try {
+    await click(button(panel.host, RECOVER));
+    await settle();
+
+    assert.ok(b.calls.includes("saveMcpServers"), "the recovery never reached the bridge");
+    assert.match(panel.text(), /That didn’t save/, "a write that threw is not reported to the user");
+    assert.ok(
+      panel.text().includes(BRIDGE_FAILURE),
+      "the panel says a write failed without saying what the failure was",
+    );
+
+    const recover = button(panel.host, RECOVER);
+    assert.ok(recover, "a write that threw took the way out off screen");
+    assert.equal(recover.disabled, false, "a write that threw left the way out unpressable");
+    assert.deepEqual(takeEscaped(), [], "a failing write escaped the component instead of being folded");
+  } finally {
+    await panel.unmount();
+    takeEscaped();
+  }
+});
+
+test("DOM: nothing else in this file left a rejection unhandled", async () => {
+  // The price of the `unhandledRejection` listener above is that it silences
+  // the default abort for the WHOLE file. This is the receipt: anything that
+  // escaped and was not drained by the test that expected it fails here.
+  await settle();
+  assert.deepEqual(takeEscaped(), []);
 });

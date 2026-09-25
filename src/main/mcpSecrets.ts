@@ -53,9 +53,16 @@ import type { SafeStorageLike } from "./credentialStorage";
  * `test/local-exec-relay.test.mjs` do exactly that. The real obstacle was
  * mundane and unrelated: this repo writes extensionless relative imports
  * (`./atomicWrite`), which tsc and esbuild resolve and native ESM does not.
- * `test/ts-ext-resolve.mjs` closes it in fifteen lines with no dependency.
+ * `test/ts-ext-resolve.mjs` closes it, in a `resolve` hook built on node's own
+ * `fs`, `url` and `path` and nothing else.
  * Verified independently by removing that hook and re-running: the failure is
  * `ERR_MODULE_NOT_FOUND` for `./atomicWrite`, not a link error on `electron`.
+ *
+ * CORRECTED 25 Sep. This used to say the hook "closes it in fifteen lines with
+ * no dependency", and this diff made that false on both counts: the file now
+ * also resolves the `@/*` and `@shared/*` aliases and transforms `.tsx`, and
+ * for the second of those it imports `esbuild`. The extensionless-import fix
+ * itself is still dependency-free; the FILE is not.
  */
 
 /** The parts of Electron's `safeStorage` this module needs. */

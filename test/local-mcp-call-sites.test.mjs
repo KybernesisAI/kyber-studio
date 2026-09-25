@@ -13,7 +13,13 @@ import { join } from "node:path";
  * mocks fine with `mock.module`. What actually blocked it was mundane: the repo
  * writes extensionless relative imports (`./atomicWrite`), which tsc and
  * esbuild resolve and native ESM does not. `test/ts-ext-resolve.mjs` closes
- * that in fifteen lines with no dependency.
+ * that, in a `resolve` hook built on node's own `fs`, `url` and `path` alone.
+ *
+ * CORRECTED 25 Sep: this used to say "in fifteen lines with no dependency".
+ * That was true of the hook when it did only this job. The same file now also
+ * resolves the tsconfig path aliases and transforms `.tsx`, and imports
+ * `esbuild` for the latter — so the file has a dependency even though the fix
+ * described here does not.
  *
  * It matters because the seam between the sealing module and its callers is
  * exactly where review found every real defect in this change — the pure module
