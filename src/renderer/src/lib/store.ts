@@ -3,6 +3,7 @@ import type { PendingAttachment } from "./attachments";
 import type { AgentSummary } from "@shared/ipc";
 import { summarize } from "./agentInfo";
 import type { Agent, Block, PeerEvent, Room } from "@shared/types";
+import { adoptedState, decideAdoption, freshStartPending } from "@shared/sessionAdoption";
 import { ROOM_PREFIX, isRoomId } from "@shared/types";
 import { recipientsFor, type RoomPolicy } from "@shared/addressing";
 import { reconcile } from "@shared/sessionReplay";
@@ -966,30 +967,22 @@ export const useStore = create<State>((set, get) => ({
       if (!get().sessions[key]) set((s) => ({ sessions: { ...s.sessions, [key]: entry.sessionId } }));
     }
 
-    const newest = new Map<string, (typeof indexed)[number]>();
-    const retired = new Set(get().retiredSessions);
+    // Every non-room row, grouped by the local agent it resolves to. Which one
+    // (if any) the chat should show is decided in ../../../shared/sessionAdoption,
+    // where the fresh-start and never-delete rules are tested.
+    const byAgent = new Map<string, (typeof indexed)[number][]>();
     for (const entry of indexed) {
       if (entry.label && isRoomId(entry.label)) continue;
-      // Retired here with "New conversation" — never a candidate, or the
-      // directory would hand the old thread straight back.
-      if (retired.has(entry.sessionId)) continue;
       const agent = resolve(entry.agent);
       if (!agent) continue;
-      const at = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
-      const held = newest.get(agent.id);
-      const heldAt = held?.lastMessageAt ? Date.parse(held.lastMessageAt) : 0;
-      if (!held || at > heldAt) newest.set(agent.id, entry);
+      byAgent.set(agent.id, [...(byAgent.get(agent.id) ?? []), entry]);
     }
 
     const seen = new Set<string>();
-    for (const entry of newest.values()) {
-      const agent = resolve(entry.agent);
+    for (const [agentId, entries] of byAgent) {
+      const agent = get().agents.find((a) => a.id === agentId);
       if (!agent) continue;
       seen.add(agent.id);
-      const localSession = get().sessions[agent.id];
-      const localAt = localLastAt(agent.id);
-      const remoteAt = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
-      if (localSession === entry.sessionId) continue;
 
       /**
        * Two-way. The account's thread is adopted when it is the newer one;
@@ -999,33 +992,32 @@ export const useStore = create<State>((set, get) => ({
        * a thread this app had never recorded under the shared name was
        * invisible everywhere else.
        *
-       * Adopting replaces this device's view of the older thread. Nothing is
-       * destroyed — that session is still durable on the agent — but it is no
-       * longer what this agent's chat shows.
+       * Adopting changes which session this chat talks to. It no longer
+       * replaces the transcript: the adopted thread is MERGED in, so nothing
+       * held locally — an archived conversation, a divider, a card — is lost.
        */
-      if (localSession && localAt >= remoteAt) {
+      const decision = decideAdoption({
+        entries,
+        localSession: get().sessions[agent.id],
+        localBlocks: get().conversations[agent.id] ?? [],
+        retired: get().retiredSessions,
+      });
+      if (decision.kind === "skip") continue;
+      if (decision.kind === "publish") {
+        const localSession = get().sessions[agent.id];
+        if (!localSession) continue;
         void window.studio.recordSession({
           agent: agent.registeredName ?? agent.id,
           sessionId: localSession,
           label: agent.id,
-          lastMessageAt: localAt || Date.now(),
+          lastMessageAt: decision.localAt || Date.now(),
           lastMessagePreview: [...(get().conversations[agent.id] ?? [])].reverse().find((b) => b.kind === "text")?.["text" as never] ?? undefined,
         });
         continue;
       }
 
-      set((s) => {
-        const streamIndexes = { ...s.streamIndexes };
-        // The cursor belongs to the session being replaced; carrying it over
-        // would post the next message into a thread this device is no longer on.
-        delete streamIndexes[agent.id];
-        return {
-          sessions: { ...s.sessions, [agent.id]: entry.sessionId },
-          conversations: { ...s.conversations, [agent.id]: [] },
-          streamIndexes,
-        };
-      });
-      await get().hydrate(agent.id);
+      set((s) => adoptedState(s, agent.id, decision.sessionId));
+      await get().hydrate(agent.id, "merge");
     }
 
     // Threads this machine holds that the directory has never heard of.
@@ -2110,20 +2102,14 @@ export const useStore = create<State>((set, get) => ({
       typeof named === "string" &&
       named !== "" &&
       get().sessions[agentId] !== named &&
-      !get().retiredSessions.includes(named)
+      !get().retiredSessions.includes(named) &&
+      // After "New conversation" the next thread is the one the person starts.
+      !freshStartPending(get().sessions[agentId], get().conversations[agentId] ?? [])
     ) {
-      set((st) => {
-        const streamIndexes = { ...st.streamIndexes };
-        // The cursor belongs to the thread being left; carrying it over would
-        // read from the wrong offset in the one being joined.
-        delete streamIndexes[agentId];
-        return {
-          sessions: { ...st.sessions, [agentId]: named },
-          conversations: { ...st.conversations, [agentId]: [] },
-          streamIndexes,
-        };
-      });
-      await get().hydrate(agentId);
+      // Session and cursor change; the transcript is kept and the adopted
+      // thread merged into it — never replaced.
+      set((st) => adoptedState(st, agentId, named));
+      await get().hydrate(agentId, "merge");
     }
     set((s) => ({
       details: { ...s.details, [agentId]: info },
