@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { app, safeStorage } from "electron";
 import { writeAtomic } from "./atomicWrite";
+import { isCredentialStoreAvailable } from "./credentialStorage";
 import { looksSealed, sealEnv, unsealEnv } from "./mcpSecrets";
 
 /**
@@ -69,20 +70,18 @@ function configPath(): string {
 const unpersistedEnv = new Map<string, Record<string, string>>();
 
 /**
- * Ask the OS about encryption at most once.
+ * The `SafeStorageLike` this module hands to `mcpSecrets`.
  *
- * Measured: the answer is latched for the life of the process anyway — a run
- * that starts with the keyring locked stays broken after an unlock, and one
- * that starts unlocked keeps working after a lock. Asking twice cannot produce
- * a different answer, and each ask is what can raise an unlock dialog. So the
- * first answer is the answer.
+ * Availability is asked through `isCredentialStoreAvailable`, which memoises
+ * it for the life of the process. That cache used to live here, which made it
+ * the MCP layer's cache: `controlPlane.ts` asked the OS raw on both the
+ * session read and the session write, so a signed-in user with an MCP server
+ * could be prompted more than once for an answer the OS had already latched.
+ * It now sits in `credentialStorage.ts`, which both layers may depend on, and
+ * the reasoning is written down there.
  */
-let availabilityAnswer: boolean | null = null;
 const credentialStore = {
-  isEncryptionAvailable: (): boolean => {
-    if (availabilityAnswer === null) availabilityAnswer = safeStorage.isEncryptionAvailable();
-    return availabilityAnswer;
-  },
+  isEncryptionAvailable: (): boolean => isCredentialStoreAvailable(safeStorage),
   getSelectedStorageBackend: () => safeStorage.getSelectedStorageBackend(),
   encryptString: (plain: string) => safeStorage.encryptString(plain),
   decryptString: (buf: Buffer) => safeStorage.decryptString(buf),
@@ -556,8 +555,8 @@ export function serverStatus(id: string): {
   // Derived, not stored. If the OS will not encrypt then no server's stored
   // credentials can be opened, including servers that have never been started
   // and servers added after the last failure — so this answer does not depend
-  // on anything having gone wrong first. It costs at most one ask per process:
-  // `credentialStore` caches.
+  // on anything having gone wrong first. It costs at most one ask per process,
+  // and not one per call: `isCredentialStoreAvailable` memoises.
   const credentials: { reason: "store-unavailable" | "needs-re-entry"; keys: string[] } | undefined =
     !credentialStore.isEncryptionAvailable()
       ? { reason: "store-unavailable", keys: [] }

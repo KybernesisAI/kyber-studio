@@ -7,6 +7,7 @@ import {
   collectCredentialStorage,
   createCredentialStorageReporter,
   describeCredentialStorage,
+  isCredentialStoreAvailable,
 } from "../src/main/credentialStorage.ts";
 
 /**
@@ -272,4 +273,30 @@ test("two calls before the deferred report runs still ask once", async () => {
 
   assert.equal(asked, 1);
   assert.equal(lines.length, 1);
+});
+
+/**
+ * Deliberately last, and deliberately the only test in this file that touches
+ * it: `isCredentialStoreAvailable` memoises for the life of the PROCESS, by
+ * design and with no reset hook, so a second answer needs a second file. The
+ * cross-layer property — one ask across a session read, a session write and an
+ * MCP save — is in `credential-availability.test.mjs`, which is the process
+ * where all three run.
+ */
+test("availability is asked once and then remembered, whoever asks", () => {
+  let asked = 0;
+  const safeStorage = {
+    isEncryptionAvailable: () => {
+      asked += 1;
+      return true;
+    },
+  };
+
+  assert.equal(isCredentialStoreAvailable(safeStorage), true);
+  assert.equal(isCredentialStoreAvailable(safeStorage), true);
+  // A second caller, standing in for the other layer: `controlPlane.ts` and
+  // `localMcp.ts` share this one answer rather than holding one each.
+  assert.equal(isCredentialStoreAvailable({ isEncryptionAvailable: () => false }), true);
+
+  assert.equal(asked, 1, `asked the OS ${asked} times; each ask can raise an unlock dialog`);
 });

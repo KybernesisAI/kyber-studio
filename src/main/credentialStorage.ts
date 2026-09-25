@@ -31,6 +31,43 @@ export type SafeStorageLike = {
   getSelectedStorageBackend: () => string;
 };
 
+/**
+ * Ask the OS whether it can encrypt — at most once for the life of the process.
+ *
+ * @remarks
+ * Availability is **latched by the OS**, not merely expensive to ask about.
+ * Measured on Linux Mint, Electron 34.5.8: a run that begins with the keyring
+ * locked stays broken after the keyring is unlocked mid-run, and a run that
+ * begins unlocked keeps working after it is locked again. So a second ask can
+ * only ever repeat the first answer — at the price of a second unlock dialog,
+ * because asking is the thing that raises one.
+ *
+ * It lives here, beside `SafeStorageLike`, rather than in either caller. The
+ * session layer (`controlPlane.ts`) and the MCP layer (`localMcp.ts`) need the
+ * same single answer, and a cache held by either is a cache the other misses:
+ * `localMcp.ts` had one and `controlPlane.ts` asked raw, twice, so a signed-in
+ * user with an MCP server could be prompted more than once. Having the session
+ * layer import the MCP layer would have fixed the count and inverted the
+ * dependency; this file already owns the abstraction and depends on nothing.
+ *
+ * `safeStorage` is injected for the same reason as everywhere else in this
+ * file: no Electron import, so `node --test` can load it.
+ *
+ * There is deliberately no reset hook. The answer is process-wide by design,
+ * and this suite's convention for wanting a different one is a different
+ * process — one test file per answer, which is why
+ * `local-mcp-call-sites.test.mjs` (available) and
+ * `local-mcp-locked-store.test.mjs` (locked) are two files and not two tests.
+ */
+let availabilityAnswer: boolean | null = null;
+
+export function isCredentialStoreAvailable(
+  safeStorage: Pick<SafeStorageLike, "isEncryptionAvailable">,
+): boolean {
+  if (availabilityAnswer === null) availabilityAnswer = safeStorage.isEncryptionAvailable();
+  return availabilityAnswer;
+}
+
 export type CredentialStorageReport = {
   platform: string;
   encryptionAvailable: boolean;
