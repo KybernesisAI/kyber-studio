@@ -95,14 +95,20 @@ import { JSDOM } from "jsdom";
  *     assert.equal(node, null)    772 s   5,891 MB peak RSS   0 bytes of output
  *     assert.ok(!node)              2 s     274 MB            1,563-byte failure
  *
- * Corroborated separately against a BARE React `<button>` rather than the whole
- * panel, which is as far as it is safe to reproduce deliberately: `assert.equal`
- * built a 22,221-byte message there where `assert.ok` built 30, in milliseconds
- * rather than minutes. Same mechanism, and the gap between 22 KB and 5,891 MB is
- * the size of the fibre graph behind the node — a button inside the mounted
- * panel drags very much more of one than a button on its own. Treat the small
- * number as evidence of the direction only; the cost is not bounded by anything
- * you can see at the call site.
+ * Corroborated separately against a BARE React `<button>` alone in a root —
+ * which is as far as it is safe to reproduce this deliberately. Re-measured on
+ * this box on 25 Sep, both forms against the same rendered node:
+ *
+ *     assert.ok(!node)             63 bytes of message,     4 ms
+ *     assert.equal(node, null)     17,012 bytes,            6 ms
+ *
+ * Treat those two numbers as evidence of the DIRECTION and nothing more. They
+ * are sensitive to what the element is: an earlier run of the same probe, on a
+ * button with different markup, gave 30 and 22,221 — so do not expect either
+ * figure to reproduce exactly. What does reproduce is the shape. The gap between
+ * ~17 KB for a lone button and 5,891 MB for one inside the mounted panel is the
+ * size of the fibre graph behind the node, and nothing at the call site shows
+ * you which of the two you have.
  *
  * Two things that look as though they would bound that, and DO NOT:
  *
@@ -214,8 +220,13 @@ function takeEscaped() {
 //
 //
 // Counting commits is the only hook inside the loop. The soft limit is asserted
-// between interactions, where a throw is a clean failure; the hard ceiling
-// throws inside the commit itself, because by then nothing else will stop it.
+// after mounting, after opening the tab, and after EVERY click and keystroke the
+// helpers below drive — the counter is reset before each, so the budget is per
+// interaction and not per test. A throw there is a clean failure.
+//
+// It does not cover renders that arrive LATER, from an awaited answer settling
+// after the assertion has run. The hard ceiling is what covers those, and it
+// throws inside the commit itself because by then nothing else will stop it.
 const RENDER_LIMIT = 50;
 const HARD_CEILING = 400;
 let commits = 0;
@@ -302,10 +313,12 @@ function button(root, label) {
   return [...root.querySelectorAll("button")].find((b) => (b.textContent ?? "").includes(label));
 }
 
-function click(element) {
-  return act(async () => {
+async function click(element) {
+  resetCommits();
+  await act(async () => {
     element.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
   });
+  assertSettled("a click");
 }
 
 /**
@@ -313,15 +326,17 @@ function click(element) {
  * it tracks the previous value on the node and suppresses the change — so the
  * native setter goes through the prototype descriptor.
  */
-function type(input, value) {
+async function type(input, value) {
   const setter = Object.getOwnPropertyDescriptor(
     dom.window.HTMLInputElement.prototype,
     "value",
   ).set;
   setter.call(input, value);
-  return act(async () => {
+  resetCommits();
+  await act(async () => {
     input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   });
+  assertSettled("a keystroke");
 }
 
 const DAMAGED_PATH = "/home/user/.config/kyber-studio/local-mcp.json";

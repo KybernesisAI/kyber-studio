@@ -343,8 +343,20 @@ export type McpPanelView =
  * mapping alone, and that was too narrow. `visible` is an ARGUMENT, and round
  * 6 showed that passing the unfiltered list at the call site silently disabled
  * the search box with every test green. Both the mapping and the argument are
- * now driven from the DOM harness. NOT covered there: the remote half of the
- * panel, the two add forms, and the per-row menu.
+ * now driven from the DOM harness.
+ *
+ * CORRECTED 25 Sep. This used to end "NOT covered there: the remote half of the
+ * panel, the two add forms, and the per-row menu", and round 7's affordance
+ * census made all three of those false in part. The census reaches every button
+ * in BOTH add forms and in the per-row menu, and asserts for each whether it can
+ * be pressed; `disabled` added to the local Add form's Cancel, to the remote
+ * form's primary button, to the row's More or to Remove is a red test.
+ *
+ * What is still NOT covered: what pressing any of them DOES. Nothing submits
+ * either add form, and Remove, Turn off, Connect and Check are never driven to
+ * their effects. Nor is the remote half's LIST — the remote servers are always
+ * empty in that harness, so no remote row is ever rendered and the four-way
+ * primary slot a row carries is outside the census entirely.
  */
 export function panelView(state: McpPanelState, visible: LocalMcpServer[]): McpPanelView {
   if (state.servers === null) return { kind: "loading" };
