@@ -131,10 +131,19 @@ test("the thrown message names no environment variable", async () => {
 
 test("the names survive as a property and in the local log — they are hidden, not lost", async () => {
   // The other half of the fix, and the reason this is redaction-from-the-wire
-  // rather than deletion. The user owns this machine and needs to know which
-  // values to re-enter: the renderer gets the names through
-  // `serverStatus().credentials.keys`, and the main process prints them where
-  // only the person sitting in front of it can read them.
+  // rather than deletion: the names have to survive somewhere, or the user
+  // cannot be told which value to re-enter even in principle.
+  //
+  // WHERE THEY SURVIVE, and where they do not — because an earlier version of
+  // this comment got the second half wrong. They survive as the error's `keys`
+  // property and as a line the main process prints, and both are asserted
+  // below. They do NOT reach the user's screen at this head: `serverStatus()`
+  // would return them, but no IPC handler exposes it and no renderer code reads
+  // `.credentials`, so the panel row says only "…could not be decrypted. Remove
+  // the server and add it again" and names no value. Surfacing them is KYB-594.
+  //
+  // This test therefore pins that the names are KEPT, not that they are SHOWN.
+  // Claiming the latter is what made the redaction look free.
   const { error, said } = await callAndCatch();
 
   assert.equal(error.reason, "needs-re-entry", "a decrypt failure was blamed on the environment");

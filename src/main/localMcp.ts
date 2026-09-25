@@ -173,9 +173,27 @@ export class ConfigUnreadableError extends Error {
  * same file, and we introduced it in this branch: before it, nothing of this
  * kind reached the relay at all.
  *
- * The names are not thrown away, only kept off the wire. The main process logs
- * them, and the renderer gets them through `serverStatus().credentials.keys` —
- * the user owns the machine and needs to know which values to retype.
+ * The names are not thrown away, only kept off the wire: they are the `keys`
+ * property on this error, and `ensure` writes them to the main process log.
+ *
+ * **What they are NOT, at this head — a KNOWN GAP, stated as one rather than as
+ * coverage.** Nothing shows them to the user. `serverStatus` would return them
+ * under `credentials.keys`, but nothing asks it across the boundary: `grep -rn
+ * "serverStatus" src/` finds only this file, whose in-`src` callers are
+ * `testServer` and `authenticate` and neither reads `.credentials`; `ipc.ts`
+ * registers no handler for it; and `grep -rn "credentials" src/renderer
+ * src/preload src/shared src/main/ipc.ts` finds nothing at all. What a person
+ * actually sees is the panel row that `testServer` fills, and `said` is empty
+ * there because `ensure` throws before any child spawns — so the row falls back
+ * to this error's message and reads "…stored credentials could not be
+ * decrypted. Remove the server and add it again", with no indication of WHICH
+ * value. In a packaged build the log line above goes somewhere nobody opens.
+ *
+ * So redaction costs the user the name of the value they have to retype, and
+ * that cost is real and currently unpaid. Surfacing it in the panel is KYB-594
+ * and is deliberately not done in this change. An earlier version of this
+ * comment asserted that the renderer already had the names, which was false and
+ * made the redaction look free; it was not.
  *
  * **The store-unavailable message is deliberately NOT redacted.** It says the
  * OS credential store is shut and names the remedy, and it names no key, no

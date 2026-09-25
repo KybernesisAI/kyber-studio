@@ -4,10 +4,9 @@ import { useStore } from "@/lib/store";
 import {
   type McpPanelState,
   initialMcpPanelState,
-  panelAfterLoad,
-  panelAfterLoadFailure,
-  panelAfterSave,
-  panelAfterSaveFailure,
+  loadMcpPanel,
+  panelView,
+  saveMcpPanel,
 } from "@/lib/mcpPanel";
 import { Spinner } from "./Spinner";
 import { Icon } from "./primitives";
@@ -327,6 +326,16 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
    * here yet" on the load path and into a silently-failing Remove on the save
    * path. The decision now lives in `mcpPanel.ts`, where a test can call it;
    * this component applies what that returns and has no half to drop.
+   *
+   * Round 6 moved the ASKING there as well. `setPanel` is handed to
+   * `loadMcpPanel` and `saveMcpPanel` and is never invoked in this file, which
+   * is asserted rather than described — and so there is no site at which a
+   * condition could stand in front of an answer and drop it. That is the
+   * mutation round 5
+   * blocked on: `if (answer)` narrowed to `if (answer?.ok)` discarded a damaged
+   * config's `{ ok: false }`, left `servers` null, and restored the permanent
+   * `Loading…` with the whole suite green. The equivalent edit now has to be
+   * made inside `loadMcpPanel`, where a test drives it and fails.
    */
   const [panel, setPanel] = useState<McpPanelState>(initialMcpPanelState);
   const { servers: local, unreadable, saveError, loadError } = panel;
@@ -355,16 +364,12 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   >({});
 
   const refresh = async (): Promise<void> => {
-    // Branch on the answer, and catch a rejection. Handling only the happy one
-    // is what left `local` null on a damaged config, and null is what renders
-    // `Loading…` for ever; `void refresh()` discards a rejection just as
-    // thoroughly, so an unexpected throw here had exactly the same symptom.
-    try {
-      const answer = await window.studio?.mcpServers();
-      if (answer) setPanel((prev) => panelAfterLoad(prev, answer));
-    } catch (error) {
-      setPanel((prev) => panelAfterLoadFailure(prev, error));
-    }
+    // No branch, and none possible: `loadMcpPanel` folds the answer, the
+    // ABSENCE of an answer and a rejection, each into a stated state, and
+    // `test/mcp-panel-state.test.mjs` drives all three. Handling only the happy
+    // one is what left `local` null on a damaged config, and null is what
+    // renders `Loading…` for ever.
+    await loadMcpPanel(window.studio, setPanel);
     const cards = await window.studio?.connectors(agent);
     setRemote(
       (cards?.connectors ?? [])
@@ -429,27 +434,28 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
     void refresh();
   }, [agent]);
 
-  if (!local) return <div className="empty">Loading…</div>;
+  const term = query.trim().toLowerCase();
+  const matches = (name: string): boolean => !term || name.toLowerCase().includes(term);
+  // `?? []` and not a null check: the only state in which `servers` is null is
+  // the one `panelView` calls `loading`, and that returns two lines below
+  // before any of this is rendered.
+  const servers = local ?? [];
+  const shownLocal = servers.filter((s) => matches(s.name));
+  const shownRemote = remote.filter((s) => matches(s.name));
+
+  // What the local half shows, decided in `mcpPanel.ts` and switched on here.
+  // The decision used to be a chain of ternaries in the JSX below, which no
+  // test in this repo can render and therefore no test could hold.
+  const view = panelView(panel, shownLocal);
+
+  if (view.kind === "loading") return <div className="empty">Loading…</div>;
 
   const save = async (
     next: LocalMcpServer[],
     options?: SaveMcpServersOptions,
   ): Promise<void> => {
-    try {
-      const answer = await window.studio!.saveMcpServers(next, options);
-      setPanel((prev) => panelAfterSave(prev, answer));
-    } catch (error) {
-      // Every caller below is `void save(...)`, so without this a rejected
-      // write vanished into an unhandled promise and the row simply did not
-      // change — the user pressed Remove and nothing said no.
-      setPanel((prev) => panelAfterSaveFailure(prev, error));
-    }
+    await saveMcpPanel(window.studio, setPanel, next, options);
   };
-
-  const term = query.trim().toLowerCase();
-  const matches = (name: string): boolean => !term || name.toLowerCase().includes(term);
-  const shownLocal = local.filter((s) => matches(s.name));
-  const shownRemote = remote.filter((s) => matches(s.name));
 
   return (
     <>
@@ -596,7 +602,11 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
           Couldn’t read your servers: {loadError}
         </div>
       ) : null}
-      {unreadable ? (
+      {/* One switch over a decision already made, rather than a chain of
+          conditions. `panelView` picked the kind; every arm below only renders
+          it, so deleting an arm is visible as a kind nothing handles rather
+          than as a silently different screen. */}
+      {view.kind === "unreadable" ? (
         // Distinct from `Loading…` and distinct from “you have none”, because the
         // user’s response is distinct: we cannot tell what is configured, and
         // the only thing this panel can honestly offer is the way out.
@@ -605,7 +615,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
         <div className="empty" style={{ paddingBottom: 8 }}>
           Your list of servers on this computer is damaged and can’t be read, so
           nothing here can be changed.
-          <div className="pl__desc" style={{ marginTop: 6 }}>{unreadable.path}</div>
+          <div className="pl__desc" style={{ marginTop: 6 }}>{view.path}</div>
           <div className="ask__options" style={{ marginTop: 10 }}>
             <button
               className="btn"
@@ -615,9 +625,9 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
             </button>
           </div>
         </div>
-      ) : shownLocal.length ? (
+      ) : view.kind === "list" ? (
         <div className="pl__grid">
-          {shownLocal.map((s) => (
+          {view.servers.map((s) => (
             <div className="pl__row" key={s.id}>
               <span className="pl__icon" style={{ background: tint(s.name) }}>
                 {s.name.slice(0, 1)}
@@ -696,7 +706,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                     onClick={() => {
                       setMenu(null);
                       void save(
-                        local.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x)),
+                        servers.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x)),
                       );
                     }}
                   >
@@ -706,7 +716,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                     className="danger"
                     onClick={() => {
                       setMenu(null);
-                      void save(local.filter((x) => x.id !== s.id));
+                      void save(servers.filter((x) => x.id !== s.id));
                     }}
                   >
                     Remove
@@ -729,10 +739,15 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
           initial={editing ?? undefined}
           onDone={() => { setMode("none"); setEditing(null); void refresh(); }}
         />
-      ) : mode === "local" ? (
+      ) : mode === "local" && view.kind !== "unreadable" ? (
+        // The SAME condition as the button that opens this, and not only that
+        // button: `disabled` guards opening the form, so a form already open
+        // when the config goes unreadable went on taking a name, a command and
+        // a set of secrets, and then had the write refused. Closing it here
+        // drops the user back to the disabled button, which says why.
         <AddLocalServer
           onAdd={async (server) => {
-            await save([...local, server]);
+            await save([...servers, server]);
             setMode("none");
           }}
           onCancel={() => setMode("none")}
