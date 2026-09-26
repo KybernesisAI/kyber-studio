@@ -349,14 +349,27 @@ export type McpPanelView =
  * panel, the two add forms, and the per-row menu", and round 7's affordance
  * census made all three of those false in part. The census reaches every button
  * in BOTH add forms and in the per-row menu, and asserts for each whether it can
- * be pressed; `disabled` added to the local Add form's Cancel, to the remote
- * form's primary button, to the row's More or to Remove is a red test.
+ * be pressed; an UNCONDITIONAL `disabled` added to the local Add form's Cancel,
+ * to the remote form's primary button, to the row's More or to Remove is a red
+ * test.
+ *
+ * NARROWED 26 Sep. That sentence said `disabled` without qualification, and
+ * round 8 showed the difference matters: `disabled={!s.enabled}` on Remove was
+ * GREEN, because every fixture in the harness was `enabled: true` and no census
+ * row had ever seen a server that was turned off. A condition on anything the
+ * fixtures hold constant is invisible. A fixture that is turned off has been
+ * added, which closes that one; the general point stands — the census is only
+ * as wide as the states its fixtures can reach.
  *
  * What is still NOT covered: what pressing any of them DOES. Nothing submits
  * either add form, and Remove, Turn off, Connect and Check are never driven to
  * their effects. Nor is the remote half's LIST — the remote servers are always
  * empty in that harness, so no remote row is ever rendered and the four-way
  * primary slot a row carries is outside the census entirely.
+ *
+ * The recovery button is the one exception, and only partly: it is pressed and
+ * its write asserted in three states, while the census enumerates four. That
+ * remaining gap is KYB-597, with the measurement and the fix.
  */
 export function panelView(state: McpPanelState, visible: LocalMcpServer[]): McpPanelView {
   if (state.servers === null) return { kind: "loading" };

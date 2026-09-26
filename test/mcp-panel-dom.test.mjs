@@ -42,8 +42,17 @@ import { JSDOM } from "jsdom";
  * round 7 blocked on both — each of the four previous rounds fixed the instance
  * it was handed and the next round found the same defect one state along.
  *
- *  - THE AFFORDANCE CENSUS. Every button the panel body renders, in every state
- *    it renders one, with whether it can actually be PRESSED. Round 7's first
+ *  - THE AFFORDANCE CENSUS. Every button the panel body renders in every state
+ *    THIS FILE LISTS, with whether it can actually be PRESSED.
+ *
+ *    Read that scope literally, because review round 8 found both edges of it.
+ *    The census is as wide as its STATES list and no wider, and as wide as its
+ *    FIXTURES can reach and no wider — every fixture here was `enabled: true`
+ *    until round 8, so the row menu rendered "Turn off" in every row and
+ *    "Turn on" in none, and `disabled={!s.enabled}` on Remove was green. And it
+ *    measures ONE axis, `disabled`. It does not press what it enumerates, so a
+ *    guard that leaves a button pressable and makes the press do nothing is
+ *    invisible to it — measured, KYB-597. Round 7's first
  *    blocking finding was that `disabled` on the recovery button was pinned in
  *    the fresh damaged state and nowhere else, so `disabled={!!saveError}` on it
  *    was green: a user whose quarantine was refused once saw the escape hatch
@@ -76,6 +85,21 @@ import { JSDOM } from "jsdom";
  * rendered, and the buttons one carries — the primary slot, which is a four-way
  * branch between a spinner, Check and two kinds of Connect, plus Change/Share
  * and Remove — are all outside the census.
+ *
+ * ADDED AFTER ROUND 8, which found each of these by making a mutation stay
+ * green rather than by reading:
+ *
+ *  - The LOCAL row's primary slot is a three-way too — `<Spinner/>` while
+ *    `checking`, "Ready" once `result[id].ok`, and the `Connect` button
+ *    otherwise. Only the `Connect` arm is ever censused, because no fixture sets
+ *    `checking` or seeds `result`. The other two arms are not buttons, so a
+ *    change that renders one of them instead of `Connect` removes an affordance
+ *    the census WOULD see; a change WITHIN either is not covered.
+ *  - EFFICACY is not a class here. The recovery button is pressed and its write
+ *    asserted in three states; the census enumerates four. A guard in front of
+ *    the write keyed on a flag that is false in those three — `if (!loadError)`
+ *    is the measured one — is green. KYB-597 carries the measurement and the
+ *    fix. Do not read the census as protection against it.
  * Styling, layout and the modal's own open/close are not looked at. A regression
  * in any of those is NOT covered here.
  *
@@ -95,12 +119,21 @@ import { JSDOM } from "jsdom";
  *     assert.equal(node, null)    772 s   5,891 MB peak RSS   0 bytes of output
  *     assert.ok(!node)              2 s     274 MB            1,563-byte failure
  *
+ * (ROUND 7, quoted from notes and NOT re-run since — deliberately: reproducing
+ * the first one costs twelve minutes and six gigabytes, and the box does not
+ * recover on its own. Round 8's reviewer independently declined to reproduce it
+ * for the same reason, and was right to.)
+ *
  * Corroborated separately against a BARE React `<button>` alone in a root —
  * which is as far as it is safe to reproduce this deliberately. Re-measured on
  * this box on 25 Sep, both forms against the same rendered node:
  *
  *     assert.ok(!node)             63 bytes of message,     4 ms
  *     assert.equal(node, null)     17,012 bytes,            6 ms
+ *
+ * (Measured while preparing the round-7 FIXES, i.e. for commit `0cff7ee`. Round
+ * 8's reviewer then re-ran the same probe independently and got 63 and 17,244 —
+ * which is the point of the next paragraph.)
  *
  * Treat those two numbers as evidence of the DIRECTION and nothing more. They
  * are sensitive to what the element is: an earlier run of the same probe, on a
@@ -356,15 +389,45 @@ const arcana = {
   args: ["arcana.js"],
   enabled: true,
 };
+// TURNED OFF, and here for exactly that reason. Review round 8 found that every
+// fixture in this file was `enabled: true`, so the row menu rendered "Turn off"
+// in every census row and "Turn on" in none — and `disabled={!s.enabled}` on
+// Remove was green at 335/334/0 with both typechecks clean. You could not remove
+// a server you had turned off, and nothing here could see it. A census is only
+// as wide as the states its fixtures can reach.
+const dormant = {
+  id: "dormant",
+  name: "Dormant",
+  command: "node",
+  args: ["dormant.js"],
+  enabled: false,
+};
 
 /**
  * Every method the fake bridge exposes to the panel.
  *
  * Named as data because two things below are driven from it: the failure table,
  * which requires a stated expected behaviour for each, and a test that fails if
- * this list and the object `bridge()` builds ever disagree. Adding a method the
- * panel calls therefore costs a line here and an entry in `WHEN_IT_FAILS`, and
- * a method with no stated failure behaviour cannot be added quietly.
+ * this list and the object `bridge()` builds ever disagree.
+ *
+ * WHAT THOSE TWO GUARDS ACTUALLY COVER, corrected after round 8. Both compare
+ * things in THIS FILE to each other — the fake against this list, and
+ * `WHEN_IT_FAILS` against this list. Neither compares anything to what the
+ * COMPONENT calls. An earlier version of this comment said "a method with no
+ * stated failure behaviour cannot be added quietly", and that was false: it is
+ * a method added to the FAKE that cannot be added quietly.
+ *
+ * Eight methods `Plugins.tsx` calls are in neither table and fail nothing today
+ * — `addCustomConnector`, `connectMcpServer`, `connectService`,
+ * `disconnectService`, `openExternal`, `startMcpSignIn`, `testMcpServer`,
+ * `testRemoteMcp`. A ninth costs nothing to add. (`mcpServers` and
+ * `saveMcpServers` are absent from that list because the panel reaches them
+ * through `mcpPanel.ts` rather than naming them here.)
+ *
+ * Closing that would mean deriving the list from the component's source, which
+ * is a different kind of test from the rest of this file — it reads source text
+ * rather than driving behaviour, and a mutation only a text-scan can catch is
+ * one this file's own rule says not to count as caught. Stated, not fixed.
  */
 const BRIDGE_METHODS = ["connectors", "mcpServers", "saveMcpServers"];
 
@@ -789,9 +852,14 @@ test("DOM: a refused recovery can be pressed AGAIN, and the second press writes"
 
 // ── THE AFFORDANCE CENSUS ───────────────────────────────────────────────────
 //
-// Every button the panel body renders, in every state it renders one, with
+// Every button the panel body renders in every state THIS LIST NAMES, with
 // whether it can actually be PRESSED — asserted by EXACT equality against a
 // stated list, not by looking up the one button a test cares about.
+//
+// Two limits, both found by round 8 and both stated rather than fixed. The
+// census is bounded by its fixtures: a label only some `enabled` value produces
+// is unreachable unless a fixture produces it. And it measures `disabled` and
+// nothing else — it never presses. See KYB-597.
 //
 // Why exact equality rather than a lookup. Four rounds on this PR each pinned
 // the instance they were handed: round 5 pinned that the local Add button is
@@ -860,6 +928,12 @@ const STATES = [
     // so anything that strands a user in it strands them with no way out.
     reach: () => mount(bridge({ pending: ["mcpServers"] }).api),
     expect: [],
+    // The only row whose expectation is empty, so the only one that would pass
+    // against a screen with no buttons for the WRONG reason — a tab click that
+    // silently landed somewhere else, say. `censusOf` asserts `.modal__body`
+    // exists, but that element is on the Apps tab too. Pair it with something
+    // positive so this row fails for the right reason.
+    alsoShows: /Loading…/,
   },
   {
     name: "a damaged config, freshly read",
@@ -922,6 +996,28 @@ const STATES = [
       { label: "Turn off", pressable: true },
       { label: "Remove", pressable: true },
       ...ROW,
+      ADD_REMOTE,
+      addLocal(true),
+    ],
+  },
+  {
+    // The same menu over a server that is TURNED OFF. Not a duplicate of the row
+    // above: the menu's middle entry is `{s.enabled ? "Turn off" : "Turn on"}`,
+    // so the two fixtures reach two different labels, and anything conditioned
+    // on `enabled` is invisible from the row above alone.
+    name: "a row menu open on a server that is turned off",
+    view: "list",
+    reach: async () => {
+      const panel = await mount(bridge({ servers: [dormant] }).api);
+      await click(button(panel.host, "More") ?? panel.host.querySelector('button[title="More"]'));
+      await settle();
+      return panel;
+    },
+    expect: [
+      ...ROW,
+      { label: "Check again", pressable: true },
+      { label: "Turn on", pressable: true },
+      { label: "Remove", pressable: true },
       ADD_REMOTE,
       addLocal(true),
     ],
@@ -990,6 +1086,10 @@ for (const state of STATES) {
     const panel = await state.reach();
     try {
       assert.deepEqual(censusOf(panel.host), state.expect);
+      // A row whose whole expectation is "no buttons" would pass against the
+      // wrong screen. `alsoShows` is how such a row states what it IS.
+      if (state.alsoShows) assert.match(panel.text(), state.alsoShows);
+      else assert.ok(state.expect.length > 0, "a row with no buttons must set alsoShows");
     } finally {
       await panel.unmount();
       takeEscaped();
