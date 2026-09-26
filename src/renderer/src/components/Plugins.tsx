@@ -1,6 +1,13 @@
 import { type ReactNode, useEffect, useState } from "react";
-import type { LocalMcpServer } from "@shared/ipc";
+import type { LocalMcpServer, SaveMcpServersOptions } from "@shared/ipc";
 import { useStore } from "@/lib/store";
+import {
+  type McpPanelState,
+  initialMcpPanelState,
+  loadMcpPanel,
+  panelView,
+  saveMcpPanel,
+} from "@/lib/mcpPanel";
 import { Spinner } from "./Spinner";
 import { Icon } from "./primitives";
 
@@ -309,7 +316,38 @@ function ConnectorDetail({
  * they can paste a line from a README.
  */
 function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
-  const [local, setLocal] = useState<LocalMcpServer[] | null>(null);
+  /**
+   * ONE piece of state, applied whole.
+   *
+   * It was three — `local`, `unreadable`, `saveError` — and each answer set
+   * them one at a time. Review round 4 showed what that cost: deleting either
+   * of the two `unreadable` setters was a free mutation, green across the whole
+   * suite, and it turned a config the app cannot read into "Nothing running
+   * here yet" on the load path and into a silently-failing Remove on the save
+   * path. The decision now lives in `mcpPanel.ts`, where a test can call it;
+   * this component applies what that returns and has no half to drop.
+   *
+   * Round 6 moved the ASKING there as well: `setPanel` is handed to
+   * `loadMcpPanel` and `saveMcpPanel` and is not invoked in this file. That
+   * killed round 5's mutation — `if (answer)` narrowed to `if (answer?.ok)`
+   * discarded a damaged config's `{ ok: false }`, left `servers` null and
+   * restored the permanent `Loading…` with the whole suite green — because the
+   * equivalent edit now has to be written inside `loadMcpPanel`, where
+   * `test/mcp-panel-state.test.mjs` drives it.
+   *
+   * **WITHDRAWN 25 Sep.** This comment used to go on to say that there was
+   * therefore "no site at which a condition could stand in front of an answer
+   * and drop it". That was false, and round 6 found two of them in this very
+   * file — the CALLS, at the end of `refresh()` and inside `save()`. Both
+   * `if (window.studio) await loadMcpPanel(...)` and `if (!unreadable) await
+   * saveMcpPanel(...)` typechecked under both tsconfigs, built, and left the
+   * suite green at 304/304. Moving the decision one level further would only
+   * move the call site again. What holds those two now is
+   * `test/mcp-panel-dom.test.mjs`, which mounts this component, presses the
+   * recovery button and reads what is on screen.
+   */
+  const [panel, setPanel] = useState<McpPanelState>(initialMcpPanelState);
+  const { servers: local, unreadable, saveError, loadError } = panel;
   const [remote, setRemote] = useState<
     {
       slug: string;
@@ -335,8 +373,17 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   >({});
 
   const refresh = async (): Promise<void> => {
-    const servers = await window.studio?.mcpServers();
-    if (servers) setLocal(servers);
+    // No branch here, and putting one back is exactly what round 6 did:
+    // `if (window.studio)` in front of this line skipped the load whenever the
+    // preload script had not run, left `servers` null and brought the permanent
+    // `Loading…` back, with the whole suite green.
+    // `test/mcp-panel-dom.test.mjs` mounts the panel with no bridge at all and
+    // fails on it. `loadMcpPanel` itself folds the answer, the ABSENCE of an
+    // answer and a rejection each into a stated state, and
+    // `test/mcp-panel-state.test.mjs` drives all three; handling only the happy
+    // one is what left `local` null on a damaged config, and null is what
+    // renders `Loading…` for ever.
+    await loadMcpPanel(window.studio, setPanel);
     const cards = await window.studio?.connectors(agent);
     setRemote(
       (cards?.connectors ?? [])
@@ -401,16 +448,32 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
     void refresh();
   }, [agent]);
 
-  if (!local) return <div className="empty">Loading…</div>;
-
-  const save = async (next: LocalMcpServer[]): Promise<void> => {
-    setLocal(await window.studio!.saveMcpServers(next));
-  };
-
   const term = query.trim().toLowerCase();
   const matches = (name: string): boolean => !term || name.toLowerCase().includes(term);
-  const shownLocal = local.filter((s) => matches(s.name));
+  // `?? []` and not a null check: the only state in which `servers` is null is
+  // the one `panelView` calls `loading`, and that returns two lines below
+  // before any of this is rendered.
+  const servers = local ?? [];
+  const shownLocal = servers.filter((s) => matches(s.name));
   const shownRemote = remote.filter((s) => matches(s.name));
+
+  // What the local half shows, decided in `mcpPanel.ts` and switched on here.
+  // The decision used to be a chain of ternaries in the JSX below, which no
+  // test reached until round 7 added `test/mcp-panel-dom.test.mjs`.
+  //
+  // `shownLocal` is an argument and not a detail. Passing `servers` here
+  // instead silently disables the search box for local servers, which round 6
+  // found green; the DOM harness types into the box and reads what is left.
+  const view = panelView(panel, shownLocal);
+
+  if (view.kind === "loading") return <div className="empty">Loading…</div>;
+
+  const save = async (
+    next: LocalMcpServer[],
+    options?: SaveMcpServersOptions,
+  ): Promise<void> => {
+    await saveMcpPanel(window.studio, setPanel, next, options);
+  };
 
   return (
     <>
@@ -547,9 +610,42 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
       <div className="pl__group" style={{ marginTop: shownRemote.length ? 18 : 0 }}>
         On this computer
       </div>
-      {shownLocal.length ? (
+      {saveError ? (
+        <div className="pl__meta" style={{ marginBottom: 8 }}>
+          That didn’t save: {saveError}
+        </div>
+      ) : null}
+      {loadError ? (
+        <div className="pl__meta" style={{ marginBottom: 8 }}>
+          Couldn’t read your servers: {loadError}
+        </div>
+      ) : null}
+      {/* One switch over a decision already made, rather than a chain of
+          conditions. `panelView` picked the kind; every arm below only renders
+          it, so deleting an arm is visible as a kind nothing handles rather
+          than as a silently different screen. */}
+      {view.kind === "unreadable" ? (
+        // Distinct from `Loading…` and distinct from “you have none”, because the
+        // user’s response is distinct: we cannot tell what is configured, and
+        // the only thing this panel can honestly offer is the way out.
+        // Quarantine renames the damaged file aside — the bytes survive — and
+        // writes an empty list, which is what makes the panel usable again.
+        <div className="empty" style={{ paddingBottom: 8 }}>
+          Your list of servers on this computer is damaged and can’t be read, so
+          nothing here can be changed.
+          <div className="pl__desc" style={{ marginTop: 6 }}>{view.path}</div>
+          <div className="ask__options" style={{ marginTop: 10 }}>
+            <button
+              className="btn"
+              onClick={() => void save([], { onUnreadableConfig: "quarantine" })}
+            >
+              Move it aside and start again
+            </button>
+          </div>
+        </div>
+      ) : view.kind === "list" ? (
         <div className="pl__grid">
-          {shownLocal.map((s) => (
+          {view.servers.map((s) => (
             <div className="pl__row" key={s.id}>
               <span className="pl__icon" style={{ background: tint(s.name) }}>
                 {s.name.slice(0, 1)}
@@ -628,7 +724,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                     onClick={() => {
                       setMenu(null);
                       void save(
-                        local.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x)),
+                        servers.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x)),
                       );
                     }}
                   >
@@ -638,7 +734,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                     className="danger"
                     onClick={() => {
                       setMenu(null);
-                      void save(local.filter((x) => x.id !== s.id));
+                      void save(servers.filter((x) => x.id !== s.id));
                     }}
                   >
                     Remove
@@ -661,10 +757,15 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
           initial={editing ?? undefined}
           onDone={() => { setMode("none"); setEditing(null); void refresh(); }}
         />
-      ) : mode === "local" ? (
+      ) : mode === "local" && view.kind !== "unreadable" ? (
+        // The SAME condition as the button that opens this, and not only that
+        // button: `disabled` guards opening the form, so a form already open
+        // when the config goes unreadable went on taking a name, a command and
+        // a set of secrets, and then had the write refused. Closing it here
+        // drops the user back to the disabled button, which says why.
         <AddLocalServer
           onAdd={async (server) => {
-            await save([...local, server]);
+            await save([...servers, server]);
             setMode("none");
           }}
           onCancel={() => setMode("none")}
@@ -674,7 +775,22 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
           <button className="btn" onClick={() => setMode("remote")}>
             <Icon name="plus" size={13} /> Add by URL
           </button>
-          <button className="btn" onClick={() => setMode("local")}>
+          {/*
+            Dead over a damaged config: `saveServers` refuses by default, so the
+            form would take a name, a command and — worst — a set of secrets,
+            and then decline to write any of it. Adding by URL is untouched,
+            because a remote server has nothing to do with this file.
+          */}
+          <button
+            className="btn"
+            disabled={!!unreadable}
+            title={
+              unreadable
+                ? "Move the damaged list aside first — nothing here can be written until then"
+                : undefined
+            }
+            onClick={() => setMode("local")}
+          >
             <Icon name="plus" size={13} /> Add one on this computer
           </button>
         </div>

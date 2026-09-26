@@ -31,6 +31,43 @@ export type SafeStorageLike = {
   getSelectedStorageBackend: () => string;
 };
 
+/**
+ * Ask the OS whether it can encrypt — at most once for the life of the process.
+ *
+ * @remarks
+ * Availability is **latched by the OS**, not merely expensive to ask about.
+ * Measured on Linux Mint, Electron 34.5.8: a run that begins with the keyring
+ * locked stays broken after the keyring is unlocked mid-run, and a run that
+ * begins unlocked keeps working after it is locked again. So a second ask can
+ * only ever repeat the first answer — at the price of a second unlock dialog,
+ * because asking is the thing that raises one.
+ *
+ * It lives here, beside `SafeStorageLike`, rather than in either caller. The
+ * session layer (`controlPlane.ts`) and the MCP layer (`localMcp.ts`) need the
+ * same single answer, and a cache held by either is a cache the other misses:
+ * `localMcp.ts` had one and `controlPlane.ts` asked raw, twice, so a signed-in
+ * user with an MCP server could be prompted more than once. Having the session
+ * layer import the MCP layer would have fixed the count and inverted the
+ * dependency; this file already owns the abstraction and depends on nothing.
+ *
+ * `safeStorage` is injected for the same reason as everywhere else in this
+ * file: no Electron import, so `node --test` can load it.
+ *
+ * There is deliberately no reset hook. The answer is process-wide by design,
+ * and this suite's convention for wanting a different one is a different
+ * process — one test file per answer, which is why
+ * `local-mcp-call-sites.test.mjs` (available) and
+ * `local-mcp-locked-store.test.mjs` (locked) are two files and not two tests.
+ */
+let availabilityAnswer: boolean | null = null;
+
+export function isCredentialStoreAvailable(
+  safeStorage: Pick<SafeStorageLike, "isEncryptionAvailable">,
+): boolean {
+  if (availabilityAnswer === null) availabilityAnswer = safeStorage.isEncryptionAvailable();
+  return availabilityAnswer;
+}
+
 export type CredentialStorageReport = {
   platform: string;
   encryptionAvailable: boolean;
@@ -182,7 +219,62 @@ export function createCredentialStorageReporter(
     if (reported) return;
     reported = true;
     schedule(() => {
-      log(describeCredentialStorage(collectCredentialStorage(safeStorage)));
+      log(describeStorageDiagnostic(collectStorageDiagnostic(safeStorage)));
     });
   };
+}
+
+/**
+ * The half of the report that can be gathered without opening the keyring.
+ *
+ * @remarks
+ * Measured on Linux Mint, Electron 34.5.8, keyring locked: six calls to
+ * `getSelectedStorageBackend()` over thirty seconds raised **no** dialog and
+ * returned `gnome_libsecret` every time, while the first call to
+ * `isEncryptionAvailable()` raised the unlock prompt immediately. The two
+ * questions have different costs, and until KYB-590 they were asked together.
+ *
+ * That mattered once detection became lazy. The diagnostic is worth printing at
+ * launch — knowing a machine chose `gnome_libsecret` rather than `kwallet6` is
+ * the first thing anyone asks in support — but the availability question now
+ * belongs at first credential use, where a prompt is something the user just
+ * asked for. Splitting them keeps the line and drops its cost.
+ *
+ * It also means a user who never signs in and configures no MCP server is never
+ * asked to unlock anything, which is the behaviour KYB-504's decision (a)
+ * accepted the loss of and this reverses.
+ */
+export type StorageDiagnostic = {
+  platform: string;
+  /** Linux only. `null` off Linux, and `null` if the call failed. */
+  backend: string | null;
+  override: string | null;
+};
+
+export function collectStorageDiagnostic(
+  safeStorage: Pick<SafeStorageLike, "getSelectedStorageBackend">,
+  env: { platform: string; argv: readonly string[] } = process,
+): StorageDiagnostic {
+  let backend: string | null = null;
+  if (env.platform === "linux") {
+    try {
+      backend = safeStorage.getSelectedStorageBackend();
+    } catch {
+      backend = null;
+    }
+  }
+  return { platform: env.platform, backend, override: readPasswordStoreOverride(env.argv) };
+}
+
+/**
+ * The startup line. Says plainly that availability was not asked, so nobody
+ * reads its absence as a `false`.
+ */
+export function describeStorageDiagnostic(report: StorageDiagnostic): string {
+  const backend =
+    report.platform === "linux" ? (report.backend ?? "unknown") : "n/a (Linux-only API)";
+  return (
+    `[storage] platform=${report.platform} backend=${backend} ` +
+    `passwordStore=${report.override ?? "auto"} encryptionAvailable=deferred`
+  );
 }

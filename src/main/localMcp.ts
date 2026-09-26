@@ -1,8 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { app } from "electron";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { app, safeStorage } from "electron";
 import { writeAtomic } from "./atomicWrite";
+import { isCredentialStoreAvailable } from "./credentialStorage";
+import { looksSealed, sealEnv, unsealEnv } from "./mcpSecrets";
 
 /**
  * MCP servers running on the user's own machine, reachable by a remote agent.
@@ -57,22 +59,355 @@ function configPath(): string {
   return join(dir, "local-mcp.json");
 }
 
-export function listServers(): LocalMcpServer[] {
-  try {
-    const raw = readFileSync(configPath(), "utf8");
-    const parsed = JSON.parse(raw) as { servers?: LocalMcpServer[] };
-    return parsed.servers ?? [];
-  } catch {
-    return [];
+/**
+ * Values the user typed that could not be sealed, kept for this session only.
+ *
+ * Same protocol as the session token: if the OS will not encrypt, we do not
+ * write the secret in the clear, but we do not throw the user's work away
+ * either. The server runs with what they typed until Studio restarts, and the
+ * warning says so.
+ */
+const unpersistedEnv = new Map<string, Record<string, string>>();
+
+/**
+ * The `SafeStorageLike` this module hands to `mcpSecrets`.
+ *
+ * Availability is asked through `isCredentialStoreAvailable`, which memoises
+ * it for the life of the process. That cache used to live here, which made it
+ * the MCP layer's cache: `controlPlane.ts` asked the OS raw on both the
+ * session read and the session write, so a signed-in user with an MCP server
+ * could be prompted more than once for an answer the OS had already latched.
+ * It now sits in `credentialStorage.ts`, which both layers may depend on, and
+ * the reasoning is written down there.
+ */
+const credentialStore = {
+  isEncryptionAvailable: (): boolean => isCredentialStoreAvailable(safeStorage),
+  getSelectedStorageBackend: () => safeStorage.getSelectedStorageBackend(),
+  encryptString: (plain: string) => safeStorage.encryptString(plain),
+  decryptString: (buf: Buffer) => safeStorage.decryptString(buf),
+};
+
+/**
+ * Per-server credential failures. `needs-re-entry` ONLY, and the type says so.
+ *
+ * `store-unavailable` deliberately does not live here, and the distinction is
+ * not pedantry. Availability is latched for the life of the process — measured:
+ * a run that starts with the keyring locked stays broken after an unlock — so
+ * it is one fact about the app, not N facts about N servers. Keying it by
+ * server id stored N copies of that one fact and let them drift: a server added
+ * after the failure, or one the user never started, had no entry at all and so
+ * reported healthy on a machine where nothing could possibly decrypt. And
+ * because only `ensure()` ever wrote to this map, a user who never started a
+ * server would never be told the store was shut.
+ *
+ * So `store-unavailable` is DERIVED, in `serverStatus`, from the one cached
+ * answer. `needs-re-entry` genuinely is per server — it names the values on
+ * that server that would not open — and stays.
+ */
+const credentialFailure = new Map<string, { reason: "needs-re-entry"; keys: string[] }>();
+
+/**
+ * Which servers have a per-server credential failure recorded.
+ *
+ * Exported so the invariant above is checkable rather than merely stated: a
+ * `store-unavailable` machine must record NOTHING here, however many servers
+ * fail to start, because that condition is app-level.
+ */
+export function credentialFailureIds(): string[] {
+  return [...credentialFailure.keys()].sort();
+}
+
+/**
+ * The config file is present but we cannot tell what it says.
+ *
+ * A distinct type because the caller's response is distinct. Every other
+ * failure out of `listServers` is a bug or a disk fault; this one is a state a
+ * user can be in and can be walked out of, and KYB-594 renders it.
+ *
+ * Two things this carries, and one it deliberately does not:
+ *
+ * `code` is here so a handler can copy it onto a value. An earlier comment
+ * claimed it was here so the error "survives structured clone across IPC, where
+ * `instanceof` does not". That was FALSE and is worth recording, because it
+ * made an unreachable recovery path look wired: Electron answers a rejected
+ * `ipcMain.handle` with the error's `toString()` — a string — and the renderer
+ * throws a fresh plain `Error` built from it. `instanceof` is gone AND so is
+ * `code`, and so is `path`; `name` is `"Error"`. Nothing of this class reaches
+ * web content by being thrown. It reaches it by being turned into a
+ * `McpServersResult` in `ipc.ts`, which is why that function exists.
+ *
+ * `path` is a PROPERTY and not part of the message, which is the other half of
+ * the same point. `listServers` is on the relay path — a `servers/list` request
+ * against a damaged config throws through `executeLocalAction`, and
+ * `localExec.ts` posts `e.message` to the control plane. Interpolating the
+ * config path into the message therefore sent the user's `userData` directory,
+ * and with it their home directory and their username, to a remote agent that
+ * asked only which servers exist. The main process may read `path`; the wire
+ * gets the message, and the message names no file.
+ */
+export class ConfigUnreadableError extends Error {
+  readonly code = "MCP_CONFIG_UNREADABLE";
+  readonly path: string;
+
+  constructor(path: string, detail: string, options?: { cause?: unknown }) {
+    super(`the MCP server list could not be read: ${detail}`, options);
+    this.name = "ConfigUnreadableError";
+    this.path = path;
   }
 }
 
-export function saveServers(servers: LocalMcpServer[]): void {
+/**
+ * The stored environment for a server could not be opened.
+ *
+ * A distinct class for the same reason `ConfigUnreadableError` is one, and with
+ * the same discipline about what goes in the message.
+ *
+ * **`keys` is a PROPERTY and is never interpolated into `message`.** `ensure`
+ * is on the relay path: `callServer` runs from `executeLocalAction`, and the
+ * catch in `localExec.ts` posts `e.message` to `/api/local-exec/responses`. A
+ * message that named the values that would not open therefore told a remote
+ * agent the SCHEMA of the user's secrets — `DATABASE_URL`,
+ * `ACME_INTERNAL_TOKEN` — and with it which vendors and internal systems this
+ * machine talks to, in answer to a request to call a tool. That is the same
+ * species as the two path leaks closed in 4163f64, on the same wire, in the
+ * same file, and we introduced it in this branch: before it, nothing of this
+ * kind reached the relay at all.
+ *
+ * The names are not thrown away, only kept off the wire: they are the `keys`
+ * property on this error, and `ensure` writes them to the main process log.
+ *
+ * **What they are NOT, at this head — a KNOWN GAP, stated as one rather than as
+ * coverage.** Nothing shows them to the user. `serverStatus` would return them
+ * under `credentials.keys`, but nothing asks it across the boundary: `grep -rn
+ * "serverStatus" src/` finds only this file, whose in-`src` callers are
+ * `testServer` and `authenticate` and neither reads `.credentials`; `ipc.ts`
+ * registers no handler for it; and `grep -rn "credentials" src/renderer
+ * src/preload src/shared src/main/ipc.ts` finds no code that reads it — one
+ * hit, a prose comment at `src/preload/index.ts:7`. What a person
+ * actually sees is the panel row that `testServer` fills, and `said` is empty
+ * there because `ensure` throws before any child spawns — so the row falls back
+ * to this error's message and reads "…stored credentials could not be
+ * decrypted. Remove the server and add it again", with no indication of WHICH
+ * value. In a packaged build the log line above goes somewhere nobody opens.
+ *
+ * So redaction costs the user the name of the value they have to retype, and
+ * that cost is real and currently unpaid. Surfacing it in the panel is KYB-594
+ * and is deliberately not done in this change. An earlier version of this
+ * comment asserted that the renderer already had the names, which was false and
+ * made the redaction look free; it was not.
+ *
+ * **The store-unavailable message is deliberately NOT redacted.** It says the
+ * OS credential store is shut and names the remedy, and it names no key, no
+ * path and no value: it is a fact about the machine's state, not about the
+ * user's data. Stripping it would cost the one diagnosable thing a remote agent
+ * could report back — "your keyring is locked" — and buy nothing, because the
+ * message discloses nothing the request itself did not already imply.
+ */
+export class ServerCredentialsError extends Error {
+  readonly code = "MCP_CREDENTIALS_UNAVAILABLE";
+  readonly reason: "store-unavailable" | "needs-re-entry";
+  /** Names of the values that would not open. Empty for `store-unavailable`. */
+  readonly keys: string[];
+
+  constructor(
+    reason: "store-unavailable" | "needs-re-entry",
+    serverName: string,
+    keys: string[] = [],
+  ) {
+    // Two messages because the remedies are two: one is the environment, the
+    // other is the value. Neither says "retry" — neither is retryable.
+    super(
+      reason === "store-unavailable"
+        ? `${serverName}'s credentials could not be read: the OS credential store is not open. Unlock your keyring and restart Studio.`
+        : `${serverName}'s stored credentials could not be decrypted. Remove the server and add it again.`,
+    );
+    this.name = "ServerCredentialsError";
+    this.reason = reason;
+    this.keys = keys;
+  }
+}
+
+export function listServers(): LocalMcpServer[] {
+  const path = configPath();
+  // Absent is a first run, and `[]` is the honest answer to it.
+  if (!existsSync(path)) return [];
+  // Present-but-unreadable is NOT a first run, and answering `[]` is what let a
+  // damaged file become an empty one: the renderer holds that `[]` and the next
+  // toggle writes it back over the user's servers. Let it throw. KYB-590.
+  //
+  // Note this deliberately does NOT decrypt. `listServers` runs on every agent
+  // request, and asking the OS about the keyring is what raises the unlock
+  // prompt — see `ensure`, which opens the values at the one point that needs
+  // them.
+  //
+  // "Unreadable" includes PARSES-BUT-MEANINGLESS. `return parsed.servers ?? []`
+  // answered `{}`, `{"servers": null}` and a top-level `[]` with an empty list,
+  // which is the same dishonest empty one level up: the renderer holds that
+  // `[]` and the next save makes it true. A file that does not carry a
+  // well-formed `servers` array tells us nothing about the user's servers, and
+  // the honest answer to "I cannot tell" is not "there are none".
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (error) {
+    throw new ConfigUnreadableError(path, "the file could not be read", { cause: error });
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    // A fixed detail, not the SyntaxError's message, for the same reason the
+    // path is not in the message: this travels to a remote agent. V8 quotes the
+    // offending source back at you — `Unexpected token ']', ..."project"},]}"
+    // is not valid JSON` — and the source here is the user's config, which
+    // carries `cwd` and so carries their home directory. The real error is kept
+    // as `cause` for whoever is reading the main-process console.
+    throw new ConfigUnreadableError(path, "it is not valid JSON", { cause: error });
+  }
+
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new ConfigUnreadableError(path, "the top level is not a JSON object");
+  }
+  const servers = (parsed as { servers?: unknown }).servers;
+  if (!Array.isArray(servers)) {
+    throw new ConfigUnreadableError(path, "there is no `servers` array");
+  }
+  // A server with no id cannot be addressed, saved over, or deleted — it is not
+  // a server, and treating the file as intact would lose whatever it was.
+  const bad = servers.findIndex(
+    (s) => typeof s !== "object" || s === null || typeof (s as { id?: unknown }).id !== "string",
+  );
+  if (bad !== -1) {
+    throw new ConfigUnreadableError(path, `servers[${bad}] has no string \`id\``);
+  }
+
+  return servers as LocalMcpServer[];
+}
+
+/**
+ * Move a damaged config aside so a write can proceed without destroying it.
+ *
+ * Renamed, never deleted: the bytes are the only copy of whatever the user had,
+ * and a hand-edit that lost a brace is recoverable by a person reading the
+ * file. Returns where it went, so a caller can say.
+ *
+ * The timestamp has its colons flattened — `:` is legal in a filename on the
+ * two platforms this app is developed on and illegal on the third.
+ */
+function quarantineConfig(path: string): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  let aside = `${path}.corrupt-${stamp}`;
+  // Two damaged writes inside one millisecond is unlikely and not impossible,
+  // and the one thing this function must never do is overwrite the first copy.
+  for (let n = 2; existsSync(aside); n += 1) aside = `${path}.corrupt-${stamp}-${n}`;
+  renameSync(path, aside);
+  console.warn(`[mcp] ${path} was unreadable; moved to ${aside} and started a new one.`);
+  return aside;
+}
+
+/** How a save should behave when the config already on disk cannot be read. */
+export interface SaveServersOptions {
+  /**
+   * `refuse` (the default) throws {@link ConfigUnreadableError} and writes
+   * nothing. `quarantine` renames the damaged file aside and writes the new
+   * config — the explicit, user-initiated way out, which KYB-594 wires to a
+   * button. It is opt-in precisely because the default must keep refusing:
+   * silently writing over a file we could not read is how a damaged config
+   * became an empty one in the first place.
+   */
+  onUnreadableConfig?: "refuse" | "quarantine";
+}
+
+export function saveServers(
+  servers: LocalMcpServer[],
+  options: SaveServersOptions = {},
+): void {
   // Atomic, and 0600, and both halves matter here — see ./atomicWrite. A torn
   // write of this file loses the user's configured servers including `env`,
-  // and `listServers` answers a torn file with `[]`, which the next save then
-  // makes permanent. KYB-582.
-  writeAtomic(configPath(), JSON.stringify({ servers }, null, 2), { mode: 0o600 });
+  // and `listServers` USED to answer a torn file with `[]`, which the next save
+  // then made permanent. KYB-582. It now refuses to answer at all, which is the
+  // belt to atomicWrite's braces rather than a replacement for it.
+  // Read what is stored BEFORE writing. A value we cannot seal is left exactly
+  // as it was rather than replaced by a plaintext copy of itself — and if this
+  // read throws, the file is damaged and we must not write over it.
+  //
+  // This read is also why a damaged config used to block EVERY write — add,
+  // remove, toggle — leaving the user unable to delete the broken server from
+  // inside the app. Refusing is still right by default, but there is now a way
+  // out that does not destroy the bytes.
+  let previousServers: LocalMcpServer[];
+  try {
+    previousServers = listServers();
+  } catch (error) {
+    if (!(error instanceof ConfigUnreadableError) || options.onUnreadableConfig !== "quarantine") {
+      throw error;
+    }
+    quarantineConfig(error.path);
+    previousServers = [];
+  }
+  const stored = new Map(previousServers.map((s) => [s.id, s] as const));
+
+  const next = servers.map((server) => {
+    const previous = stored.get(server.id)?.env;
+
+    // The store is shut: stored secrets are untouchable, in BOTH directions.
+    // Not merely "we cannot write a new one" — we must not destroy one either,
+    // and clearing the env box is a destruction. Review found the asymmetry:
+    // an empty env used to be written through before this check ran, so on a
+    // machine that provably cannot re-seal, a stored value could be deleted
+    // and never recreated. Whatever is on disk stays on disk until the user is
+    // somewhere the OS will encrypt.
+    if (!credentialStore.isEncryptionAvailable()) {
+      const typed = Object.fromEntries(
+        // `looksSealed`, not `isSealed`: the prefix alone is a claim about the
+        // shape of the string, and a user may legitimately type a key that
+        // starts with `kyb:v1:`. Filtering on the prefix classified that as
+        // ciphertext, dropped it from the write, and — the filtered set being
+        // empty — skipped the warning too, so the value vanished in silence.
+        // Every other decision in mcpSecrets.ts uses the round-trip test; so
+        // does this one now.
+        Object.entries(server.env ?? {}).filter(([, value]) => !looksSealed(value)),
+      );
+      if (Object.keys(typed).length > 0) {
+        unpersistedEnv.set(server.id, typed);
+        console.warn(
+          `[mcp] OS encryption unavailable — ${server.id}'s environment is kept in memory only. Unlock your keyring and restart Studio to store it.`,
+        );
+      } else {
+        unpersistedEnv.delete(server.id);
+      }
+      return previous ? { ...server, env: previous } : { ...server, env: {} };
+    }
+
+    if (!server.env || Object.keys(server.env).length === 0) {
+      unpersistedEnv.delete(server.id);
+      return server;
+    }
+
+    const sealed = sealEnv(credentialStore, server.env);
+    if (sealed.ok) {
+      unpersistedEnv.delete(server.id);
+      return { ...server, env: sealed.env };
+    }
+
+    // store-unavailable. controlPlane.ts makes the same call for the session
+    // token: if the OS refuses encryption we do not silently fall back to
+    // plaintext. Keep the values usable for this session, persist nothing new,
+    // and leave anything already stored untouched.
+    // Unreachable: availability was checked above. Kept as a total function
+    // rather than a cast, so a future change to sealEnv cannot silently fall
+    // through into writing plaintext.
+    unpersistedEnv.set(server.id, server.env);
+    return { ...server, env: previous ?? {} };
+  });
+
+  // A deleted server's key must not outlive the delete. Plugins.tsx removes by
+  // saving the list without it, so neither delete above ever runs for it.
+  const live = new Set(servers.map((s) => s.id));
+  for (const id of unpersistedEnv.keys()) if (!live.has(id)) unpersistedEnv.delete(id);
+
+  writeAtomic(configPath(), JSON.stringify({ servers: next }, null, 2), { mode: 0o600 });
 }
 
 /**
@@ -89,10 +424,48 @@ function ensure(server: LocalMcpServer): Running {
   // app inherits a minimal PATH, and `npx` installed by nvm or Homebrew is not
   // on it. Spawning directly fails with ENOENT for a command that works
   // perfectly in the user's terminal.
+  // Open the stored credentials HERE, at the one point in the codebase that
+  // needs the plaintext — not at list time, which is hot and would prompt.
+  const opened = unsealEnv(credentialStore, server.env ?? {});
+  const pending = unpersistedEnv.get(server.id);
+  let env: Record<string, string>;
+  if (opened.ok) {
+    credentialFailure.delete(server.id);
+    // Session-typed values layer OVER the opened ones. Both halves are
+    // plaintext here: `pending` is filtered to unsealed values at save time.
+    env = { ...opened.env, ...(pending ?? {}) };
+  } else {
+    // Review found the hole this closes. The previous code fell back to
+    // `pending` whenever it existed — but `pending` came from the renderer,
+    // and the renderer holds SEALED strings for every value the user did not
+    // personally retype. That handed the child process `kyb:v1:...` as its
+    // DATABASE_URL, and cleared the failure marker on the way past, so the
+    // server reported healthy while its connection string was base64.
+    //
+    // If the stored values will not open we cannot build a correct
+    // environment, whatever the user typed this session. Refuse and say so.
+    //
+    // Only `needs-re-entry` is recorded per server. `store-unavailable` is a
+    // fact about the process, derived in `serverStatus` from the one cached
+    // availability answer — see the comment on `credentialFailure`.
+    // Refuse loudly rather than starting a server that cannot authenticate and
+    // failing later in a way nobody can read. Which values would not open is
+    // carried as a property and logged here, NOT put in the message: the
+    // message goes to a remote agent over the relay. See ServerCredentialsError.
+    if (opened.reason === "needs-re-entry") {
+      credentialFailure.set(server.id, { reason: "needs-re-entry", keys: opened.keys });
+      console.warn(
+        `[mcp] ${server.name}: stored values that would not open: ${opened.keys.join(", ")}`,
+      );
+      throw new ServerCredentialsError("needs-re-entry", server.name, opened.keys);
+    }
+    throw new ServerCredentialsError("store-unavailable", server.name);
+  }
+
   const line = [server.command, ...server.args].join(" ");
   const child = spawn(process.env.SHELL ?? "/bin/bash", ["-lc", line], {
     cwd: server.cwd ?? app.getPath("home"),
-    env: { ...process.env, ...(server.env ?? {}) },
+    env: { ...process.env, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   }) as ChildProcessWithoutNullStreams;
 
@@ -274,12 +647,28 @@ export function serverStatus(id: string): {
   running: boolean;
   log: string[];
   signInUrl?: string;
+  credentials?: { reason: "store-unavailable" | "needs-re-entry"; keys: string[] };
 } {
+  // Derived, not stored. If the OS will not encrypt then no server's stored
+  // credentials can be opened, including servers that have never been started
+  // and servers added after the last failure — so this answer does not depend
+  // on anything having gone wrong first. It costs at most one ask per process,
+  // and not one per call: `isCredentialStoreAvailable` memoises.
+  const credentials: { reason: "store-unavailable" | "needs-re-entry"; keys: string[] } | undefined =
+    !credentialStore.isEncryptionAvailable()
+      ? { reason: "store-unavailable", keys: [] }
+      : credentialFailure.get(id);
+
   const state = running.get(id);
-  if (!state) return { running: false, log: [] };
+  if (!state) return { running: false, log: [], ...(credentials ? { credentials } : {}) };
   const joined = state.log.join(" ");
   const url = /https?:\/\/[^\s"']+/.exec(joined)?.[0];
-  return { running: !state.child.killed, log: state.log.slice(-12), ...(url ? { signInUrl: url } : {}) };
+  return {
+    running: !state.child.killed,
+    log: state.log.slice(-12),
+    ...(url ? { signInUrl: url } : {}),
+    ...(credentials ? { credentials } : {}),
+  };
 }
 
 /**

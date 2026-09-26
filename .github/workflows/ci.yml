@@ -12,13 +12,27 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          # 24, not 22. The suite mocks `electron` with mock.module({ exports }),
+          # and on Node 22 that option supplies only a DEFAULT export, so a
+          # static `import { app } from "electron"` fails to link before any
+          # test runs. Node 22 wants the older `namedExports` option, which
+          # Node 24 deprecates, and passing both fails on 24 outright —
+          # measured on v22.23.2 and v24.20.0, all three combinations.
+          # 24 is also the version this repo is developed on, and `eve`
+          # declares node >=24, which the runner was reporting as EBADENGINE.
+          # Note this is a test-time runtime only: the app itself runs on the
+          # Node that Electron 34 bundles, which is neither of these.
+          node-version: 24
           cache: npm
       # install, not ci: this lock is written by npm 11 locally and the runner
-      # ships npm 10, and the two resolve a transitive range differently — npm
-      # ci then refuses a lock that installs perfectly well. Reproducibility
+      # shipped npm 10, and the two resolve a transitive range differently —
+      # npm ci then refuses a lock that installs perfectly well. Reproducibility
       # loses here to a release pipeline that runs, and the build is still
       # pinned by the lock for everything the two agree on.
+      #
+      # The Node 24 bump above brings npm 11 to the runner, which may remove
+      # the original divergence — but `npm ci` has NOT been re-tested against
+      # this lock, so this stays as it is until someone measures it.
       - run: npm install --no-audit --no-fund
 
       # Typecheck both processes separately: they have different tsconfigs and
