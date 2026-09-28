@@ -49,7 +49,20 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          # 24, not 22, and this job is why it MATTERS rather than merely being
+          # tidy: `release:mac` is `npm run build && electron-builder`, and
+          # `build` is `typecheck && test && electron-vite build`. So this job
+          # runs the test suite, and the suite needs Node >= 24.15.0 — below it
+          # `mock.module` does not supply named exports, so `import { app } from
+          # "electron"` fails to link and whole test files cannot load. Bisected:
+          # 24.14.0 fails, 24.15.0 passes. On 22 this job would fail at the test
+          # step before electron-builder ever ran.
+          #
+          # Kept in step with ci.yml deliberately. A release that typechecks and
+          # tests on a different runtime from CI is a release CI did not check.
+          # This is a test-time runtime only: the app itself runs on the Node
+          # that Electron 34 bundles, which is neither of these.
+          node-version: 24
           cache: npm
 
       # install, not ci: this lock is written by npm 11 locally and the runner
@@ -133,7 +146,9 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          # 24 for the same reason as release-mac above — `package:linux` is also
+          # `npm run build && electron-builder`, so this job runs the suite too.
+          node-version: 24
           cache: npm
 
       # install, not ci — the same reason as release-mac above: the lock is
