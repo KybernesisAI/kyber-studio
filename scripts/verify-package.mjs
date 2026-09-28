@@ -591,6 +591,16 @@ if (wrongArch.length > 0) {
   // `process.exit(1)` has not moved. It is the last statement of this block as
   // it was before, and taking it into the function would make the function
   // untestable in exactly the way the extraction exists to fix.
+  //
+  // The `wrongArch` this guard reads and the `tally.wrongArch` the function
+  // re-derives are the same array — both come from the destructuring at the top of
+  // this file. The guard and the function cannot disagree about whether there is
+  // anything to report.
+  //
+  // The object literal below is not covered by anything. No test imports this file
+  // (it is a script, and running it needs an artefact), so swapping `filesKey:` and
+  // `archSource:` would typecheck, pass the whole suite, and misdirect the reader of
+  // the advice. The four values are only distinguishable by meaning. Check by eye.
   for (const line of formatWrongArchReport(tally, {
     targetPlatform: TARGET_PLATFORM,
     expectedLabel: EXPECTED_LABEL,

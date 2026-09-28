@@ -947,9 +947,24 @@ function wrongEntry(shown, arches) {
 const WRONG_ARM64 = wrongEntry("…/napi-v6/linux/arm64/onnxruntime_binding.node", ["arm64"]);
 const WRONG_X64 = wrongEntry("…/sharp-linux-x64/lib/sharp.node", ["x64"]);
 
+/**
+ * A second wrong binary for contexts expecting x64. Two slices, so its measurement
+ * differs from WRONG_ARM64's — with identical measurements, swapping a path and a
+ * measurement between two entries would go unnoticed.
+ *
+ * WRONG_X64 is kept for contexts expecting arm64. Pairing it with an x64
+ * expectation produced "found x64, expected x64", which review rightly called
+ * self-contradictory: a fixture in the wrong-arch list that is not wrong.
+ */
+const WRONG_FAT = wrongEntry("…/sharp-linux-arm64/lib/sharp.node", ["arm64", "arm64e"]);
+
 /** The tally shape `tallyVerdicts` returns, with only what this reads set. */
-function wrongTally({ wrongArch = [], foreignPlatform = [], unrecognised = 0 } = {}) {
-  return { checked: wrongArch.length, unrecognised, foreignPlatform, wrongArch };
+function wrongTally({ wrongArch = [], foreignPlatform = [], unrecognised = 0, checked = 9 } = {}) {
+  // `checked` is deliberately NOT wrongArch.length, and 9 is deliberately not 1 or 2.
+  // Round 1 found that while the two were equal, substituting tally.checked for
+  // wrongArch.length in the header survived the whole suite — a real build would
+  // have printed "9 bundled … binaries" above a list of two.
+  return { checked, unrecognised, foreignPlatform, wrongArch };
 }
 
 /** A context whose four fields are distinguishable from one another. */
@@ -969,8 +984,13 @@ test("nothing wrong means nothing said", () => {
 
 /**
  * Empty beats interleaving. With no wrong binaries there is no report to attach
- * the unchecked lines to, so they must NOT appear here — the script prints them
- * separately on the passing path, and emitting them from both would double them.
+ * the unchecked lines to, so they must NOT appear here.
+ *
+ * The behaviour is right; the reason first given for it was not. It said emitting
+ * them from both places would double them, but the call site guards this function
+ * behind `wrongArch.length > 0`, so a non-empty return here could never coincide
+ * with the passing path's own `reportUncheckedFiles` call. What it would actually
+ * do is emit lines about skipped files under no statement that anything is wrong.
  */
 test("nothing wrong says nothing even when there is unchecked payload", () => {
   const tally = wrongTally({ unrecognised: 3, foreignPlatform: [FOREIGN_LINUX_X64] });
@@ -983,10 +1003,59 @@ test("a single wrong binary is described in the singular", () => {
   assert.doesNotMatch(lines[0], /binaries are/);
 });
 
-test("several wrong binaries are described in the plural", () => {
-  const lines = formatWrongArchReport(wrongTally({ wrongArch: [WRONG_ARM64, WRONG_X64] }), ctx());
-  assert.equal(lines[0], "\n✗ 2 bundled linux native binaries are built for the wrong architecture:\n");
-  assert.doesNotMatch(lines[0], /binary is/);
+/**
+ * The whole report, line for line — deliberately a golden test.
+ *
+ * Round 1 mapped this file's coverage per output line and found six of fifteen
+ * pinned by nothing: deleting the two remediation bullets left the suite green
+ * while the report lost an entire remedy and broke mid-clause. The alternative to
+ * this test is choosing line by line which prose matters, which is the judgement
+ * that went wrong the first time. One exact array is smaller AND complete.
+ *
+ * What this test is NOT: the expected value was generated from this implementation,
+ * so by itself it pins only against future drift. The evidence that the text is
+ * CORRECT is separate and external — a differential harness ran the pre-extraction
+ * block from verify-package.mjs and this function over 18 tally x context
+ * combinations and compared every line.
+ *
+ * Keep the targeted tests below it. When this one fails they say which property
+ * broke; on its own it only says the report changed.
+ */
+test("the whole report, line for line", () => {
+  const tally = wrongTally({
+    wrongArch: [WRONG_ARM64, WRONG_FAT],
+    foreignPlatform: [FOREIGN_LINUX_X64],
+    unrecognised: 2,
+  });
+  assert.deepEqual(formatWrongArchReport(tally, ctx()), [
+    "\n✗ 2 bundled linux native binaries are built for the wrong architecture:\n",
+    "  …/napi-v6/linux/arm64/onnxruntime_binding.node",
+    "      found arm64, expected x64",
+    "  …/sharp-linux-arm64/lib/sharp.node",
+    "      found arm64 + arm64e, expected x64",
+    "\n  1 bundled .node file is for another platform (linux ×1), not arch-checked:",
+    "    …/napi-v6/linux/x64/onnxruntime_binding.node",
+    "        ELF, x64",
+    "  Their platform is not this build's, so the per-platform resolution these",
+    "  packages use does not select them here. That is a property of the files",
+    "  measured above, NOT a load path this check traced — a foreign-container",
+    "  file sitting at a path this target does resolve would still land here.",
+    "  Dead weight in the artefact rather than a fault in it, and trimming them",
+    "  is a packaging change with its own ticket.",
+    "\n  2 bundled .node files were skipped: not an ELF, Mach-O or PE object.",
+    "\n  A bundle like this installs, starts, and then dies at dlopen on a user's",
+    "  machine rather than on this runner. The two ways it happens:",
+    "\n  - @img/sharp-* and onnxruntime-node ship per-platform binaries, picked by",
+    "    whichever machine ran npm install. Install on the target architecture, or",
+    "    pass --cpu/--os to npm install, and package again.",
+    "\n  - onnxruntime-node ships one prebuild directory per platform and arch, and",
+    "    the packager's files globs decide which of them survive. If a linux",
+    "    directory that is not x64 is being kept, those globs are what to fix:",
+    "    build.files, plus build.linux.files if it exists — the platform key is appended to the",
+    "    top-level one rather than replacing it, so the effective set is both.",
+    "\n  \"Expected x64\" came from --arch=x64. If THAT is what is wrong,",
+    "  say which arch the build is for: --arch=<x64|arm64|…>\n",
+  ]);
 });
 
 /**
@@ -996,12 +1065,12 @@ test("several wrong binaries are described in the plural", () => {
  * loop in two reported one file's path above another file's measurement.
  */
 test("every wrong binary is paired with its own measurement, in order", () => {
-  const lines = formatWrongArchReport(wrongTally({ wrongArch: [WRONG_ARM64, WRONG_X64] }), ctx());
+  const lines = formatWrongArchReport(wrongTally({ wrongArch: [WRONG_ARM64, WRONG_FAT] }), ctx());
   assert.deepEqual(lines.slice(1, 5), [
     `  ${WRONG_ARM64.shown}`,
     "      found arm64, expected x64",
-    `  ${WRONG_X64.shown}`,
-    "      found x64, expected x64",
+    `  ${WRONG_FAT.shown}`,
+    "      found arm64 + arm64e, expected x64",
   ]);
 });
 
@@ -1037,7 +1106,7 @@ test("the unchecked report sits between the per-binary list and the advice", () 
   assert.ok(unchecked.length > 0, "fixture must produce unchecked lines or this proves nothing");
   // header, then one path + one measurement, then the unchecked report, then advice.
   assert.deepEqual(lines.slice(3, 3 + unchecked.length), unchecked);
-  assert.match(lines[3 + unchecked.length], /A bundle like this installs, starts, and then dies at dlopen/);
+  assert.equal(lines[3 + unchecked.length], "\n  A bundle like this installs, starts, and then dies at dlopen on a user's");
   assert.equal(lines[1], `  ${WRONG_ARM64.shown}`);
   assert.equal(lines[2], "      found arm64, expected x64");
 });
@@ -1049,7 +1118,9 @@ test("the unchecked report sits between the per-binary list and the advice", () 
  * context object now carries, and the failure mode of that change is not only
  * dropping one but wiring two to the same source. Distinct sentinels caught in
  * the right number of places catch both. The expected counts are
- * targetPlatform ×2, expectedLabel ×3 with one binary, filesKey ×1, archSource ×1.
+ * targetPlatform ×2, filesKey ×1, archSource ×1, and expectedLabel
+ * wrongArch.length + 2 — ×3 with one binary, ×4 with two. Measured, not assumed:
+ * the ticket body said "×2", which is an undercount, and is corrected there.
  */
 test("all four context fields reach the output, the right number of times", () => {
   const lines = formatWrongArchReport(
@@ -1068,22 +1139,22 @@ test("all four context fields reach the output, the right number of times", () =
   assert.equal(count("EXPECTEDSENTINEL"), 3);
   assert.equal(count("FILESKEYSENTINEL"), 1);
   assert.equal(count("ARCHSOURCESENTINEL"), 1);
-});
 
-/** Each field in the specific line a reader acts on, so a swap is located. */
-test("each context field appears in the line that needs it", () => {
-  const lines = formatWrongArchReport(wrongTally({ wrongArch: [WRONG_ARM64] }), ctx({ targetPlatform: "win32", expectedLabel: "arm64", filesKey: "build.win.files", archSource: "--arch=arm64" }));
-  assert.equal(lines[0], "\n✗ 1 bundled win32 native binary is built for the wrong architecture:\n");
-  assert.equal(lines[2], "      found arm64, expected arm64");
-  assert.ok(lines.some((l) => l === "    the packager's files globs decide which of them survive. If a win32"));
-  assert.ok(lines.some((l) => l === "    directory that is not arm64 is being kept, those globs are what to fix:"));
-  assert.ok(lines.some((l) => l === "    build.files, plus build.win.files if it exists — the platform key is appended to the"));
-  assert.ok(lines.some((l) => l === '\n  "Expected arm64" came from --arch=arm64. If THAT is what is wrong,'));
-});
+  const two = formatWrongArchReport(
+    wrongTally({ wrongArch: [WRONG_ARM64, WRONG_FAT] }),
+    {
+      targetPlatform: "PLATFORMSENTINEL",
+      expectedLabel: "EXPECTEDSENTINEL",
+      filesKey: "FILESKEYSENTINEL",
+      archSource: "ARCHSOURCESENTINEL",
+    },
+  ).join("\n");
+  const countTwo = (needle) => two.split(needle).length - 1;
 
-test("the advice ends by saying how to correct the expectation itself", () => {
-  const lines = formatWrongArchReport(wrongTally({ wrongArch: [WRONG_ARM64] }), ctx());
-  assert.equal(lines.at(-1), "  say which arch the build is for: --arch=<x64|arm64|…>\n");
+  assert.equal(countTwo("EXPECTEDSENTINEL"), 4);
+  assert.equal(countTwo("PLATFORMSENTINEL"), 2);
+  assert.equal(countTwo("FILESKEYSENTINEL"), 1);
+  assert.equal(countTwo("ARCHSOURCESENTINEL"), 1);
 });
 
 test("the report does not mutate the tally it was given", () => {
@@ -1108,6 +1179,15 @@ test("a context that is not an object is refused", () => {
   const tally = wrongTally({ wrongArch: [WRONG_ARM64] });
   assert.throws(() => formatWrongArchReport(tally, null), /a context is required, got null/);
   assert.throws(() => formatWrongArchReport(tally, undefined), /a context is required, got undefined/);
+
+  // Validation precedes the empty-wrongArch short-circuit, deliberately, and this
+  // pins the order. A broken context is a wiring bug in the caller whether or not
+  // there is anything to report, so returning [] would hide it. Review called the
+  // ordering contract-ambiguous and asked for it to be pinned either way; this is
+  // the way it is pinned. Hoisting `if (wrongArch.length === 0) return []` above
+  // these guards must therefore fail (mutant M23).
+  assert.throws(() => formatWrongArchReport(wrongTally(), null), /a context is required, got null/);
+  assert.throws(() => formatWrongArchReport(wrongTally(), ctx({ filesKey: "" })), /context\.filesKey must be a non-empty string, got an empty string/);
 });
 
 /**
@@ -1126,21 +1206,10 @@ test("a context that silently loses any one field is refused", () => {
       `missing ${field} was not refused`,
     );
   }
-});
 
-test("a context field that is empty or the wrong type is refused", () => {
-  const tally = wrongTally({ wrongArch: [WRONG_ARM64] });
+  // Present but unusable goes through the same guard, so it belongs in the same test.
   assert.throws(() => formatWrongArchReport(tally, ctx({ expectedLabel: "" })), /context\.expectedLabel must be a non-empty string, got an empty string/);
   assert.throws(() => formatWrongArchReport(tally, ctx({ filesKey: 7 })), /context\.filesKey must be a non-empty string, got number/);
   assert.throws(() => formatWrongArchReport(tally, ctx({ archSource: null })), /context\.archSource must be a non-empty string, got object/);
 });
 
-/**
- * The inner report's guards still apply through this one. A tally carrying a
- * `wrongArch` but a malformed `foreignPlatform` must not produce half a report:
- * the interleaved call validates, and the throw comes from there.
- */
-test("a malformed unchecked half is refused through the wrong-arch report", () => {
-  const tally = { checked: 1, unrecognised: 0, foreignPlatform: "none", wrongArch: [WRONG_ARM64] };
-  assert.throws(() => formatWrongArchReport(tally, ctx()), /tally\.foreignPlatform must be an array/);
-});

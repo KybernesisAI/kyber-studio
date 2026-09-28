@@ -427,7 +427,8 @@ export function formatUncheckedReport(tally) {
  * that is where the script printed them and the order is load-bearing: the first
  * failure of this check was diagnosed without knowing two files had been skipped.
  * Producing them here rather than letting the caller splice them in is what makes
- * the interleaving reachable by a test at all.
+ * the interleaving reachable by a test. Injecting `formatUncheckedReport` as a
+ * parameter would be testable too — this is the smaller change, not the only one.
  *
  * `process.exit(1)` stays at the call site. Moving it would be a behaviour
  * change, excluded from KYB-551, KYB-562 and KYB-586 for the same reason.
