@@ -96,10 +96,18 @@ import { JSDOM } from "jsdom";
  *    change that renders one of them instead of `Connect` removes an affordance
  *    the census WOULD see; a change WITHIN either is not covered.
  *  - EFFICACY is not a class here. The recovery button is pressed and its write
- *    asserted in three states; the census enumerates four. A guard in front of
- *    the write keyed on a flag that is false in those three — `if (!loadError)`
- *    is the measured one — is green. KYB-597 carries the measurement and the
- *    fix. Do not read the census as protection against it.
+ *    asserted in TWO of the three `unreadable` sub-states the census enumerates
+ *    — "a damaged config, freshly read" (:939) and "whose quarantine was
+ *    refused" (:945). The THIRD, "a damaged config whose next read then threw"
+ *    (:959), is enumerated and never pressed by anything in this repository.
+ *    That row is the only state here where `loadError` is set while `unreadable`
+ *    survives, which is exactly WHY a guard keyed on it survives: `if
+ *    (!loadError)` in front of the write at Plugins.tsx:475 is green, measured.
+ *    CORRECTED 28 Sep — this block said "asserted in three states; the census
+ *    enumerates four" and sent a reader looking for a fourth row. There is no
+ *    fourth: `view: "unreadable"` appears three times, at :940, :946 and :960.
+ *    KYB-597 carries the measurement and the fix. Do not read the census as
+ *    protection against it.
  * Styling, layout and the modal's own open/close are not looked at. A regression
  * in any of those is NOT covered here.
  *

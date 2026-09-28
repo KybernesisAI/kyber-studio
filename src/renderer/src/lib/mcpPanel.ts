@@ -368,8 +368,17 @@ export type McpPanelView =
  * primary slot a row carries is outside the census entirely.
  *
  * The recovery button is the one exception, and only partly: it is pressed and
- * its write asserted in three states, while the census enumerates four. That
- * remaining gap is KYB-597, with the measurement and the fix.
+ * its write asserted in TWO of the three `unreadable` sub-states the census
+ * enumerates. The third — a damaged config whose next read then threw, the only
+ * one where `loadError` is set — is enumerated but never pressed, which is
+ * exactly why `if (!loadError)` in front of the write survives.
+ *
+ * CORRECTED 28 Sep: this said "asserted in three states, while the census
+ * enumerates four". There is no fourth row — the census enumerates three. The
+ * wrong figure overstated coverage in the very paragraph written to disclose the
+ * gap, which is the defect class this file exists to avoid.
+ *
+ * That remaining gap is KYB-597, with the measurement and the fix.
  */
 export function panelView(state: McpPanelState, visible: LocalMcpServer[]): McpPanelView {
   if (state.servers === null) return { kind: "loading" };
