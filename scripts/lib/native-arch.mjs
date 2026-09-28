@@ -412,3 +412,79 @@ export function formatUncheckedReport(tally) {
 
   return lines;
 }
+
+/**
+ * The report for binaries that WERE arch-checked and found wrong.
+ *
+ * Not a variant of `formatUncheckedReport`, and deliberately not folded into it.
+ * KYB-586's review made the distinction that this function's existence rests on:
+ * a `wrongArch` file is not unchecked at all — it was measured and failed — so it
+ * reports a fault IN the bundle where the other reports dead weight in it. Same
+ * tally, different kind of claim, different name (KYB-587).
+ *
+ * @remarks
+ * This returns the unchecked report's lines in the middle of its own, because
+ * that is where the script printed them and the order is load-bearing: the first
+ * failure of this check was diagnosed without knowing two files had been skipped.
+ * Producing them here rather than letting the caller splice them in is what makes
+ * the interleaving reachable by a test at all.
+ *
+ * `process.exit(1)` stays at the call site. Moving it would be a behaviour
+ * change, excluded from KYB-551, KYB-562 and KYB-586 for the same reason.
+ *
+ * The four context fields were module-level constants in the script, derived from
+ * argv and the app path. They are validated rather than defaulted: a context that
+ * quietly loses one would otherwise interpolate `undefined` into advice a human
+ * is meant to act on.
+ *
+ * @param {object} tally - as `tallyVerdicts` returns it.
+ * @param {object} context
+ * @param {string} context.targetPlatform - the platform being verified.
+ * @param {string} context.expectedLabel - the arch(es) this build accepts.
+ * @param {string} context.filesKey - the per-platform packager key, e.g. `build.linux.files`.
+ * @param {string} context.archSource - where the expectation came from, quoted back.
+ * @returns {string[]} lines, in print order. Empty when nothing is wrong.
+ */
+export function formatWrongArchReport(tally, context) {
+  if (tally === null || typeof tally !== "object") {
+    throw new TypeError(`a tally is required, got ${tally === null ? "null" : typeof tally}`);
+  }
+  const { wrongArch } = tally;
+  if (!Array.isArray(wrongArch)) {
+    throw new TypeError(`tally.wrongArch must be an array, got ${typeof wrongArch}`);
+  }
+  if (context === null || typeof context !== "object") {
+    throw new TypeError(`a context is required, got ${context === null ? "null" : typeof context}`);
+  }
+  for (const field of ["targetPlatform", "expectedLabel", "filesKey", "archSource"]) {
+    const value = context[field];
+    if (typeof value !== "string" || value.length === 0) {
+      throw new TypeError(`context.${field} must be a non-empty string, got ${typeof value === "string" ? "an empty string" : typeof value}`);
+    }
+  }
+  const { targetPlatform, expectedLabel, filesKey, archSource } = context;
+
+  if (wrongArch.length === 0) return [];
+
+  const lines = [];
+  const plural = wrongArch.length === 1 ? "binary is" : "binaries are";
+  lines.push(`\n✗ ${wrongArch.length} bundled ${targetPlatform} native ${plural} built for the wrong architecture:\n`);
+  for (const { shown, arches } of wrongArch) {
+    lines.push(`  ${shown}`);
+    lines.push(`      found ${arches.join(" + ")}, expected ${expectedLabel}`);
+  }
+  for (const line of formatUncheckedReport(tally)) lines.push(line);
+  lines.push(`\n  A bundle like this installs, starts, and then dies at dlopen on a user's`);
+  lines.push(`  machine rather than on this runner. The two ways it happens:`);
+  lines.push(`\n  - @img/sharp-* and onnxruntime-node ship per-platform binaries, picked by`);
+  lines.push(`    whichever machine ran npm install. Install on the target architecture, or`);
+  lines.push(`    pass --cpu/--os to npm install, and package again.`);
+  lines.push(`\n  - onnxruntime-node ships one prebuild directory per platform and arch, and`);
+  lines.push(`    the packager's files globs decide which of them survive. If a ${targetPlatform}`);
+  lines.push(`    directory that is not ${expectedLabel} is being kept, those globs are what to fix:`);
+  lines.push(`    build.files, plus ${filesKey} if it exists — the platform key is appended to the`);
+  lines.push(`    top-level one rather than replacing it, so the effective set is both.`);
+  lines.push(`\n  "Expected ${expectedLabel}" came from ${archSource}. If THAT is what is wrong,`);
+  lines.push(`  say which arch the build is for: --arch=<x64|arm64|…>\n`);
+  return lines;
+}

@@ -55,6 +55,7 @@ import {
   archFromPath,
   expectedLabel,
   formatUncheckedReport,
+  formatWrongArchReport,
   identify,
   normaliseArch,
   tallyVerdicts,
@@ -581,25 +582,23 @@ function reportUncheckedFiles(print) {
 console.log(`  ${INVENTORY}`);
 
 if (wrongArch.length > 0) {
-  const plural = wrongArch.length === 1 ? "binary is" : "binaries are";
-  console.error(`\n✗ ${wrongArch.length} bundled ${TARGET_PLATFORM} native ${plural} built for the wrong architecture:\n`);
-  for (const { shown, arches } of wrongArch) {
-    console.error(`  ${shown}`);
-    console.error(`      found ${arches.join(" + ")}, expected ${EXPECTED_LABEL}`);
+  // The wording, including the unchecked report interleaved into the middle of
+  // it, is `formatWrongArchReport` — a pure function of the tally and the four
+  // constants below, tested in `test/native-arch.test.mjs` (KYB-587). This half
+  // only prints and exits, so the half deciding what to say can be reached
+  // without building an artefact.
+  //
+  // `process.exit(1)` has not moved. It is the last statement of this block as
+  // it was before, and taking it into the function would make the function
+  // untestable in exactly the way the extraction exists to fix.
+  for (const line of formatWrongArchReport(tally, {
+    targetPlatform: TARGET_PLATFORM,
+    expectedLabel: EXPECTED_LABEL,
+    filesKey: FILES_KEY,
+    archSource: ARCH_SOURCE,
+  })) {
+    console.error(line);
   }
-  reportUncheckedFiles(console.error);
-  console.error(`\n  A bundle like this installs, starts, and then dies at dlopen on a user's`);
-  console.error(`  machine rather than on this runner. The two ways it happens:`);
-  console.error(`\n  - @img/sharp-* and onnxruntime-node ship per-platform binaries, picked by`);
-  console.error(`    whichever machine ran npm install. Install on the target architecture, or`);
-  console.error(`    pass --cpu/--os to npm install, and package again.`);
-  console.error(`\n  - onnxruntime-node ships one prebuild directory per platform and arch, and`);
-  console.error(`    the packager's files globs decide which of them survive. If a ${TARGET_PLATFORM}`);
-  console.error(`    directory that is not ${EXPECTED_LABEL} is being kept, those globs are what to fix:`);
-  console.error(`    build.files, plus ${FILES_KEY} if it exists — the platform key is appended to the`);
-  console.error(`    top-level one rather than replacing it, so the effective set is both.`);
-  console.error(`\n  "Expected ${EXPECTED_LABEL}" came from ${ARCH_SOURCE}. If THAT is what is wrong,`);
-  console.error(`  say which arch the build is for: --arch=<x64|arm64|…>\n`);
   process.exit(1);
 }
 
