@@ -11,8 +11,8 @@ import {
   mkdtempSync,
   readFileSync,
   statSync,
+  rmSync,
   symlinkSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -418,12 +418,20 @@ function digest(seen, staleIno, errors = []) {
  * This deliberately does NOT filter on size, and the history is worth keeping
  * because the filter looked obviously right. It counted a sample only when the
  * file was larger than the stale one and smaller than the finished payload. That
- * holds on ext4, where the size grows as the write proceeds. It discards every
- * sample on APFS, where it does not: each one is either 0 or the whole payload,
- * so the filter threw away the evidence and the assertion then advised
- * "enlarge the payload" — which was never the problem, and which no payload
- * would have fixed. The suite was unrunnable on macOS for six days, and because
- * CI is Linux-only and release.yml runs only on tags, nothing noticed. KYB-599.
+ * holds on ext4, where the size grows as the write proceeds. On macOS it
+ * admitted nothing at all, and the assertion then advised "enlarge the payload"
+ * — which was never the problem, and which no payload would have fixed.
+ *
+ * MEASURED: the size filter admitted no sample on macos-14, while filtering by
+ * inode admits samples in more than one mode on the same runner. REASONED, and
+ * not measured: that this is because the size only becomes visible when the
+ * write completes there, so every sample is either 0 or the whole payload. That
+ * explanation is not load-bearing — the fix is correct either way — and the
+ * digest below reports the count of DISTINCT sizes precisely so that the next
+ * macOS failure settles it for free rather than by argument.
+ *
+ * The suite was unrunnable on macOS for six days, and because CI is Linux-only
+ * and release.yml runs only on tags, nothing noticed. KYB-599.
  */
 async function modesDuringWrite(target, payload, stale) {
   const tmp = `${target}.tmp`;
@@ -511,7 +519,7 @@ async function modesDuringWrite(target, payload, stale) {
     // target as `<name>.tmp.witness` — which matches any `*.tmp*` debris glob,
     // so the next "no temp file is left beside it" assertion added to this file
     // would trip on it and look like a bug in writeAtomic.
-    if (stale) unlinkSync(`${tmp}.witness`);
+    if (stale) rmSync(`${tmp}.witness`, { force: true });
   }
 }
 
@@ -578,6 +586,14 @@ test("nor when a stale temp of a wider mode was there first", async (t) => {
   assert.deepEqual(
     modes,
     ["600"],
-    "a stale temp's permissions survived into the write — the removal in step 1 is what prevents this",
+    // NOT "the stale temp's permissions survived". They cannot have, and saying
+    // so sent the last reader to `rmSync` when the defect was elsewhere. Samples
+    // carrying the stale inode are filtered out before `modes` is computed, so a
+    // genuine write-through leaves `written` empty and trips the sample guard
+    // above instead — this assertion can only fire for a temp that `writeAtomic`
+    // freshly created and that was seen wide. The two look identical from the
+    // outside, because a stale temp planted at 644 and a fresh one created with
+    // no mode under the default umask are both 644.
+    "the temp writeAtomic created was itself readable at a wider mode while it was being written; the stale file is excluded from these modes, so this is the new temp, not a survival",
   );
 });
