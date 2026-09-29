@@ -1,0 +1,71 @@
+# « TEMPORARY — DELETE BEFORE MERGING KYB-599 »
+#
+# KYB-599 fixes two tests in test/atomic-write.test.mjs that fail on macos-14
+# and pass on Linux. ci.yml is ubuntu-only and release.yml runs only on tags, so
+# nothing in this repository can currently observe the thing being fixed. This
+# job is the evidence for acceptance criteria 1 and 4; it is not infrastructure,
+# and it goes when the ticket closes.
+#
+# No secrets, no signing, no notarisation, no publish. It runs one test file.
+name: TEMPORARY KYB-599 macos check
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Criterion 1: the file passes on macos-14 arm64.
+  green:
+    name: macos-14, fixed tree (expect pass)
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.21.0
+      - run: npm install --no-audit --no-fund
+      - name: The file under test
+        run: node --experimental-strip-types --test test/atomic-write.test.mjs
+      - name: And the whole suite, so the fix did not cost something else
+        run: node --experimental-strip-types --test "test/**/*.test.mjs"
+
+  # Criterion 4: with `mode` dropped from the writeFileSync call, the suite must
+  # FAIL on macOS too — otherwise the tests pass everywhere for the wrong reason
+  # and the fix has bought nothing. Inverted on purpose: a green run here is the
+  # failure, so `!` is load-bearing rather than sloppy.
+  mutant:
+    name: macos-14, mutant applied (expect failure)
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.21.0
+      - run: npm install --no-audit --no-fund
+
+      - name: Drop the mode argument, keeping the trailing chmod
+        run: |
+          sed -i '' 's/, mode: options.mode //' src/main/atomicWrite.ts
+          grep -n 'writeFileSync(tmp, data, {' src/main/atomicWrite.ts
+          # The mutant must actually be present, or the inversion below proves
+          # nothing: an unmodified tree would also be reported as "killed".
+          ! grep -q 'mode: options.mode' src/main/atomicWrite.ts
+
+      - name: The suite must now fail, and name the mode it saw
+        run: |
+          set +e
+          out=$(node --experimental-strip-types --test test/atomic-write.test.mjs 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          test "$rc" -ne 0
+          # Not merely "it failed" — it must fail on the MODE assertion, which is
+          # the one the mutant is supposed to trip. A failure on the sample guard
+          # would mean the observer saw nothing, which is the old bug returning.
+          printf '%s\n' "$out" | grep -q "644"
+          ! printf '%s\n' "$out" | grep -q "so this test proves nothing"

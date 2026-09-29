@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -369,22 +370,68 @@ test("a target that already exists at a wider mode is republished at the request
  */
 /**
  * Watch the temp path from another thread for the duration of one write, and
- * report the modes seen while the file was PART-WRITTEN.
+ * report every mode the temp `writeAtomic` created was seen to hold.
  *
- * The size filter is what makes the result mean anything. Samples are only
- * counted when the file is larger than whatever was sitting there before and
- * smaller than the finished payload — so a sample cannot be the stale file, and
- * cannot be the finished article after the chmod has run. Without it the
- * "at least one sample" guard proves only that the poll fired, not that it
- * fired during the window the test is about.
+ * What makes the result mean anything is WHICH FILE a sample is of, not how big
+ * it was. `writeAtomic` removes any stale temp and creates a fresh one, and that
+ * fresh inode is only statable between its creation and the `renameSync` that
+ * publishes it — after the rename the stat throws. So every sample of it is
+ * inside the window these tests are about, including one taken at size 0, which
+ * is precisely when creating the temp at 0644 and narrowing it afterwards would
+ * be visible.
+ *
+ * This deliberately does NOT filter on size, and the history is worth keeping
+ * because the filter looked obviously right. It counted a sample only when the
+ * file was larger than the stale one and smaller than the finished payload. That
+ * holds on ext4, where the size grows as the write proceeds. It discards every
+ * sample on APFS, where it does not: each one is either 0 or the whole payload,
+ * so the filter threw away the evidence and the assertion then advised
+ * "enlarge the payload" — which was never the problem, and which no payload
+ * would have fixed. The suite was unrunnable on macOS for six days, and because
+ * CI is Linux-only and release.yml runs only on tags, nothing noticed. KYB-599.
  */
+/**
+ * One readable line per distinct inode the observer saw: which inode, whether it
+ * was the stale file planted before the write, how many samples, the modes it
+ * held, and the size range. This is what tells a reader whether the temp was
+ * never created, or was created and reused the stale inode, or was created at
+ * the wrong mode — three failures that otherwise look identical.
+ */
+function digest(seen, staleIno) {
+  const byIno = new Map();
+  for (const [mode, size, ino] of seen) {
+    let e = byIno.get(ino);
+    if (!e) byIno.set(ino, (e = { ino, samples: 0, modes: new Set(), min: size, max: size }));
+    e.samples += 1;
+    e.modes.add(mode.toString(8));
+    if (size < e.min) e.min = size;
+    if (size > e.max) e.max = size;
+  }
+  return [...byIno.values()].map(
+    (e) =>
+      `ino ${e.ino}${e.ino === staleIno ? " (the stale file planted before the write)" : ""}: ` +
+      `${e.samples} samples, modes ${[...e.modes].sort().join("/")}, sizes ${e.min}..${e.max}`,
+  );
+}
+
 async function modesDuringWrite(target, payload, stale) {
   const tmp = `${target}.tmp`;
-  let floor = 0;
+  let staleIno = null;
   if (stale) {
     writeFileSync(tmp, stale.contents, "utf8");
     chmodSync(tmp, stale.mode);
-    floor = Buffer.byteLength(stale.contents);
+    staleIno = statSync(tmp).ino;
+
+    // The hard link is load-bearing, and not for the reason it looks like. An
+    // inode number is free for reuse the moment its last link goes, and the very
+    // next create is the likeliest thing to be handed it back. So without a
+    // second link holding this inode allocated, `rmSync` below frees the number
+    // and `writeAtomic`'s fresh temp can appear at the SAME ino — at which point
+    // the filter that exists to discard the stale file would discard the real
+    // samples instead, and this test would go green having observed nothing.
+    // Pinning the inode is what makes the comparison mean what it says. To see
+    // it for yourself, drop this line: the assertion below fails, naming reuse.
+    linkSync(tmp, `${tmp}.witness`);
   }
 
   const observer = new Worker(
@@ -401,8 +448,8 @@ async function modesDuringWrite(target, payload, stale) {
         // Only on change: the poll fires thousands of times to express a
         // handful of distinct states, and every one of them would otherwise be
         // structured-cloned back to the test.
-        if (!last || last[0] !== (st.mode & 0o777) || last[1] !== st.size) {
-          seen.push([st.mode & 0o777, st.size]);
+        if (!last || last[0] !== (st.mode & 0o777) || last[1] !== st.size || last[2] !== st.ino) {
+          seen.push([st.mode & 0o777, st.size, st.ino]);
         }
       } catch { /* not there yet, or already renamed */ }
       if (stopping) { parentPort.postMessage(seen); return; }
@@ -420,19 +467,29 @@ async function modesDuringWrite(target, payload, stale) {
     observer.postMessage("stop");
     const [seen] = await once(observer, "message");
 
-    // Hoisted deliberately: this is O(payload) and the filter runs once per
-    // sample. Evaluated inside the predicate it cost 118 seconds for this file.
-    const finished = Buffer.byteLength(payload);
-    const mid = seen.filter(([, size]) => size > floor && size < finished);
-    return { midCount: mid.length, modes: [...new Set(mid.map(([m]) => m.toString(8)))].sort() };
+    const written = seen.filter(([, , ino]) => ino !== staleIno);
+    return {
+      samples: written.length,
+      modes: [...new Set(written.map(([m]) => m.toString(8)))].sort(),
+      // A digest of what the observer actually saw, carried so that a failure
+      // can show its working instead of only announcing that nothing qualified.
+      // The previous version could report "nothing observed" while holding a
+      // full set of samples it had just discarded, which sent the reader after
+      // the payload size rather than after the filter. Summarised rather than
+      // dumped: a 40 MB write yields hundreds of samples, and a failure message
+      // nobody can read is barely better than no failure message.
+      witnessed: digest(seen, staleIno),
+    };
   } finally {
     await observer.terminate();
   }
 }
 
-// Big enough that the write is not instantaneous. The real callers write a few
-// hundred bytes; the window exists at any size, and this only widens it enough
-// to be caught every time rather than sometimes.
+// Big enough that the temp exists for long enough to be sampled at least once.
+// The real callers write a few hundred bytes; the window exists at any size, and
+// the only thing this buys is that the observer is certain to catch it rather
+// than sometimes. Nothing asserts anything ABOUT this size — the previous
+// version filtered samples against it, which is what broke on APFS.
 const BIG = JSON.stringify({ servers: [{ id: "plaud", env: { KEY: "x".repeat(40_000_000) } }] });
 
 test("a concurrent reader never sees the temp under wider permissions", async (t) => {
@@ -442,11 +499,11 @@ test("a concurrent reader never sees the temp under wider permissions", async (t
   }
 
   const target = join(scratch(), "local-mcp.json");
-  const { midCount, modes } = await modesDuringWrite(target, BIG);
+  const { samples, modes, witnessed } = await modesDuringWrite(target, BIG);
 
   assert.ok(
-    midCount > 0,
-    "the observer never caught the temp mid-write — this test proves nothing in that state; enlarge the payload",
+    samples > 0,
+    `the observer never saw the temp file at all, so this test proves nothing. It is not the payload size — the temp is statable from its creation until the rename. What the observer did see: ${witnessed.join(" | ") || "nothing at all"}`,
   );
   assert.deepEqual(modes, ["600"], "the temp was readable at a wider mode while it was being written");
 });
@@ -463,12 +520,15 @@ test("nor when a stale temp of a wider mode was there first", async (t) => {
   // world-readable for the whole write, and only the closing chmod tightens
   // them. That is exactly the guarantee step 2 claims and cannot keep alone.
   const target = join(scratch(), "local-permissions.json");
-  const { midCount, modes } = await modesDuringWrite(target, BIG, {
+  const { samples, modes, witnessed } = await modesDuringWrite(target, BIG, {
     contents: "leftover",
     mode: 0o644,
   });
 
-  assert.ok(midCount > 0, "the observer never caught the temp mid-write; enlarge the payload");
+  assert.ok(
+    samples > 0,
+    `the observer saw no inode other than the stale one, so this test proves nothing. Either the temp was never created, or the stale inode was reused despite the witness link. What the observer did see: ${witnessed.join(" | ") || "nothing at all"}`,
+  );
   assert.deepEqual(
     modes,
     ["600"],
