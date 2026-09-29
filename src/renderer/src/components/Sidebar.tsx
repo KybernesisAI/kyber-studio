@@ -3,6 +3,7 @@ import { UpdateRow } from "./UpdateRow";
 import type { Agent, Block, Room } from "@shared/types";
 import { useStore } from "@/lib/store";
 import { Avatar, Icon, timeLabel } from "./primitives";
+import { IS_MAC, chordLabel } from "@/lib/platform";
 
 /** The right-click menu is about one row, and a row is an agent or a group. */
 type MenuState =
@@ -322,7 +323,7 @@ export function Sidebar(): ReactNode {
         <button className="search search--button" onClick={() => setPaletteOpen(true)}>
           <Icon name="search" size={14} />
           <span className="search__placeholder">Search</span>
-          <span className="kbd">⌘K</span>
+          <span className="kbd">{chordLabel(IS_MAC, "K")}</span>
         </button>
       </div>
 

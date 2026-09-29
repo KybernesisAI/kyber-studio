@@ -29,7 +29,7 @@ permissions:
 jobs:
   release-mac:
     # Apple silicon runner — matches the arm64 target in package.json build.
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     env:
       # All optional: absent secrets produce an unsigned build that still
@@ -49,28 +49,19 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          # 24, not 22, and this job is why it MATTERS rather than merely being
-          # tidy: `release:mac` is `npm run build && electron-builder`, and
-          # `build` is `typecheck && test && electron-vite build`. So this job
-          # runs the test suite, and the suite needs Node >= 24.15.0 — below it
-          # `mock.module` does not supply named exports, so `import { app } from
-          # "electron"` fails to link and whole test files cannot load. Bisected:
-          # 24.14.0 fails, 24.15.0 passes. On 22 this job would fail at the test
-          # step before electron-builder ever ran.
-          #
-          # Kept in step with ci.yml deliberately. A release that typechecks and
-          # tests on a different runtime from CI is a release CI did not check.
-          # This is a test-time runtime only: the app itself runs on the Node
-          # that Electron 34 bundles, which is neither of these.
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
 
-      # install, not ci: this lock is written by npm 11 locally and the runner
-      # ships npm 10, and the two resolve a transitive range differently — npm
-      # ci then refuses a lock that installs perfectly well. Reproducibility
-      # loses here to a release pipeline that runs, and the build is still
-      # pinned by the lock for everything the two agree on.
-      - run: npm install --no-audit --no-fund
+      # ci, not install: .nvmrc pins Node 24.21.0, which bundles npm 11.19.0 —
+      # the same npm line that writes this lock — so `npm ci` installs it
+      # exactly. This was `npm install` while the runner was on Node 22, which
+      # ships npm 10: the two resolve a transitive range differently, and npm ci
+      # refused a lock that installed perfectly well (`Missing: vite@8.3.1 from
+      # lock file`). Moving to Node 24 removed that divergence. `npm ci` is what
+      # keeps the build reproducible — `npm install` re-resolves in-range
+      # versions on every run, so it can build from a tree the lock never
+      # described.
+      - run: npm ci --no-audit --no-fund
 
       # The build script typechecks both processes before bundling. That is not
       # belt-and-braces: the bundler does not typecheck, and a ReferenceError
@@ -146,16 +137,13 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          # 24 for the same reason as release-mac above — `package:linux` is also
-          # `npm run build && electron-builder`, so this job runs the suite too.
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
 
-      # install, not ci — the same reason as release-mac above: the lock is
-      # written by npm 11 locally and the runner ships npm 10, and the two
-      # resolve a transitive range differently, so npm ci refuses a lock that
-      # installs perfectly well.
-      - run: npm install --no-audit --no-fund
+      # ci, not install — the same reason as release-mac above: .nvmrc pins the
+      # Node 24 that bundles the npm 11 line which writes this lock, so `npm ci`
+      # installs it exactly and the packaged artefact matches the lockfile.
+      - run: npm ci --no-audit --no-fund
 
       # package:linux, not release:linux. release:linux is `--publish always`,
       # which is the release stage; this is a port of the packaging stage.
