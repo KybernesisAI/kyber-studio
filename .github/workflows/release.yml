@@ -29,7 +29,7 @@ permissions:
 jobs:
   release-mac:
     # Apple silicon runner — matches the arm64 target in package.json build.
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     env:
       # All optional: absent secrets produce an unsigned build that still
