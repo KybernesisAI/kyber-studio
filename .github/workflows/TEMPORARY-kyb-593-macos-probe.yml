@@ -6,14 +6,25 @@
 # `node-version-file: .nvmrc` (pinned 24.21.0), and switches `npm install` to
 # `npm ci`. release.yml triggers only on `push: tags: v*` and workflow_dispatch,
 # never on pull_request, so the macos-14 lane — the one that builds, signs and
-# publishes the shipped .app — cannot be exercised by this PR's CI. Its first
-# real run would otherwise be a tagged release.
+# publishes the shipped .app — cannot be exercised by this PR. Its first real
+# run would otherwise be a tagged release.
 #
-# This job reproduces that lane up to, but NOT including, anything that needs
-# Apple credentials or writes anything outside the runner.
+# Run 1 of this probe reached the suite and found two failures in
+# test/atomic-write.test.mjs on macos-14. The same suite on the same Node
+# (24.21.0) is green on ubuntu. So there are two jobs here now:
 #
-# What it deliberately does NOT do
-# --------------------------------
+#   lane        — everything the release lane does EXCEPT the suite, so the
+#                 packaging path is proved regardless of the suite question.
+#   attribution — the controlled experiment: same runner, same test, Node 22
+#                 (what main pins today) against Node 24.21.0 (what this PR
+#                 selects), repeated, to establish whether this PR causes the
+#                 failure or merely reveals a pre-existing one. release-mac
+#                 already runs this suite at every tag on Node 22, so if it
+#                 fails there too, the release lane is already broken and this
+#                 PR is not what broke it.
+#
+# What this file deliberately does NOT do
+# ---------------------------------------
 #   * No publish. `--publish never`, and `permissions: contents: read` so the
 #     job has no write scope even if something tried.
 #   * No signing. CSC_IDENTITY_AUTO_DISCOVERY=false.
@@ -35,7 +46,8 @@ permissions:
   contents: read
 
 jobs:
-  probe-macos-14:
+  lane:
+    name: macos-14 lane (packaging, no suite)
     runs-on: macos-14
     timeout-minutes: 45
 
@@ -47,10 +59,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # The measurement this probe exists for. macos-14's tool cache holds an
-      # older 24.x than ubuntu's, so this is the lane that has to DOWNLOAD the
-      # pinned version rather than hit the cache. If the pin were unobtainable
-      # for darwin/arm64, it would fail here.
+      # macos-14's tool cache holds an older 24.x than ubuntu's, so this is the
+      # lane that has to DOWNLOAD the pinned version rather than hit the cache.
+      # If the pin were unobtainable for darwin/arm64, it would fail here.
       - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
@@ -62,25 +73,23 @@ jobs:
           echo "node:  $(node --version)"
           echo "npm:   $(npm --version)"
           echo "--- .nvmrc asks for: $(cat .nvmrc)"
-          echo "--- engines.node:    $(node -p "require('./package.json').engines.node")"
 
-      # The other change under test: npm ci is strict where npm install was
-      # tolerant, and its known failure mode is refusing a platform-specific
-      # optional dependency the lockfile does not record. darwin-arm64 is the
-      # case that has never run.
+      # npm ci is strict where npm install was tolerant, and its known failure
+      # mode is refusing a platform-specific optional dependency the lockfile
+      # does not record. darwin-arm64 is the case that has never run.
       - run: npm ci --no-audit --no-fund
 
       - name: The lock must be untouched by npm ci
         run: git diff --exit-code -- package-lock.json
 
-      # typecheck + suite + electron-vite build. The real lane runs this inside
-      # `npm run release:mac`, so the suite has to pass on darwin for a release
-      # to work at all — and it has never been run there in CI.
-      - run: npm run build
+      # Deliberately NOT `npm run build`: that runs the suite, which the
+      # attribution job below isolates. Typecheck and bundle only, so the
+      # packaging path is still proved even while the suite question is open.
+      - run: npm run typecheck
+      - run: npx electron-vite build
 
       # Native rebuild and packaging for darwin-arm64, which is what the Node
-      # version change could plausibly break. No installers, no signing, no
-      # notarisation, no publish.
+      # version change could plausibly break.
       - name: Package (unsigned, unnotarised, unpublished)
         run: npx electron-builder --mac --dir --publish never -c.mac.notarize=false
 
@@ -91,3 +100,73 @@ jobs:
       - name: What was produced
         if: always()
         run: ls -la dist/ 2>/dev/null || echo "(no dist/)"
+
+  attribution:
+    name: atomic-write on macos-14, node ${{ matrix.node }}
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    strategy:
+      # Both arms must run even when one fails — a failure in one arm IS the
+      # result, not a reason to cancel the other.
+      fail-fast: false
+      matrix:
+        # 22.21.1 is the line main pins today; 24.21.0 is what this PR selects.
+        node: ["22.21.1", "24.21.0"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Deliberately NOT actions/setup-node. Two reasons: the criterion 3 check
+      # in this ticket greps the workflows for a hardcoded version key and must
+      # return nothing, and this job needs an explicit version, which is the one
+      # form that check forbids. Fetching the official tarball also makes the
+      # control explicit — both arms are stock builds from the dist channel,
+      # which is how the same comparison was run locally.
+      - name: Fetch node ${{ matrix.node }} from the dist channel
+        run: |
+          set -euo pipefail
+          V=${{ matrix.node }}
+          curl -sSLO "https://nodejs.org/dist/v${V}/node-v${V}-darwin-arm64.tar.gz"
+          tar xzf "node-v${V}-darwin-arm64.tar.gz"
+          echo "$PWD/node-v${V}-darwin-arm64/bin" >> "$GITHUB_PATH"
+
+      # engine-strict=true plus engines.node >=24.15.0 would hard-fail the
+      # Node 22 arm at install — which is the feature working as designed, but
+      # it would also destroy the control. Disabled for THIS JOB ONLY, so both
+      # arms install identically and the only variable is the Node version.
+      - name: Install with the engine gate off, so both arms are comparable
+        run: npm ci --no-audit --no-fund
+        env:
+          npm_config_engine_strict: "false"
+
+      - name: What this arm is running, confirmed from the binary itself
+        run: |
+          echo "arch=$(uname -m) node=$(node --version) npm=$(npm --version)"
+          test "$(node --version)" = "v${{ matrix.node }}" \
+            || { echo "WRONG NODE ON PATH — control is invalid"; exit 1; }
+
+      # Timing-sensitive, so repeat rather than trust a single run. Each
+      # iteration is reported separately and the step never exits non-zero, so
+      # a flake shows up as a ratio rather than hiding behind an early exit.
+      - name: atomic-write, five serial runs
+        run: |
+          fails=0
+          for i in 1 2 3 4 5; do
+            echo "::group::run $i"
+            if node --experimental-strip-types --test test/atomic-write.test.mjs; then
+              echo "run $i: PASS"
+            else
+              echo "run $i: FAIL"
+              fails=$((fails+1))
+            fi
+            echo "::endgroup::"
+          done
+          echo "=============================================="
+          echo "node ${{ matrix.node }} on $(uname -m): $fails of 5 runs FAILED"
+          echo "=============================================="
+          exit 0
+
+      # The whole suite once, for the headline count on this platform.
+      - name: Whole suite once, for the count
+        run: node --experimental-strip-types --test "test/**/*.test.mjs" 2>&1 | tail -12 || true
