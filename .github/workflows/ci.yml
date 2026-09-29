@@ -14,12 +14,16 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      # install, not ci: this lock is written by npm 11 locally and the runner
-      # ships npm 10, and the two resolve a transitive range differently — npm
-      # ci then refuses a lock that installs perfectly well. Reproducibility
-      # loses here to a release pipeline that runs, and the build is still
-      # pinned by the lock for everything the two agree on.
-      - run: npm install --no-audit --no-fund
+      # ci, not install: .nvmrc pins Node 24.21.0, which bundles npm 11.19.0 —
+      # the same npm line that writes this lock — so `npm ci` installs it
+      # exactly. This was `npm install` while the runner was on Node 22, which
+      # ships npm 10: the two resolve a transitive range differently, and npm ci
+      # refused a lock that installed perfectly well (`Missing: vite@8.3.1 from
+      # lock file`). Moving to Node 24 removed that divergence. `npm ci` is what
+      # keeps the build reproducible — `npm install` re-resolves in-range
+      # versions on every run, so it can build from a tree the lock never
+      # described.
+      - run: npm ci --no-audit --no-fund
 
       # Typecheck both processes separately: they have different tsconfigs and
       # different globals, and a renderer mistake does not surface in a main
