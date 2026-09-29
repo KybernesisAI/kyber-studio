@@ -934,9 +934,12 @@ test("something that is not a tally at all throws", () => {
  * found wrong, so it is a fault IN the bundle, where foreign-platform and
  * unrecognised files are dead weight in it. Same tally, different claim.
  *
- * The extraction was proven output-identical before these tests were written, by
- * executing the original block's own source text out of git over 18 tally×context
- * combinations and comparing line by line — not by reading it carefully.
+ * The extraction was checked for output-identity before these tests were written,
+ * rather than read carefully. That evidence is NOT reproducible from this
+ * repository — the harness was not committed — so it is recorded on KYB-587 and
+ * on the pull request, and is deliberately not asserted here as though a reader
+ * could verify it. What a reader CAN verify is below: the golden test pins the
+ * whole report, and deleting the function turns this file red.
  */
 
 /** A wrongArch entry as the walk builds it: `{ ...native, ...header }`. */
@@ -952,9 +955,17 @@ const WRONG_X64 = wrongEntry("…/sharp-linux-x64/lib/sharp.node", ["x64"]);
  * differs from WRONG_ARM64's — with identical measurements, swapping a path and a
  * measurement between two entries would go unnoticed.
  *
- * WRONG_X64 is kept for contexts expecting arm64. Pairing it with an x64
- * expectation produced "found x64, expected x64", which review rightly called
- * self-contradictory: a fixture in the wrong-arch list that is not wrong.
+ * It exists because pairing WRONG_X64 with an x64 expectation renders
+ * "found x64, expected x64", which review rightly called self-contradictory: a
+ * fixture in the wrong-arch list that is not wrong. WRONG_FAT replaced it in the
+ * assertions that read those lines.
+ *
+ * NOT fully closed, and said so rather than claimed otherwise. WRONG_X64 survives
+ * in "the report does not mutate the tally it was given", which still passes
+ * ctx() — so that fixture does still render the contradictory line. It is inert
+ * there: that test asserts nothing about the text, only that the input object is
+ * unchanged. An earlier version of this comment said WRONG_X64 was kept for
+ * arm64 contexts, which was not true of any call site (KYB-587 round 2).
  */
 const WRONG_FAT = wrongEntry("…/sharp-linux-arm64/lib/sharp.node", ["arm64", "arm64e"]);
 
@@ -1013,10 +1024,9 @@ test("a single wrong binary is described in the singular", () => {
  * that went wrong the first time. One exact array is smaller AND complete.
  *
  * What this test is NOT: the expected value was generated from this implementation,
- * so by itself it pins only against future drift. The evidence that the text is
- * CORRECT is separate and external — a differential harness ran the pre-extraction
- * block from verify-package.mjs and this function over 18 tally x context
- * combinations and compared every line.
+ * so by itself it pins against drift and deletion, not against the text having
+ * been wrong when it was extracted. That is established outside this file and is
+ * recorded on the ticket, not asserted here.
  *
  * Keep the targeted tests below it. When this one fails they say which property
  * broke; on its own it only says the report changed.
