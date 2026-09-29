@@ -369,28 +369,6 @@ test("a target that already exists at a wider mode is republished at the request
  * this one is built to go red when it stops working.
  */
 /**
- * Watch the temp path from another thread for the duration of one write, and
- * report every mode the temp `writeAtomic` created was seen to hold.
- *
- * What makes the result mean anything is WHICH FILE a sample is of, not how big
- * it was. `writeAtomic` removes any stale temp and creates a fresh one, and that
- * fresh inode is only statable between its creation and the `renameSync` that
- * publishes it — after the rename the stat throws. So every sample of it is
- * inside the window these tests are about, including one taken at size 0, which
- * is precisely when creating the temp at 0644 and narrowing it afterwards would
- * be visible.
- *
- * This deliberately does NOT filter on size, and the history is worth keeping
- * because the filter looked obviously right. It counted a sample only when the
- * file was larger than the stale one and smaller than the finished payload. That
- * holds on ext4, where the size grows as the write proceeds. It discards every
- * sample on APFS, where it does not: each one is either 0 or the whole payload,
- * so the filter threw away the evidence and the assertion then advised
- * "enlarge the payload" — which was never the problem, and which no payload
- * would have fixed. The suite was unrunnable on macOS for six days, and because
- * CI is Linux-only and release.yml runs only on tags, nothing noticed. KYB-599.
- */
-/**
  * One readable line per distinct inode the observer saw: which inode, whether it
  * was the stale file planted before the write, how many samples, the modes it
  * held, and the size range. This is what tells a reader whether the temp was
@@ -414,6 +392,28 @@ function digest(seen, staleIno) {
   );
 }
 
+/**
+ * Watch the temp path from another thread for the duration of one write, and
+ * report every mode the temp `writeAtomic` created was seen to hold.
+ *
+ * What makes the result mean anything is WHICH FILE a sample is of, not how big
+ * it was. `writeAtomic` removes any stale temp and creates a fresh one, and that
+ * fresh inode is only statable between its creation and the `renameSync` that
+ * publishes it — after the rename the stat throws. So every sample of it is
+ * inside the window these tests are about, including one taken at size 0, which
+ * is precisely when creating the temp at 0644 and narrowing it afterwards would
+ * be visible.
+ *
+ * This deliberately does NOT filter on size, and the history is worth keeping
+ * because the filter looked obviously right. It counted a sample only when the
+ * file was larger than the stale one and smaller than the finished payload. That
+ * holds on ext4, where the size grows as the write proceeds. It discards every
+ * sample on APFS, where it does not: each one is either 0 or the whole payload,
+ * so the filter threw away the evidence and the assertion then advised
+ * "enlarge the payload" — which was never the problem, and which no payload
+ * would have fixed. The suite was unrunnable on macOS for six days, and because
+ * CI is Linux-only and release.yml runs only on tags, nothing noticed. KYB-599.
+ */
 async function modesDuringWrite(target, payload, stale) {
   const tmp = `${target}.tmp`;
   let staleIno = null;
