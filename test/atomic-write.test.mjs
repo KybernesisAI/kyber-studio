@@ -12,6 +12,7 @@ import {
   readFileSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -375,21 +376,31 @@ test("a target that already exists at a wider mode is republished at the request
  * never created, or was created and reused the stale inode, or was created at
  * the wrong mode — three failures that otherwise look identical.
  */
-function digest(seen, staleIno) {
+function digest(seen, staleIno, errors = []) {
   const byIno = new Map();
   for (const [mode, size, ino] of seen) {
     let e = byIno.get(ino);
-    if (!e) byIno.set(ino, (e = { ino, samples: 0, modes: new Set(), min: size, max: size }));
+    if (!e) byIno.set(ino, (e = { ino, samples: 0, modes: new Set(), sizes: new Set(), min: size, max: size }));
     e.samples += 1;
     e.modes.add(mode.toString(8));
+    e.sizes.add(size);
     if (size < e.min) e.min = size;
     if (size > e.max) e.max = size;
   }
-  return [...byIno.values()].map(
+  const lines = [...byIno.values()].map(
     (e) =>
       `ino ${e.ino}${e.ino === staleIno ? " (the stale file planted before the write)" : ""}: ` +
-      `${e.samples} samples, modes ${[...e.modes].sort().join("/")}, sizes ${e.min}..${e.max}`,
+      `${e.samples} samples, modes ${[...e.modes].sort().join("/")}, ` +
+      // Distinct sizes, not just the range: two distinct sizes spanning 0..payload
+      // is the shape where the file is only ever seen empty or finished, and a
+      // smooth range is the shape where it is seen filling. Those two look
+      // identical under min..max and are the whole question on APFS.
+      `${e.sizes.size} distinct sizes in ${e.min}..${e.max}`,
   );
+  if (errors.length > 0) {
+    lines.push(`stat errors other than ENOENT: ${[...new Set(errors)].sort().join(", ")}`);
+  }
+  return lines;
 }
 
 /**
@@ -439,6 +450,7 @@ async function modesDuringWrite(target, payload, stale) {
     const { parentPort, workerData } = require("node:worker_threads");
     const { statSync } = require("node:fs");
     const seen = [];
+    const errors = [];
     let stopping = false;
     parentPort.on("message", () => { stopping = true; });
     const poll = () => {
@@ -451,8 +463,14 @@ async function modesDuringWrite(target, payload, stale) {
         if (!last || last[0] !== (st.mode & 0o777) || last[1] !== st.size || last[2] !== st.ino) {
           seen.push([st.mode & 0o777, st.size, st.ino]);
         }
-      } catch { /* not there yet, or already renamed */ }
-      if (stopping) { parentPort.postMessage(seen); return; }
+      } catch (error) {
+        // ENOENT is the expected half of this loop — the temp does not exist
+        // yet, or has already been renamed away. Anything else (EACCES, EIO)
+        // would otherwise be reported as "the observer never saw the temp",
+        // which is true but sends the reader after entirely the wrong thing.
+        if (error.code !== "ENOENT") errors.push(error.code || String(error));
+      }
+      if (stopping) { parentPort.postMessage({ seen, errors }); return; }
       setImmediate(poll);
     };
     parentPort.postMessage("ready");
@@ -465,11 +483,17 @@ async function modesDuringWrite(target, payload, stale) {
     await once(observer, "message");
     writeAtomic(target, payload, { mode: 0o600 });
     observer.postMessage("stop");
-    const [seen] = await once(observer, "message");
+    const [{ seen, errors }] = await once(observer, "message");
 
     const written = seen.filter(([, , ino]) => ino !== staleIno);
     return {
       samples: written.length,
+      // Inode numbers come back as JS numbers, so two distinct inodes could in
+      // principle collide above 2^53. Neither APFS nor ext4 issues numbers
+      // anywhere near that, and the failure direction is the safe one: a
+      // collision makes this filter DISCARD real samples, so the test fails red
+      // rather than passing green on an unchecked file.
+      inodes: new Set(written.map(([, , ino]) => ino)).size,
       modes: [...new Set(written.map(([m]) => m.toString(8)))].sort(),
       // A digest of what the observer actually saw, carried so that a failure
       // can show its working instead of only announcing that nothing qualified.
@@ -478,10 +502,16 @@ async function modesDuringWrite(target, payload, stale) {
       // the payload size rather than after the filter. Summarised rather than
       // dumped: a 40 MB write yields hundreds of samples, and a failure message
       // nobody can read is barely better than no failure message.
-      witnessed: digest(seen, staleIno),
+      witnessed: digest(seen, staleIno, errors),
     };
   } finally {
     await observer.terminate();
+    // The inode only needed pinning until `writeAtomic` had created its fresh
+    // temp, which has happened by now. Left behind, this file sits beside the
+    // target as `<name>.tmp.witness` — which matches any `*.tmp*` debris glob,
+    // so the next "no temp file is left beside it" assertion added to this file
+    // would trip on it and look like a bug in writeAtomic.
+    if (stale) unlinkSync(`${tmp}.witness`);
   }
 }
 
@@ -499,11 +529,22 @@ test("a concurrent reader never sees the temp under wider permissions", async (t
   }
 
   const target = join(scratch(), "local-mcp.json");
-  const { samples, modes, witnessed } = await modesDuringWrite(target, BIG);
+  const { samples, inodes, modes, witnessed } = await modesDuringWrite(target, BIG);
 
+  // Two candidate causes, not one. An earlier version of this message asserted
+  // "it is not the payload size", which is false in exactly the case that fires
+  // it: at a few hundred bytes the write finishes inside a single poll
+  // iteration and the observer sees nothing, measured at 23 failures in 25 runs.
+  // Naming the wrong cause confidently is what this whole ticket is about, so
+  // this says what it knows and stops there.
   assert.ok(
     samples > 0,
-    `the observer never saw the temp file at all, so this test proves nothing. It is not the payload size — the temp is statable from its creation until the rename. What the observer did see: ${witnessed.join(" | ") || "nothing at all"}`,
+    `the observer never sampled the temp, so this test proves nothing. Either the temp was never created, or it existed for less time than one poll iteration — the payload size is what holds that window open. What the observer did see: ${witnessed.join(" | ") || "nothing at all"}`,
+  );
+  assert.equal(
+    inodes,
+    1,
+    `the observer sampled ${inodes} distinct temp inodes where there should be exactly one, so the modes below are merged across more than one file and mean nothing on their own. What the observer did see: ${witnessed.join(" | ")}`,
   );
   assert.deepEqual(modes, ["600"], "the temp was readable at a wider mode while it was being written");
 });
@@ -520,14 +561,19 @@ test("nor when a stale temp of a wider mode was there first", async (t) => {
   // world-readable for the whole write, and only the closing chmod tightens
   // them. That is exactly the guarantee step 2 claims and cannot keep alone.
   const target = join(scratch(), "local-permissions.json");
-  const { samples, modes, witnessed } = await modesDuringWrite(target, BIG, {
+  const { samples, inodes, modes, witnessed } = await modesDuringWrite(target, BIG, {
     contents: "leftover",
     mode: 0o644,
   });
 
   assert.ok(
     samples > 0,
-    `the observer saw no inode other than the stale one, so this test proves nothing. Either the temp was never created, or the stale inode was reused despite the witness link. What the observer did see: ${witnessed.join(" | ") || "nothing at all"}`,
+    `the observer saw no inode other than the stale one, so this test proves nothing. Either the temp was never created, it existed for less time than one poll iteration, or the stale inode was reused despite the witness link. What the observer did see: ${witnessed.join(" | ") || "nothing at all"}`,
+  );
+  assert.equal(
+    inodes,
+    1,
+    `the observer sampled ${inodes} distinct temp inodes where there should be exactly one, so the modes below are merged across more than one file and mean nothing on their own. What the observer did see: ${witnessed.join(" | ")}`,
   );
   assert.deepEqual(
     modes,

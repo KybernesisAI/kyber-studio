@@ -9,8 +9,13 @@
 # No secrets, no signing, no notarisation, no publish. It runs one test file.
 name: TEMPORARY KYB-599 macos check
 
+# Triggered on PUSH to this branch, not on pull_request. The evidence this job
+# produces is what acceptance criteria 1, 2 and 4 are waiting on, and the review
+# sequence opens the pull request only AFTER a verdict — so a pull_request
+# trigger would deadlock the two against each other.
 on:
-  pull_request:
+  push:
+    branches: ["mikasa/kyb-599-**"]
   workflow_dispatch:
 
 permissions:
