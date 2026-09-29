@@ -9,9 +9,12 @@
 # publishes the shipped .app — cannot be exercised by this PR. Its first real
 # run would otherwise be a tagged release.
 #
-# Run 1 of this probe reached the suite and found two failures in
-# test/atomic-write.test.mjs on macos-14. The same suite on the same Node
-# (24.21.0) is green on ubuntu. So there are two jobs here now:
+# Run 1 reached the suite and found two failures in test/atomic-write.test.mjs
+# on macos-14. The same suite on the same Node (24.21.0) is green on ubuntu.
+# Run 2 established that the failure is deterministic on darwin-arm64 — 5 of 5
+# serial runs — and proved the packaging path end to end, but its control arm
+# never ran, because `npm ci` under npm 10 cannot install this lock at all.
+# Run 3 fixes the control. Two jobs:
 #
 #   lane        — everything the release lane does EXCEPT the suite, so the
 #                 packaging path is proved regardless of the suite question.
@@ -88,6 +91,19 @@ jobs:
       - run: npm run typecheck
       - run: npx electron-vite build
 
+      # Run 2 of this probe failed at verify-package, and the probe was at
+      # fault, not the lane. resources/models/ is gitignored, and the model is
+      # fetched by the `prerelease:mac` npm hook — which fires because the real
+      # lane runs `npm run release:mac`. This job calls electron-builder
+      # directly to skip the suite, so no hook fires and the model is absent. A
+      # missing extraResources source is only a WARNING in electron-builder, so
+      # the package builds happily without it and verify-package is what catches
+      # it. Invoking the fetch explicitly restores what the hook would have
+      # done. It MUST precede packaging: build.extraResources is read while the
+      # app is assembled, so fetching afterwards would copy nothing.
+      - name: Fetch the speech model, as the prerelease:mac hook would
+        run: npm run fetch:speech
+
       # Native rebuild and packaging for darwin-arm64, which is what the Node
       # version change could plausibly break.
       - name: Package (unsigned, unnotarised, unpublished)
@@ -131,12 +147,23 @@ jobs:
           tar xzf "node-v${V}-darwin-arm64.tar.gz"
           echo "$PWD/node-v${V}-darwin-arm64/bin" >> "$GITHUB_PATH"
 
-      # engine-strict=true plus engines.node >=24.15.0 would hard-fail the
-      # Node 22 arm at install — which is the feature working as designed, but
-      # it would also destroy the control. Disabled for THIS JOB ONLY, so both
-      # arms install identically and the only variable is the Node version.
-      - name: Install with the engine gate off, so both arms are comparable
-        run: npm ci --no-audit --no-fund
+      # `npm install`, not `npm ci`, and that is a result rather than a
+      # preference. Run 2 of this probe used `npm ci` and the Node 22 arm never
+      # reached the test: npm 10.9.4 refuses this lockfile outright — `Missing:
+      # vite@8.3.1 from lock file`, `Missing: esbuild@0.28.2`, and a dozen
+      # @rolldown/binding-* entries pinned at 1.2.4 against a resolved 1.2.11.
+      # npm 11, which Node 24 bundles, accepts the same lock and installs it
+      # exactly. That divergence is precisely what this PR removes, but it also
+      # means `npm ci` cannot be the shared install step for a Node 22 arm.
+      # `npm install` is what main's release-mac runs today, so using it here
+      # matches the lane being compared against and lets both arms install.
+      #
+      # engine-strict=true plus engines.node >=24.15.0 would additionally
+      # hard-fail the Node 22 arm — the feature working as designed, but it
+      # would destroy the control. Disabled for THIS JOB ONLY, so the only
+      # variable between the arms is the Node version.
+      - name: Install the way main installs, so both arms are comparable
+        run: npm install --no-audit --no-fund
         env:
           npm_config_engine_strict: "false"
 
