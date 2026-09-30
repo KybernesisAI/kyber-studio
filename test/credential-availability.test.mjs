@@ -164,3 +164,29 @@ test("the backend name is read at most once for the whole process too", () => {
   const expected = process.platform === "linux" ? 1 : 0;
   assert.equal(backendReads, expected, `read the backend name ${backendReads} time(s)`);
 });
+
+test("on a real backend a saved env value is sealed on disk and recovers to its plaintext", async () => {
+  // Criterion 3(iii): the fix must not break the path that already works. This
+  // runs LAST on purpose — `unsealEnv` asks `isEncryptionAvailable()` directly
+  // rather than through the memoised predicate, so it would add to the counter
+  // the memoisation tests above assert on.
+  //
+  // Recovery is asserted through `unsealEnv`, which is what `localMcp.ts` calls
+  // at spawn time. NOT through `listServers`, which deliberately never
+  // decrypts: it runs on every agent request and asking the keyring is what
+  // raises the prompt.
+  //
+  // One backend name, not two. The name feeds `credentialStoreCanProtect`,
+  // where both `gnome_libsecret` and `kwallet6` are covered; sealing itself
+  // goes through `encryptString` and never sees the name, so looping it here
+  // would assert nothing further.
+  const { looksSealed, unsealEnv } = await import("../src/main/mcpSecrets.ts");
+  const { safeStorage } = await import("electron");
+
+  const persisted = JSON.parse(readFileSync(join(dir, "local-mcp.json"), "utf8")).servers[0];
+  assert.ok(looksSealed(persisted.env.API_KEY), "the value on disk is not sealed");
+
+  const opened = unsealEnv(safeStorage, persisted.env);
+  assert.equal(opened.ok, true, `unsealing failed: ${opened.reason}`);
+  assert.equal(opened.env.API_KEY, "sk-live-1", "the value did not survive the round trip");
+});

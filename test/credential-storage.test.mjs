@@ -222,18 +222,32 @@ test("off Linux the reporter never asks for the backend, and the line says why",
  */
 test("availability is asked once and then remembered, whoever asks", () => {
   let asked = 0;
+  // Both stubs carry `getSelectedStorageBackend`, and the platform is injected
+  // rather than inherited. Without either, this test passed for the wrong
+  // reason on the Linux arm: the missing method threw a TypeError into the
+  // `catch` inside `credentialStoreCanProtect`, so the decision fell through to
+  // the pre-fix behaviour and the platform guard was never exercised. Found in
+  // review, 30 September 2026.
+  const linux = { platform: "linux" };
   const safeStorage = {
     isEncryptionAvailable: () => {
       asked += 1;
       return true;
     },
+    getSelectedStorageBackend: () => "gnome_libsecret",
   };
 
-  assert.equal(isCredentialStoreAvailable(safeStorage), true);
-  assert.equal(isCredentialStoreAvailable(safeStorage), true);
+  assert.equal(isCredentialStoreAvailable(safeStorage, linux), true);
+  assert.equal(isCredentialStoreAvailable(safeStorage, linux), true);
   // A second caller, standing in for the other layer: `controlPlane.ts` and
   // `localMcp.ts` share this one answer rather than holding one each.
-  assert.equal(isCredentialStoreAvailable({ isEncryptionAvailable: () => false }), true);
+  assert.equal(
+    isCredentialStoreAvailable(
+      { isEncryptionAvailable: () => false, getSelectedStorageBackend: () => "gnome_libsecret" },
+      linux,
+    ),
+    true,
+  );
 
   assert.equal(asked, 1, `asked the OS ${asked} times; each ask can raise an unlock dialog`);
 });
@@ -398,4 +412,17 @@ test("an unrecognised backend is not assumed weak", () => {
     }),
     true,
   );
+});
+
+test("a backend name that cannot be read prints as unknown, not as a crash", () => {
+  // The surviving diagnostic has its own try/catch, separate from the
+  // predicate's. Its only test was re-pointed at the predicate when the dead
+  // reporter was deleted, which left this catch uncovered — caught in review,
+  // 30 September 2026. A diagnostic that can take the app down is worse than
+  // no diagnostic.
+  const line = describeStorageDiagnostic(
+    collectStorageDiagnostic(fakeSafeStorage({ throws: true }), { platform: "linux", argv: [] }),
+  );
+
+  assert.match(line, /backend=unknown/);
 });

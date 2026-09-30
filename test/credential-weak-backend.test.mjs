@@ -33,6 +33,13 @@ import { join } from "node:path";
  *
  * So the platform is pinned to `linux` before the modules load. The weak path is
  * then exercised on both CI arms, which is strictly more coverage than skipping.
+ *
+ * This is safe because `node --test` gives each file its own process, so neither
+ * the pinned platform nor the latched availability answer is visible to the next
+ * file. It would stop being safe under `--experimental-test-isolation=none` —
+ * which would already break `mock.module` and the one-answer-per-file convention
+ * this file relies on, so it is a dependency this file joins rather than one it
+ * introduces.
  */
 Object.defineProperty(process, "platform", { value: "linux", configurable: true });
 
@@ -166,7 +173,7 @@ test("signing in holds the session in memory, and nothing reaches the disk", asy
   // same useless sealing, which is the behaviour this ticket removes.
   assert.equal(readFileSync(sessionPath(), "utf8"), before, "the session was written anyway");
   assert.ok(
-    said.some((line) => /OS encryption unavailable/.test(line)),
+    said.some((line) => /^\[auth\] OS encryption unavailable/.test(line)),
     `no remedy was said; got ${JSON.stringify(said)}`,
   );
   assert.ok(
@@ -190,15 +197,19 @@ test("an MCP env value is kept in memory only, with nothing written for it", () 
   );
 
   const onDisk = readFileSync(mcpPath(), "utf8");
+  const persisted = JSON.parse(onDisk).servers[0];
 
   // Neither in the clear...
   assert.ok(!onDisk.includes("sk-live-weak-1"), "the key is on disk in the clear");
-  // ...nor sealed with a key every machine on earth shares.
-  assert.ok(!onDisk.includes("kyb:v1:"), "the key was sealed with the weak backend");
+  // ...nor sealed with a key every machine on earth shares. Asserted on the
+  // parsed record rather than on a prefix literal: the on-disk encoding belongs
+  // to `mcpSecrets.ts`, and a test that hard-codes it goes quietly green if the
+  // prefix ever changes.
+  assert.deepEqual(persisted.env ?? {}, {}, "a value was persisted for the server");
   // The server itself is still recorded and usable this run.
   assert.equal(listServers().length, 1);
   assert.ok(
-    said.some((line) => /kept in memory only/.test(line)),
+    said.some((line) => /^\[mcp\] .*kept in memory only/.test(line)),
     `no remedy was said; got ${JSON.stringify(said)}`,
   );
 });
