@@ -62,22 +62,14 @@ export type SafeStorageLike = {
 let availabilityAnswer: boolean | null = null;
 
 export function isCredentialStoreAvailable(
-  safeStorage: Pick<SafeStorageLike, "isEncryptionAvailable">,
+  safeStorage: SafeStorageLike,
+  env: { platform: string } = process,
 ): boolean {
-  if (availabilityAnswer === null) availabilityAnswer = safeStorage.isEncryptionAvailable();
+  if (availabilityAnswer === null) {
+    availabilityAnswer = credentialStoreCanProtect(safeStorage, env);
+  }
   return availabilityAnswer;
 }
-
-export type CredentialStorageReport = {
-  platform: string;
-  encryptionAvailable: boolean;
-  /** Linux only. `null` off Linux, and `null` if the call failed. */
-  backend: string | null;
-  /** The value of an explicit `--password-store` switch, if one was given. */
-  override: string | null;
-  /** Encryption claims to be available, but the backend cannot deliver it. */
-  weak: boolean;
-};
 
 /**
  * Backends that report success while providing no real protection.
@@ -87,6 +79,56 @@ export type CredentialStorageReport = {
  * readable by anyone holding the file.
  */
 const WEAK_BACKENDS = new Set(["basic_text"]);
+
+/**
+ * Decide whether the OS credential store can actually protect a secret.
+ *
+ * @remarks
+ * Two questions, and the ORDER of them is load-bearing.
+ *
+ * `isEncryptionAvailable()` is not sufficient on Linux. It answers `true` when
+ * Chromium has fallen back to `basic_text`, so a machine with no usable keyring
+ * answers exactly like a machine with a real one. The backend name is the second
+ * question and the only one that separates them.
+ *
+ * The name is asked **first**, because asking it is free. Measured on Linux Mint,
+ * Electron 34.5.8, keyring locked: six calls to `getSelectedStorageBackend()`
+ * over thirty seconds raised no dialog, while the first call to
+ * `isEncryptionAvailable()` raised one immediately. So a machine that cannot
+ * protect anything is never asked the question that opens a keyring. Fewer
+ * prompts and less plaintext together — this is not a trade.
+ *
+ * Off Linux the name is never asked at all. `getSelectedStorageBackend()` is a
+ * Linux-only API and `isEncryptionAvailable()` is trustworthy on macOS and
+ * Windows, so the platform guard is what keeps a Linux fix from becoming a macOS
+ * crash on the path that restores a session.
+ *
+ * A name we cannot read is treated as **not weak**, and the decision falls
+ * through to `isEncryptionAvailable()`. That direction is deliberate: refusing on
+ * an unreadable name would take persistence away from every Linux user on the
+ * strength of an API error, which is a worse failure than the one this function
+ * exists to prevent.
+ *
+ * Unmemoised on purpose. The whole platform-and-backend matrix is testable here
+ * without one process per case; `isCredentialStoreAvailable` above is the
+ * memoised caller, and is tested for memoisation rather than for the matrix.
+ */
+export function credentialStoreCanProtect(
+  safeStorage: SafeStorageLike,
+  env: { platform: string } = process,
+): boolean {
+  if (env.platform === "linux") {
+    let backend: string | null = null;
+    try {
+      backend = safeStorage.getSelectedStorageBackend();
+    } catch {
+      backend = null;
+    }
+    if (backend !== null && WEAK_BACKENDS.has(backend)) return false;
+  }
+
+  return safeStorage.isEncryptionAvailable();
+}
 
 /**
  * Read an explicit `--password-store` from the command line.
@@ -107,70 +149,6 @@ export function readPasswordStoreOverride(argv: readonly string[]): string | nul
     if (arg === "--password-store") return argv[i + 1] ?? null;
   }
   return null;
-}
-
-/**
- * Ask both questions and record the answers.
- *
- * Two things are load-bearing here:
- *
- * `getSelectedStorageBackend()` is a **Linux-only** API. Calling it elsewhere
- * is how a diagnostic added for Linux becomes a crash on the platform that was
- * already working, so it is guarded by platform rather than by try/catch alone.
- *
- * It is also wrapped, because a diagnostic that can take the app down is worse
- * than no diagnostic at all. A backend we could not determine is reported as
- * unknown; it is never allowed to propagate.
- */
-export function collectCredentialStorage(
-  safeStorage: SafeStorageLike,
-  env: { platform: string; argv: readonly string[] } = {
-    platform: process.platform,
-    argv: process.argv,
-  },
-): CredentialStorageReport {
-  const encryptionAvailable = safeStorage.isEncryptionAvailable();
-
-  let backend: string | null = null;
-  if (env.platform === "linux") {
-    try {
-      backend = safeStorage.getSelectedStorageBackend();
-    } catch {
-      backend = null;
-    }
-  }
-
-  return {
-    platform: env.platform,
-    encryptionAvailable,
-    backend,
-    override: readPasswordStoreOverride(env.argv),
-    weak: encryptionAvailable && backend !== null && WEAK_BACKENDS.has(backend),
-  };
-}
-
-/**
- * One line, because it is read off a terminal on six machines and pasted into
- * a ticket. Two lines is two things to copy and one thing to lose.
- */
-export function describeCredentialStorage(report: CredentialStorageReport): string {
-  const backend =
-    report.platform === "linux" ? (report.backend ?? "unknown") : "n/a (Linux-only API)";
-
-  const fields = [
-    `platform=${report.platform}`,
-    `backend=${backend}`,
-    `encryptionAvailable=${report.encryptionAvailable}`,
-    `passwordStore=${report.override ?? "auto"}`,
-  ].join(" ");
-
-  if (!report.weak) return `[storage] ${fields}`;
-
-  return (
-    `[storage] ${fields} — WARNING: encryption reports as available, but ${report.backend} ` +
-    `uses a hard-coded key shared by every install. Anything "encrypted" here is readable ` +
-    `by anyone holding the file.`
-  );
 }
 
 /**

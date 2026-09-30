@@ -19,10 +19,12 @@ import { readPeerEvents, type PeerState } from "./peerEvents";
  * path as Slack and iMessage, so revoking a grant revokes the desktop too.
  *
  * The token is encrypted at rest with Electron's safeStorage (Keychain on
- * macOS). If the OS refuses encryption we do NOT silently fall back to
- * plaintext: a token on disk in the clear is exactly the failure a customer's
- * security review would find, so we keep it in memory and make them sign in
- * again next launch.
+ * macOS). If the OS refuses encryption — or, on Linux, offers only the
+ * `basic_text` backend, whose key is compiled into Chromium and therefore
+ * identical on every machine — we do NOT fall back to plaintext: a token on
+ * disk that anyone holding the file can read is exactly the failure a
+ * customer's security review would find, so we keep it in memory and make them
+ * sign in again next launch.
  */
 
 export type { RemoteAgent, Session };

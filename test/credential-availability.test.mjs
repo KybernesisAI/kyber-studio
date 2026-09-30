@@ -29,6 +29,7 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "kyb-availability-"));
 let availabilityAsks = 0;
+let backendReads = 0;
 
 mock.module("electron", {
   exports: {
@@ -38,7 +39,10 @@ mock.module("electron", {
         availabilityAsks += 1;
         return true;
       },
-      getSelectedStorageBackend: () => "gnome_libsecret",
+      getSelectedStorageBackend: () => {
+        backendReads += 1;
+        return "gnome_libsecret";
+      },
       encryptString: (s) => Buffer.from(`ENC(${s})`, "utf8"),
       decryptString: (b) => {
         const text = b.toString("utf8");
@@ -145,4 +149,18 @@ test("a session read, a session write and an MCP save ask the OS once between th
     1,
     `asked the OS ${availabilityAsks} times; the answer is latched and each ask can prompt`,
   );
+});
+
+test("the backend name is read at most once for the whole process too", () => {
+  // KYB-603 added a second question ahead of the availability one. It is free —
+  // measured prompt-free on a locked keyring — but it is inside the same latch,
+  // so it must not turn one memoised answer into a read per caller.
+  //
+  // Asserted per platform on purpose. `controlPlane.ts` and `localMcp.ts` do not
+  // inject an environment, so the platform comes from `process`, and off Linux
+  // the name is never asked at all. A flat `=== 1` here would be green on Linux
+  // and red on the macOS arm — which is precisely the defect the KYB-590 UAT
+  // found in three tests in this directory.
+  const expected = process.platform === "linux" ? 1 : 0;
+  assert.equal(backendReads, expected, `read the backend name ${backendReads} time(s)`);
 });
