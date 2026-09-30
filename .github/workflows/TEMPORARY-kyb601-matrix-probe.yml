@@ -45,10 +45,10 @@ jobs:
       # before the macOS arm has finished installing, so if fail-fast were true
       # the macOS arm would be cancelled mid-run and its result lost. That is
       # exactly the information KYB-599 needed and did not have.
-      - name: Fail on purpose, Linux only
-        if: matrix.os == 'ubuntu-latest'
+      - name: Fail on purpose, macOS only
+        if: matrix.os == 'macos-15'
         run: |
-          echo "Failing deliberately to demonstrate fail-fast: false."
+          echo "Failing deliberately to demonstrate that the macOS arm is advisory."
           exit 1
 
       - run: npm ci --no-audit --no-fund
