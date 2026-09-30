@@ -56,6 +56,9 @@ mock.module("electron", {
 });
 
 const { executeLocalAction, relayErrorPayload } = await import("../src/main/localExec.ts");
+// After the electron mock above, for the same reason as the dynamic import on
+// the line before it.
+const { credentialStoreName, ServerCredentialsError } = await import("../src/main/localMcp.ts");
 
 /**
  * Well-formed ciphertext that this store cannot open — a value sealed by a
@@ -169,4 +172,61 @@ test("the relay payload for that error carries no environment variable", async (
   // The `keys` property is not on the wire even though it is on the error:
   // `relayErrorPayload` projects the message and nothing else.
   assert.deepEqual(Object.keys(payload).sort(), ["error", "id"]);
+});
+
+/**
+ * The remedy must name the thing the USER'S machine actually has.
+ *
+ * Found in the KYB-590 macOS UAT, 30 September 2026: a Mac genuinely reaches
+ * the store-unavailable message, and it told the tester to "unlock your
+ * keyring" — Linux vocabulary for something macOS does not have. The store is
+ * the Keychain there, and a remedy naming the wrong object is not a remedy.
+ *
+ * These tests pin the MAPPING literally, per platform, and they are the reason
+ * the tests that drive the real code path may compose the noun instead of
+ * hard-coding it. Break the circle here, once, rather than everywhere.
+ */
+test("the credential store is named in the words each platform uses", () => {
+  assert.equal(credentialStoreName("darwin"), "Keychain");
+  assert.equal(credentialStoreName("linux"), "keyring");
+});
+
+test("an unmeasured platform gets a generic noun, not an invented instruction", () => {
+  // Windows does call it the Credential Manager, and that is deliberately NOT
+  // used: nobody has reached this state on Windows, and "unlock your Credential
+  // Manager" may not be the remedy there. A generic noun is honest; a specific
+  // one nobody has tested is advice we cannot stand behind.
+  assert.equal(credentialStoreName("win32"), "credential store");
+  assert.equal(credentialStoreName("freebsd"), "credential store");
+});
+
+test("on macOS the store-unavailable remedy says Keychain, and never says keyring", () => {
+  const error = new ServerCredentialsError("store-unavailable", "uat-zero", [], "darwin");
+
+  assert.match(error.message, /unlock your Keychain and restart Studio/i);
+  assert.ok(
+    !/\bkeyring\b/i.test(error.message),
+    `a Mac user was told to unlock a keyring: ${error.message}`,
+  );
+  // The rest of the contract is unchanged by the platform.
+  assert.match(error.message, /the OS credential store is not open/i);
+  assert.ok(!/\bretry\b/i.test(error.message), "offered a retry for a latched condition");
+  assert.deepEqual(error.keys, []);
+});
+
+test("on Linux the same remedy is unchanged — this fix took nothing away", () => {
+  const error = new ServerCredentialsError("store-unavailable", "uat-zero", [], "linux");
+
+  assert.match(error.message, /unlock your keyring and restart Studio/i);
+  assert.ok(!/Keychain/i.test(error.message));
+});
+
+test("the needs-re-entry message names no store at all, on any platform", () => {
+  // Its remedy is to remove and re-add the server, which is the same sentence
+  // everywhere. A platform-aware noun here would be a word with no job.
+  for (const platform of ["darwin", "linux", "win32"]) {
+    const error = new ServerCredentialsError("needs-re-entry", "uat-zero", ["API_KEY"], platform);
+    assert.match(error.message, /remove the server and add it again/i);
+    assert.ok(!/keyring|Keychain|credential store/i.test(error.message), platform);
+  }
 });

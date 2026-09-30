@@ -203,6 +203,27 @@ export class ConfigUnreadableError extends Error {
  * could report back — "your keyring is locked" — and buy nothing, because the
  * message discloses nothing the request itself did not already imply.
  */
+/**
+ * What the OS calls its credential store, in the words the user will see on
+ * the machine they are sitting at.
+ *
+ * "keyring" is Linux vocabulary. A macOS user told to unlock their keyring is
+ * being told to unlock something their machine does not have — MEASURED in the
+ * KYB-590 macOS UAT on 30 September 2026, where the store-unavailable path was
+ * genuinely reached on a Mac and printed exactly that.
+ *
+ * The fallback is deliberately generic rather than a guess. Windows calls its
+ * store the Credential Manager, but nobody has reached this state on Windows,
+ * and "unlock your Credential Manager" may not even be the remedy there —
+ * inventing an instruction for an unmeasured platform is how a diagnostic
+ * becomes wrong advice. What is TESTED is the mapping below, per platform.
+ */
+export function credentialStoreName(platform: string = process.platform): string {
+  if (platform === "darwin") return "Keychain";
+  if (platform === "linux") return "keyring";
+  return "credential store";
+}
+
 export class ServerCredentialsError extends Error {
   readonly code = "MCP_CREDENTIALS_UNAVAILABLE";
   readonly reason: "store-unavailable" | "needs-re-entry";
@@ -213,12 +234,17 @@ export class ServerCredentialsError extends Error {
     reason: "store-unavailable" | "needs-re-entry",
     serverName: string,
     keys: string[] = [],
+    // Explicit so a test can pin it. Three tests in this repo asserted
+    // platform-dependent behaviour without declaring a platform, inherited the
+    // host's, and failed the first time the suite ran on a Mac. A seam is
+    // cheaper than that lesson twice.
+    platform: string = process.platform,
   ) {
     // Two messages because the remedies are two: one is the environment, the
     // other is the value. Neither says "retry" — neither is retryable.
     super(
       reason === "store-unavailable"
-        ? `${serverName}'s credentials could not be read: the OS credential store is not open. Unlock your keyring and restart Studio.`
+        ? `${serverName}'s credentials could not be read: the OS credential store is not open. Unlock your ${credentialStoreName(platform)} and restart Studio.`
         : `${serverName}'s stored credentials could not be decrypted. Remove the server and add it again.`,
     );
     this.name = "ServerCredentialsError";
@@ -372,7 +398,7 @@ export function saveServers(
       if (Object.keys(typed).length > 0) {
         unpersistedEnv.set(server.id, typed);
         console.warn(
-          `[mcp] OS encryption unavailable — ${server.id}'s environment is kept in memory only. Unlock your keyring and restart Studio to store it.`,
+          `[mcp] OS encryption unavailable — ${server.id}'s environment is kept in memory only. Unlock your ${credentialStoreName()} and restart Studio to store it.`,
         );
       } else {
         unpersistedEnv.delete(server.id);

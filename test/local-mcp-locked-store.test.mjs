@@ -44,8 +44,23 @@ mock.module("electron", {
   },
 });
 
-const { callServer, credentialFailureIds, listServers, saveServers, serverStatus, testServer } =
-  await import("../src/main/localMcp.ts");
+// `credentialStoreName` is composed into the assertions below rather than the
+// noun being hard-coded: the remedy's noun is platform-dependent, and these
+// tests drive the real code path on whatever host they run on. The mapping
+// itself is pinned literally, per platform, in mcp-credential-messages.test.mjs
+// — the circle is broken there, once, rather than here in every assertion.
+//
+// It must come from this dynamic import, after `mock.module` above: a static
+// import would load the real module before the electron mock exists.
+const {
+  callServer,
+  credentialFailureIds,
+  credentialStoreName,
+  listServers,
+  saveServers,
+  serverStatus,
+  testServer,
+} = await import("../src/main/localMcp.ts");
 
 const configPath = () => join(dir, "local-mcp.json");
 const raw = () => readFileSync(configPath(), "utf8");
@@ -130,7 +145,7 @@ test("the child process is never handed ciphertext — it refuses, and says unlo
   assert.equal(result.ok, false, "started a server whose stored credentials could not be opened");
   assert.match(
     result.error ?? "",
-    /unlock your keyring and restart/i,
+    new RegExp(`unlock your ${credentialStoreName()} and restart Studio`, "i"),
     "the remedy offered was not the one that works — availability is latched per process",
   );
   assert.ok(
@@ -167,7 +182,11 @@ test("a locked keyring reaches the relay as a remedy, and as nothing else", asyn
   }
 
   assert.equal(thrown.reason, "store-unavailable", "a locked keyring was blamed on the credential");
-  assert.match(thrown.message, /unlock your keyring and restart studio/i, "the remedy was lost");
+  assert.match(
+    thrown.message,
+    new RegExp(`unlock your ${credentialStoreName()} and restart Studio`, "i"),
+    "the remedy was lost",
+  );
   assert.ok(!/\bretry\b/i.test(thrown.message), "offered a retry for a latched condition");
   for (const key of ["DATABASE_URL", "ACME_INTERNAL_TOKEN"]) {
     assert.ok(!thrown.message.includes(key), `\`${key}\` reached a message that goes to the relay`);
