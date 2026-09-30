@@ -193,7 +193,12 @@ test("the reporter does not touch the keyring until it is called", () => {
     },
   };
 
-  const report = createCredentialStorageReporter(safeStorage, () => {}, immediately);
+  // The platform is pinned rather than inherited from the host. What is asserted
+  // below is LINUX behaviour: asking for the backend at all only happens there.
+  const report = createCredentialStorageReporter(safeStorage, () => {}, immediately, {
+    platform: "linux",
+    argv: [],
+  });
   assert.equal(asked, 0, "constructing the reporter asked the OS anything at all");
 
   report();
@@ -231,7 +236,13 @@ test("the call returns before the OS is asked, so nothing waits inside the handl
   };
 
   const lines = [];
-  const report = createCredentialStorageReporter(safeStorage, (l) => lines.push(l));
+  // `undefined` for the schedule keeps the DEFAULT deferral, which is the
+  // property under test here; the fourth argument pins the platform, because
+  // asking for the backend at all is Linux-only behaviour.
+  const report = createCredentialStorageReporter(safeStorage, (l) => lines.push(l), undefined, {
+    platform: "linux",
+    argv: [],
+  });
 
   report();
   assert.equal(asked, 0, "the OS was asked on the caller's tick");
@@ -264,7 +275,11 @@ test("two calls before the deferred report runs still ask once", async () => {
   };
 
   const lines = [];
-  const report = createCredentialStorageReporter(safeStorage, (l) => lines.push(l));
+  // As above: default schedule, pinned platform.
+  const report = createCredentialStorageReporter(safeStorage, (l) => lines.push(l), undefined, {
+    platform: "linux",
+    argv: [],
+  });
 
   report();
   report();
@@ -273,6 +288,38 @@ test("two calls before the deferred report runs still ask once", async () => {
 
   assert.equal(asked, 1);
   assert.equal(lines.length, 1);
+});
+
+test("off Linux the reporter never asks for the backend, and the line says why", () => {
+  // The Linux-only guard in collectStorageDiagnostic has to survive the trip
+  // through the reporter, which is a separate entry point with its own default.
+  //
+  // This test exists because it did not. Every reporter test in this file took
+  // its platform from the HOST, so all of them asserted Linux behaviour and
+  // three of them failed the first time the suite was run on a Mac — found by
+  // the KYB-590 UAT tester before launching the app. The app was always right;
+  // the tests simply never said which platform they were simulating.
+  let asked = 0;
+  const safeStorage = {
+    isEncryptionAvailable: () => true,
+    getSelectedStorageBackend: () => {
+      asked += 1;
+      return "gnome_libsecret";
+    },
+  };
+
+  const lines = [];
+  const report = createCredentialStorageReporter(safeStorage, (l) => lines.push(l), immediately, {
+    platform: "darwin",
+    argv: [],
+  });
+
+  report();
+
+  assert.equal(asked, 0, "the Linux-only backend API was called on darwin");
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /platform=darwin/);
+  assert.match(lines[0], /backend=n\/a \(Linux-only API\)/);
 });
 
 /**

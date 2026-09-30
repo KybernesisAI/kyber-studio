@@ -211,6 +211,7 @@ export function createCredentialStorageReporter(
   safeStorage: SafeStorageLike,
   log: (line: string) => void = console.log,
   schedule: (task: () => void) => void = setImmediate,
+  env: { platform: string; argv: readonly string[] } = process,
 ): () => void {
   let reported = false;
   return () => {
@@ -219,7 +220,7 @@ export function createCredentialStorageReporter(
     if (reported) return;
     reported = true;
     schedule(() => {
-      log(describeStorageDiagnostic(collectStorageDiagnostic(safeStorage)));
+      log(describeStorageDiagnostic(collectStorageDiagnostic(safeStorage, env)));
     });
   };
 }
