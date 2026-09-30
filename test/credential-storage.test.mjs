@@ -7,6 +7,7 @@ import {
   collectCredentialStorage,
   createCredentialStorageReporter,
   describeCredentialStorage,
+  isCredentialStoreAvailable,
 } from "../src/main/credentialStorage.ts";
 
 /**
@@ -180,19 +181,33 @@ test("the reporter does not touch the keyring until it is called", () => {
   //
   // Construction must therefore be inert; only the call may ask.
   let asked = 0;
+  let availabilityAsked = 0;
   const safeStorage = {
     isEncryptionAvailable: () => {
-      asked += 1;
+      availabilityAsked += 1;
       return true;
     },
-    getSelectedStorageBackend: () => "gnome_libsecret",
+    getSelectedStorageBackend: () => {
+      asked += 1;
+      return "gnome_libsecret";
+    },
   };
 
-  const report = createCredentialStorageReporter(safeStorage, () => {}, immediately);
-  assert.equal(asked, 0, "constructing the reporter asked the OS about encryption");
+  // The platform is pinned rather than inherited from the host. What is asserted
+  // below is LINUX behaviour: asking for the backend at all only happens there.
+  const report = createCredentialStorageReporter(safeStorage, () => {}, immediately, {
+    platform: "linux",
+    argv: [],
+  });
+  assert.equal(asked, 0, "constructing the reporter asked the OS anything at all");
 
   report();
   assert.equal(asked, 1);
+  // KYB-590: the startup line is prompt-free. Measured on Linux Mint with a
+  // locked keyring — getSelectedStorageBackend() raised no dialog across thirty
+  // seconds, isEncryptionAvailable() raised one immediately. The diagnostic
+  // keeps the backend name and defers the question that costs a prompt.
+  assert.equal(availabilityAsked, 0, "the startup diagnostic asked about encryption and would prompt");
 });
 
 test("the call returns before the OS is asked, so nothing waits inside the handler", async () => {
@@ -208,16 +223,26 @@ test("the call returns before the OS is asked, so nothing waits inside the handl
   // blank window behind the prompt is accepted; not blocking the handler is
   // the property worth keeping.
   let asked = 0;
+  let availabilityAsked = 0;
   const safeStorage = {
     isEncryptionAvailable: () => {
-      asked += 1;
+      availabilityAsked += 1;
       return true;
     },
-    getSelectedStorageBackend: () => "gnome_libsecret",
+    getSelectedStorageBackend: () => {
+      asked += 1;
+      return "gnome_libsecret";
+    },
   };
 
   const lines = [];
-  const report = createCredentialStorageReporter(safeStorage, (l) => lines.push(l));
+  // `undefined` for the schedule keeps the DEFAULT deferral, which is the
+  // property under test here; the fourth argument pins the platform, because
+  // asking for the backend at all is Linux-only behaviour.
+  const report = createCredentialStorageReporter(safeStorage, (l) => lines.push(l), undefined, {
+    platform: "linux",
+    argv: [],
+  });
 
   report();
   assert.equal(asked, 0, "the OS was asked on the caller's tick");
@@ -226,8 +251,10 @@ test("the call returns before the OS is asked, so nothing waits inside the handl
   await nextTick();
 
   assert.equal(asked, 1);
+  assert.equal(availabilityAsked, 0, "the deferred report asked about encryption and would prompt");
   assert.equal(lines.length, 1);
   assert.match(lines[0], /^\[storage\] /);
+  assert.match(lines[0], /encryptionAvailable=deferred/);
 });
 
 test("two calls before the deferred report runs still ask once", async () => {
@@ -235,16 +262,24 @@ test("two calls before the deferred report runs still ask once", async () => {
   // scheduled work runs — otherwise two windows opening in the same tick queue
   // two keyring questions, which is two password dialogs.
   let asked = 0;
+  let availabilityAsked = 0;
   const safeStorage = {
     isEncryptionAvailable: () => {
-      asked += 1;
+      availabilityAsked += 1;
       return true;
     },
-    getSelectedStorageBackend: () => "gnome_libsecret",
+    getSelectedStorageBackend: () => {
+      asked += 1;
+      return "gnome_libsecret";
+    },
   };
 
   const lines = [];
-  const report = createCredentialStorageReporter(safeStorage, (l) => lines.push(l));
+  // As above: default schedule, pinned platform.
+  const report = createCredentialStorageReporter(safeStorage, (l) => lines.push(l), undefined, {
+    platform: "linux",
+    argv: [],
+  });
 
   report();
   report();
@@ -253,4 +288,62 @@ test("two calls before the deferred report runs still ask once", async () => {
 
   assert.equal(asked, 1);
   assert.equal(lines.length, 1);
+});
+
+test("off Linux the reporter never asks for the backend, and the line says why", () => {
+  // The Linux-only guard in collectStorageDiagnostic has to survive the trip
+  // through the reporter, which is a separate entry point with its own default.
+  //
+  // This test exists because it did not. Every reporter test in this file took
+  // its platform from the HOST, so all of them asserted Linux behaviour and
+  // three of them failed the first time the suite was run on a Mac — found by
+  // the KYB-590 UAT tester before launching the app. The app was always right;
+  // the tests simply never said which platform they were simulating.
+  let asked = 0;
+  const safeStorage = {
+    isEncryptionAvailable: () => true,
+    getSelectedStorageBackend: () => {
+      asked += 1;
+      return "gnome_libsecret";
+    },
+  };
+
+  const lines = [];
+  const report = createCredentialStorageReporter(safeStorage, (l) => lines.push(l), immediately, {
+    platform: "darwin",
+    argv: [],
+  });
+
+  report();
+
+  assert.equal(asked, 0, "the Linux-only backend API was called on darwin");
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /platform=darwin/);
+  assert.match(lines[0], /backend=n\/a \(Linux-only API\)/);
+});
+
+/**
+ * Deliberately last, and deliberately the only test in this file that touches
+ * it: `isCredentialStoreAvailable` memoises for the life of the PROCESS, by
+ * design and with no reset hook, so a second answer needs a second file. The
+ * cross-layer property — one ask across a session read, a session write and an
+ * MCP save — is in `credential-availability.test.mjs`, which is the process
+ * where all three run.
+ */
+test("availability is asked once and then remembered, whoever asks", () => {
+  let asked = 0;
+  const safeStorage = {
+    isEncryptionAvailable: () => {
+      asked += 1;
+      return true;
+    },
+  };
+
+  assert.equal(isCredentialStoreAvailable(safeStorage), true);
+  assert.equal(isCredentialStoreAvailable(safeStorage), true);
+  // A second caller, standing in for the other layer: `controlPlane.ts` and
+  // `localMcp.ts` share this one answer rather than holding one each.
+  assert.equal(isCredentialStoreAvailable({ isEncryptionAvailable: () => false }), true);
+
+  assert.equal(asked, 1, `asked the OS ${asked} times; each ask can raise an unlock dialog`);
 });

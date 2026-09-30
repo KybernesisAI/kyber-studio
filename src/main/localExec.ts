@@ -443,7 +443,17 @@ function listLocalDir(payload: Record<string, unknown>): unknown {
   return { root, count: entries.length, entries };
 }
 
-async function execute(
+/**
+ * Run one approved action and answer with what the relay will carry.
+ *
+ * Exported for one reason: this is the last point before a result leaves the
+ * machine, and the SHAPE of what it returns is a security property rather than
+ * a detail. `servers/list` in particular must project, and nothing was
+ * executing this function until KYB-590 — replacing the projection with
+ * `.map(server => server)` left the whole suite green while shipping every
+ * server's sealed `env` and command line to a remote agent.
+ */
+export async function executeLocalAction(
   action: LocalAction,
   payload: Record<string, unknown>,
   onFrame?: (chunk: string) => void,
@@ -465,6 +475,11 @@ async function execute(
       // Discovery is answered from config, without starting anything: an agent
       // asking what exists should not spin up a database connection to find out.
       if (payload.method === "servers/list") {
+        // Project to id and name, and do not be tempted to pass the server
+        // through. `listServers` returns values SEALED as of KYB-590, so a
+        // regression here does not merely over-share: it hands a remote agent
+        // `kyb:v1:` ciphertext, the command line, and the working directory,
+        // for every enabled server. See test/local-exec-relay.test.mjs.
         return {
           servers: listServers()
             .filter((server) => server.enabled)
@@ -477,6 +492,25 @@ async function execute(
         params: (payload.params ?? {}) as Record<string, unknown>,
       });
   }
+}
+
+/**
+ * The exact body posted to `/api/local-exec/responses` when an action throws.
+ *
+ * Exported, and called from the catch below rather than written out inline, so
+ * a test can assert what a REMOTE AGENT receives instead of rebuilding the
+ * shape by hand and hoping the two stay in step. Two fixtures in
+ * `test/local-exec-relay.test.mjs` did exactly that, and a hand-built payload
+ * is only as good as the comment claiming it matches.
+ *
+ * It is a DUMB projection on purpose. Redacting here was offered in round 3 and
+ * refused: it would mask this leak rather than remove it, and mask the next one
+ * too. Anything that must not reach a remote agent must not be in `message` —
+ * see `ConfigUnreadableError.path` and `ServerCredentialsError.keys`, both of
+ * which are properties for this reason.
+ */
+export function relayErrorPayload(id: string, error: unknown): { id: string; error: string } {
+  return { id, error: error instanceof Error ? error.message : String(error) };
 }
 
 // ── the loop ────────────────────────────────────────────────────────────────
@@ -605,16 +639,13 @@ export function startLocalExec(): void {
         buffered = "";
         void post("/api/local-exec/frames", { id: request.id, chunk });
       };
-      const result = await execute(request.action, request.payload, (chunk) => {
+      const result = await executeLocalAction(request.action, request.payload, (chunk) => {
         buffered += chunk;
         flush();
       });
       await post("/api/local-exec/responses", { id: request.id, result });
     } catch (e) {
-      await post("/api/local-exec/responses", {
-        id: request.id,
-        error: e instanceof Error ? e.message : String(e),
-      });
+      await post("/api/local-exec/responses", relayErrorPayload(request.id, e));
     }
     if (sender && !sender.isDestroyed()) sender.send("studio:local-done", { id: request.id });
   };
