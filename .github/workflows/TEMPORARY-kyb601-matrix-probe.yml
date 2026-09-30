@@ -39,6 +39,18 @@ jobs:
           echo "node:      $(node -v)"
           echo "npm:       $(npm -v)"
 
+      # DELIBERATE FAILURE, Linux arm only. KYB-601 criterion 2 asks for evidence
+      # that one arm failing does not cancel the other, and the only way to show
+      # that is to fail one. It sits early on purpose: the Linux arm is dead
+      # before the macOS arm has finished installing, so if fail-fast were true
+      # the macOS arm would be cancelled mid-run and its result lost. That is
+      # exactly the information KYB-599 needed and did not have.
+      - name: Fail on purpose, Linux only
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          echo "Failing deliberately to demonstrate fail-fast: false."
+          exit 1
+
       - run: npm ci --no-audit --no-fund
 
       - name: Typecheck main
