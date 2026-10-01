@@ -7,19 +7,49 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      # fail-fast: false is load-bearing, not style. With the default true, a
+      # macOS failure cancels the Linux job — destroying the comparison that
+      # tells "broken everywhere" apart from "broken on macOS". KYB-599 turned
+      # entirely on that distinction, and establishing it after the fact needed
+      # a purpose-built controlled experiment because the information had been
+      # thrown away.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    # The macOS arm is ADVISORY, not blocking, and this line is where that is
+    # set: flipping it to blocking means deleting this key, nothing else.
+    #
+    # Why start advisory: this suite contains tests that observe a race —
+    # test/atomic-write.test.mjs samples a temp file from another thread while
+    # a 40 MB write is in flight — and its behaviour differs measurably between
+    # ext4 and APFS. They are correct today. Gating every merge on them from
+    # day one converts an unmeasured flake rate into a merge queue problem, so
+    # the arm runs and reports for two weeks first and the decision is taken
+    # from that data. KYB-601 records the follow-up.
+    continue-on-error: ${{ matrix.os == 'macos-15' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
-      # install, not ci: this lock is written by npm 11 locally and the runner
-      # ships npm 10, and the two resolve a transitive range differently — npm
-      # ci then refuses a lock that installs perfectly well. Reproducibility
-      # loses here to a release pipeline that runs, and the build is still
-      # pinned by the lock for everything the two agree on.
-      - run: npm install --no-audit --no-fund
+      # ci, not install: .nvmrc pins Node 24.21.0, which bundles npm 11.19.0 —
+      # the same npm line that writes this lock — so `npm ci` installs it
+      # exactly. This was `npm install` while the runner was on Node 22, which
+      # ships npm 10: the two resolve a transitive range differently, and npm ci
+      # refused a lock that installed perfectly well (`Missing: vite@8.3.1 from
+      # lock file`). Moving to Node 24 removed that divergence. `npm ci` is what
+      # keeps the build reproducible — `npm install` re-resolves in-range
+      # versions on every run, so it can build from a tree the lock never
+      # described.
+      #
+      # Note the runner images cache different Node builds: ubuntu-24.04 has
+      # 24.21.0 ready, macos-15 caches 24.19.0, so the macOS arm downloads the
+      # pinned version. That is the pin working as intended — both arms run the
+      # same Node — and it costs a few seconds.
+      - run: npm ci --no-audit --no-fund
 
       # Typecheck both processes separately: they have different tsconfigs and
       # different globals, and a renderer mistake does not surface in a main
@@ -30,6 +60,10 @@ jobs:
       - name: Typecheck renderer
         run: npx tsc --noEmit -p tsconfig.web.json
 
+      # Build before Tests, deliberately: test/renderer-sandbox.test.mjs reads
+      # the emitted out/preload/index.cjs and skips itself when it is absent.
+      # This order is why CI reports 0 skipped where a bare `npm test` reports
+      # one.
       - name: Build
         run: npx electron-vite build
 

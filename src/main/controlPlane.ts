@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { app, safeStorage, shell } from "electron";
 import type { RemoteAgent,
   RemoteRoom, Session } from "@shared/ipc";
+import { isCredentialStoreAvailable } from "./credentialStorage";
 import { readPeerEvents, type PeerState } from "./peerEvents";
 
 /**
@@ -18,10 +19,12 @@ import { readPeerEvents, type PeerState } from "./peerEvents";
  * path as Slack and iMessage, so revoking a grant revokes the desktop too.
  *
  * The token is encrypted at rest with Electron's safeStorage (Keychain on
- * macOS). If the OS refuses encryption we do NOT silently fall back to
- * plaintext: a token on disk in the clear is exactly the failure a customer's
- * security review would find, so we keep it in memory and make them sign in
- * again next launch.
+ * macOS). If the OS refuses encryption — or, on Linux, offers only the
+ * `basic_text` backend, whose key is compiled into Chromium and therefore
+ * identical on every machine — we do NOT fall back to plaintext: a token on
+ * disk that anyone holding the file can read is exactly the failure a
+ * customer's security review would find, so we keep it in memory and make them
+ * sign in again next launch.
  */
 
 export type { RemoteAgent, Session };
@@ -106,7 +109,14 @@ export function loadSession(): Session | null {
   if (session) return session;
   try {
     const p = storePath();
-    if (!existsSync(p) || !safeStorage.isEncryptionAvailable()) return null;
+    // ORDER IS LOAD-BEARING. `existsSync` must stay first and must
+    // short-circuit: a fresh install, or anyone signed out, has no session file
+    // and must never be asked about the keyring at all — asking is what raises
+    // the OS unlock dialog, and a cold start that prompts for a keyring before
+    // the user has done anything is the behaviour KYB-590 exists to remove.
+    // Swapping these two reads identically and prompts on every cold start;
+    // `test/credential-availability.test.mjs` asserts zero asks with no file.
+    if (!existsSync(p) || !isCredentialStoreAvailable(safeStorage)) return null;
     const decrypted = safeStorage.decryptString(readFileSync(p));
     const parsed = JSON.parse(decrypted) as Session;
     // An expired ACCESS token is not a signed-out user. The refresh token
@@ -127,7 +137,10 @@ export function loadSession(): Session | null {
 function saveSession(next: Session | null): void {
   session = next;
   if (!next) return;
-  if (!safeStorage.isEncryptionAvailable()) {
+  // The same one answer the read used. This was a second raw ask, which on a
+  // locked keyring meant a second dialog for a question the OS had already
+  // latched; see `isCredentialStoreAvailable`.
+  if (!isCredentialStoreAvailable(safeStorage)) {
     console.warn("[auth] OS encryption unavailable — keeping the session in memory only.");
     return;
   }

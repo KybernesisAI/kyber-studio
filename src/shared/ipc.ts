@@ -33,6 +33,36 @@ export interface LocalMcpServer {
   enabled: boolean;
 }
 
+/** How a save should behave when the config already on disk cannot be read. */
+export interface SaveMcpServersOptions {
+  /**
+   * `refuse` (the default) writes nothing. `quarantine` renames the damaged
+   * file aside and writes the new config — the explicit, user-initiated way
+   * out of a config nobody can read.
+   *
+   * It is in the IPC signature because without it the escape hatch is
+   * unreachable BY CONSTRUCTION: `saveServers` takes the option, but no
+   * renderer call could carry it, so the only code that could ever recover a
+   * damaged config was code that does not run in this app.
+   */
+  onUnreadableConfig?: "refuse" | "quarantine";
+}
+
+/**
+ * What `mcpServers` and `saveMcpServers` answer with.
+ *
+ * Discriminated rather than thrown, because a thrown error does NOT survive
+ * this boundary in any useful form. Electron replies to a rejected
+ * `ipcMain.handle` with the error's `toString()`, and the renderer throws a
+ * fresh plain `Error` built from that string: `instanceof` is gone, `name` is
+ * `"Error"`, and any own property — a `code`, a `path` — is gone with it. So
+ * the one failure the user can be walked out of would arrive indistinguishable
+ * from a disk fault. A value crosses intact; an error does not.
+ */
+export type McpServersResult =
+  | { ok: true; servers: LocalMcpServer[] }
+  | { ok: false; code: "MCP_CONFIG_UNREADABLE"; path: string };
+
 /**
  * The renderer's whole view of the outside world.
  *
@@ -268,8 +298,11 @@ export interface StudioApi {
     error?: string;
     signInUrl?: string;
   }>;
-  mcpServers(): Promise<LocalMcpServer[]>;
-  saveMcpServers(servers: LocalMcpServer[]): Promise<LocalMcpServer[]>;
+  mcpServers(): Promise<McpServersResult>;
+  saveMcpServers(
+    servers: LocalMcpServer[],
+    options?: SaveMcpServersOptions,
+  ): Promise<McpServersResult>;
   updaterState(): Promise<UpdateState>;
   updaterCheck(): Promise<{ ok: boolean; error?: string }>;
   updaterDownload(): Promise<{ ok: boolean; error?: string }>;

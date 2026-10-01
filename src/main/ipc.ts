@@ -1,5 +1,6 @@
 import { BrowserWindow, Notification, ipcMain, shell, type WebContents } from "electron";
 import type { Attachment } from "../shared/ipc";
+import type { McpServersResult, SaveMcpServersOptions } from "../shared/ipc";
 import type { VoiceContext } from "../shared/ipc";
 import { closeOrbWindow, createLiveSession, moveOrbWindow, toggleOrbWindow, voiceAsk, voiceContext } from "./voice";
 import { loadState, pickFolder, saveState } from "./store";
@@ -12,7 +13,14 @@ import {
   saveRemoteFile,
 } from "./deliveredFile";
 import { listSessions, recordSession, replaySession } from "./sessionIndex";
-import { type LocalMcpServer, authenticate, listServers, saveServers, testServer } from "./localMcp";
+import {
+  ConfigUnreadableError,
+  type LocalMcpServer,
+  authenticate,
+  listServers,
+  saveServers,
+  testServer,
+} from "./localMcp";
 import {
   type LocalAction,
   type LocalPermission,
@@ -61,6 +69,40 @@ import {
  * a device code never sits in web content.
  */
 let pending: DeviceStart | null = null;
+
+/**
+ * The bodies of the two MCP-config handlers, exported so they are reachable.
+ *
+ * `ipcMain.handle` closures are not: nothing under `test/` can call one, so the
+ * suite could only ever assert what `listServers` does in-process and reason
+ * about the rest. That reasoning was wrong — see `McpServersResult` — and the
+ * only way to stop it being wrong again is to let a test call the thing the
+ * renderer actually calls.
+ */
+export function mcpServersResult(): McpServersResult {
+  try {
+    return { ok: true, servers: listServers() };
+  } catch (error) {
+    if (!(error instanceof ConfigUnreadableError)) throw error;
+    return { ok: false, code: error.code, path: error.path };
+  }
+}
+
+export function saveMcpServersResult(
+  servers: LocalMcpServer[],
+  options?: SaveMcpServersOptions,
+): McpServersResult {
+  try {
+    saveServers(servers, options ?? {});
+    return { ok: true, servers: listServers() };
+  } catch (error) {
+    // Anything else — a full disk, a permission fault — still throws, and the
+    // renderer still shows it as an unexplained failure. This branch is only
+    // for the state a user can be walked out of.
+    if (!(error instanceof ConfigUnreadableError)) throw error;
+    return { ok: false, code: error.code, path: error.path };
+  }
+}
 
 export function registerIpc(): void {
   ipcMain.handle("studio:session", () => currentSession());
@@ -174,11 +216,12 @@ export function registerIpc(): void {
 
   ipcMain.handle("studio:testMcpServer", (_e, id: string) => testServer(id));
 
-  ipcMain.handle("studio:mcpServers", () => listServers());
-  ipcMain.handle("studio:saveMcpServers", (_e, servers: LocalMcpServer[]) => {
-    saveServers(servers);
-    return listServers();
-  });
+  ipcMain.handle("studio:mcpServers", () => mcpServersResult());
+  ipcMain.handle(
+    "studio:saveMcpServers",
+    (_e, servers: LocalMcpServer[], options?: SaveMcpServersOptions) =>
+      saveMcpServersResult(servers, options),
+  );
 
   ipcMain.handle("studio:openExternal", (_e, url: string) => shell.openExternal(url));
 
