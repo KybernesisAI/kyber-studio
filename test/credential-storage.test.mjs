@@ -4,10 +4,12 @@ import assert from "node:assert/strict";
 // No Electron imports in the module under test — the safeStorage object is
 // passed in — so node --test can load it directly under --experimental-strip-types.
 import {
-  collectCredentialStorage,
+  collectStorageDiagnostic,
   createCredentialStorageReporter,
-  describeCredentialStorage,
+  credentialStoreCanProtect,
+  describeStorageDiagnostic,
   isCredentialStoreAvailable,
+  readPasswordStoreOverride,
 } from "../src/main/credentialStorage.ts";
 
 /**
@@ -19,9 +21,12 @@ import {
  * weak case has been invisible: the promise in controlPlane.ts is kept on some
  * machines and quietly broken on others, and we cannot tell which is which.
  *
- * These tests are about the honesty of one printed line. The interesting cases
- * are the ones where the two answers disagree, and the ones where asking the
- * question at all would throw.
+ * Two layers are tested here, and the split matters. `credentialStoreCanProtect`
+ * is pure and unmemoised, so it carries the platform-by-backend matrix — the
+ * memoised `isCredentialStoreAvailable` latches on its first call, and a matrix
+ * written against it would pass every later case without exercising anything.
+ * The reporter tests cover the printed line. The interesting cases are the ones
+ * where the two answers disagree, and the ones where asking would throw.
  */
 
 /** A stand-in for Electron's safeStorage, so no Electron is needed here. */
@@ -34,121 +39,6 @@ function fakeSafeStorage({ available = true, backend = "gnome_libsecret", throws
     },
   };
 }
-
-test("on Linux it reports the backend beside the availability answer", () => {
-  const report = collectCredentialStorage(fakeSafeStorage({ backend: "gnome_libsecret" }), {
-    platform: "linux",
-    argv: ["/usr/bin/kyber-studio"],
-  });
-
-  assert.equal(report.platform, "linux");
-  assert.equal(report.encryptionAvailable, true);
-  assert.equal(report.backend, "gnome_libsecret");
-  assert.equal(report.override, null);
-  assert.equal(report.weak, false);
-});
-
-test("basic_text with encryption 'available' is the case worth shouting about", () => {
-  // This is the disagreement. Reporting it as a plain fact is the whole point:
-  // a machine in this state looks safe from inside the app and is not.
-  const report = collectCredentialStorage(fakeSafeStorage({ available: true, backend: "basic_text" }), {
-    platform: "linux",
-    argv: [],
-  });
-
-  assert.equal(report.weak, true);
-
-  const line = describeCredentialStorage(report);
-  assert.match(line, /basic_text/);
-  assert.match(line, /hard-coded key/);
-});
-
-test("a real backend produces no warning", () => {
-  const line = describeCredentialStorage(
-    collectCredentialStorage(fakeSafeStorage({ backend: "kwallet6" }), {
-      platform: "linux",
-      argv: [],
-    }),
-  );
-
-  assert.match(line, /backend=kwallet6/);
-  assert.doesNotMatch(line, /hard-coded key/);
-});
-
-test("off Linux the backend is never asked for", () => {
-  // getSelectedStorageBackend is a Linux-only API. Calling it on macOS is how
-  // a diagnostic turns into a crash on the platform that was working.
-  let asked = false;
-  const safeStorage = {
-    isEncryptionAvailable: () => true,
-    getSelectedStorageBackend: () => {
-      asked = true;
-      return "unreachable";
-    },
-  };
-
-  const report = collectCredentialStorage(safeStorage, { platform: "darwin", argv: [] });
-
-  assert.equal(asked, false);
-  assert.equal(report.backend, null);
-  assert.equal(report.encryptionAvailable, true);
-  assert.equal(report.weak, false);
-  assert.match(describeCredentialStorage(report), /platform=darwin/);
-});
-
-test("a throwing backend call is reported, not propagated", () => {
-  // A diagnostic that can take the app down is worse than no diagnostic.
-  const report = collectCredentialStorage(fakeSafeStorage({ throws: true }), {
-    platform: "linux",
-    argv: [],
-  });
-
-  assert.equal(report.backend, null);
-  assert.match(describeCredentialStorage(report), /backend=unknown/);
-});
-
-test("an explicit --password-store is recorded, because it overrides detection", () => {
-  // Without this the measurements are ambiguous: a machine forced onto
-  // gnome-libsecret looks identical to one that chose it.
-  const report = collectCredentialStorage(fakeSafeStorage(), {
-    platform: "linux",
-    argv: ["/usr/bin/kyber-studio", "--password-store=gnome-libsecret"],
-  });
-
-  assert.equal(report.override, "gnome-libsecret");
-  assert.match(describeCredentialStorage(report), /passwordStore=gnome-libsecret/);
-});
-
-test("the space-separated form of the switch is read too", () => {
-  const report = collectCredentialStorage(fakeSafeStorage(), {
-    platform: "linux",
-    argv: ["/usr/bin/kyber-studio", "--password-store", "kwallet6"],
-  });
-
-  assert.equal(report.override, "kwallet6");
-});
-
-test("with no switch the override reads as auto, not as absent", () => {
-  const line = describeCredentialStorage(
-    collectCredentialStorage(fakeSafeStorage(), { platform: "linux", argv: [] }),
-  );
-
-  assert.match(line, /passwordStore=auto/);
-});
-
-test("the whole report is one line", () => {
-  // It is read off a terminal on six VMs and pasted into a ticket. Two lines
-  // is two things to copy and one thing to lose.
-  for (const platform of ["linux", "darwin", "win32"]) {
-    for (const backend of ["basic_text", "gnome_libsecret"]) {
-      const line = describeCredentialStorage(
-        collectCredentialStorage(fakeSafeStorage({ backend }), { platform, argv: [] }),
-      );
-      assert.equal(line.includes("\n"), false, `${platform}/${backend} wrapped`);
-      assert.match(line, /^\[storage\] /);
-    }
-  }
-});
 
 /** Run the scheduled work immediately, for the tests that are not about timing. */
 const immediately = (task) => task();
@@ -332,18 +222,207 @@ test("off Linux the reporter never asks for the backend, and the line says why",
  */
 test("availability is asked once and then remembered, whoever asks", () => {
   let asked = 0;
+  // Both stubs carry `getSelectedStorageBackend`, and the platform is injected
+  // rather than inherited. Without either, this test passed for the wrong
+  // reason on the Linux arm: the missing method threw a TypeError into the
+  // `catch` inside `credentialStoreCanProtect`, so the decision fell through to
+  // the pre-fix behaviour and the platform guard was never exercised. Found in
+  // review, 30 September 2026.
+  const linux = { platform: "linux" };
   const safeStorage = {
     isEncryptionAvailable: () => {
       asked += 1;
       return true;
     },
+    getSelectedStorageBackend: () => "gnome_libsecret",
   };
 
-  assert.equal(isCredentialStoreAvailable(safeStorage), true);
-  assert.equal(isCredentialStoreAvailable(safeStorage), true);
+  assert.equal(isCredentialStoreAvailable(safeStorage, linux), true);
+  assert.equal(isCredentialStoreAvailable(safeStorage, linux), true);
   // A second caller, standing in for the other layer: `controlPlane.ts` and
   // `localMcp.ts` share this one answer rather than holding one each.
-  assert.equal(isCredentialStoreAvailable({ isEncryptionAvailable: () => false }), true);
+  assert.equal(
+    isCredentialStoreAvailable(
+      { isEncryptionAvailable: () => false, getSelectedStorageBackend: () => "gnome_libsecret" },
+      linux,
+    ),
+    true,
+  );
 
   assert.equal(asked, 1, `asked the OS ${asked} times; each ask can raise an unlock dialog`);
+});
+
+test("an explicit --password-store is recorded, because it overrides detection", () => {
+  // Without this the measurements are ambiguous: a machine forced onto
+  // gnome-libsecret looks identical to one that chose it.
+  const argv = ["/usr/bin/kyber-studio", "--password-store=gnome-libsecret"];
+
+  assert.equal(readPasswordStoreOverride(argv), "gnome-libsecret");
+  assert.match(
+    describeStorageDiagnostic(collectStorageDiagnostic(fakeSafeStorage(), { platform: "linux", argv })),
+    /passwordStore=gnome-libsecret/,
+  );
+});
+
+test("the space-separated form of the switch is read too", () => {
+  assert.equal(
+    readPasswordStoreOverride(["/usr/bin/kyber-studio", "--password-store", "kwallet6"]),
+    "kwallet6",
+  );
+});
+
+test("with no switch the override reads as auto, not as absent", () => {
+  assert.equal(readPasswordStoreOverride([]), null);
+  assert.match(
+    describeStorageDiagnostic(collectStorageDiagnostic(fakeSafeStorage(), { platform: "linux", argv: [] })),
+    /passwordStore=auto/,
+  );
+});
+
+test("the whole report is one line", () => {
+  // It is read off a terminal on six VMs and pasted into a ticket. Two lines
+  // is two things to copy and one thing to lose.
+  for (const platform of ["linux", "darwin", "win32"]) {
+    for (const backend of ["basic_text", "gnome_libsecret"]) {
+      const line = describeStorageDiagnostic(
+        collectStorageDiagnostic(fakeSafeStorage({ backend }), { platform, argv: [] }),
+      );
+      assert.equal(line.includes("\n"), false, `${platform}/${backend} printed more than one line`);
+    }
+  }
+});
+
+/**
+ * The predicate, exhaustively.
+ *
+ * `credentialStoreCanProtect` is unmemoised precisely so this matrix can live in
+ * one file. Its memoised caller latches for the life of the process and has no
+ * reset hook by design, so a matrix written against the caller would pass every
+ * case after the first without exercising anything — a test that cannot fail.
+ * Separating the decision from the latch is what makes these assertions real.
+ *
+ * Several of these are the descendants of tests that asserted what the old
+ * reporter PRINTED about a weak backend. The app now refuses to persist on one,
+ * so the same conditions are asserted against the decision rather than a log line.
+ */
+
+test("on Linux a basic_text backend cannot protect anything, whatever availability claims", () => {
+  // The whole lane in one assertion: availability said yes, the answer is no.
+  assert.equal(
+    credentialStoreCanProtect(fakeSafeStorage({ available: true, backend: "basic_text" }), {
+      platform: "linux",
+    }),
+    false,
+  );
+});
+
+test("on Linux the weak check runs first, so a machine that cannot protect is never prompted", () => {
+  let asks = 0;
+  const answer = credentialStoreCanProtect(
+    {
+      isEncryptionAvailable: () => {
+        asks += 1;
+        return true;
+      },
+      getSelectedStorageBackend: () => "basic_text",
+    },
+    { platform: "linux" },
+  );
+
+  assert.equal(answer, false);
+  // Asking availability is what raises an unlock dialog; reading the name is
+  // free. If this reads 1, the order has swapped and the fix now costs a prompt
+  // on exactly the machines it cannot help.
+  assert.equal(asks, 0);
+});
+
+test("on Linux a real backend defers to the availability answer, both ways", () => {
+  for (const backend of ["gnome_libsecret", "kwallet6"]) {
+    assert.equal(
+      credentialStoreCanProtect(fakeSafeStorage({ available: true, backend }), { platform: "linux" }),
+      true,
+      `${backend} available`,
+    );
+    assert.equal(
+      credentialStoreCanProtect(fakeSafeStorage({ available: false, backend }), { platform: "linux" }),
+      false,
+      `${backend} unavailable`,
+    );
+  }
+});
+
+test("on Linux the backend name is read once per decision, not twice", () => {
+  let reads = 0;
+  credentialStoreCanProtect(
+    {
+      isEncryptionAvailable: () => true,
+      getSelectedStorageBackend: () => {
+        reads += 1;
+        return "gnome_libsecret";
+      },
+    },
+    { platform: "linux" },
+  );
+
+  assert.equal(reads, 1);
+});
+
+test("off Linux the backend is never asked for — it is a Linux-only API", () => {
+  for (const platform of ["darwin", "win32"]) {
+    let reads = 0;
+    const store = {
+      isEncryptionAvailable: () => true,
+      getSelectedStorageBackend: () => {
+        reads += 1;
+        return "basic_text";
+      },
+    };
+
+    // The stub answers basic_text on purpose. If the platform guard were
+    // dropped, the answer would flip to false and this line would fail too —
+    // so the test catches the crash-on-macOS mutation twice over.
+    assert.equal(credentialStoreCanProtect(store, { platform }), true, platform);
+    assert.equal(reads, 0, `${platform} reached a Linux-only API`);
+  }
+});
+
+test("off Linux the availability answer is still honoured when it says no", () => {
+  assert.equal(
+    credentialStoreCanProtect(fakeSafeStorage({ available: false }), { platform: "darwin" }),
+    false,
+  );
+});
+
+test("a backend name we cannot read is not treated as weak", () => {
+  // Deliberate direction: refusing here would take persistence away from every
+  // Linux user on the strength of an API error, which is a worse failure than
+  // the one this function exists to prevent.
+  assert.equal(
+    credentialStoreCanProtect(fakeSafeStorage({ available: true, throws: true }), {
+      platform: "linux",
+    }),
+    true,
+  );
+});
+
+test("an unrecognised backend is not assumed weak", () => {
+  assert.equal(
+    credentialStoreCanProtect(fakeSafeStorage({ available: true, backend: "kwallet5" }), {
+      platform: "linux",
+    }),
+    true,
+  );
+});
+
+test("a backend name that cannot be read prints as unknown, not as a crash", () => {
+  // The surviving diagnostic has its own try/catch, separate from the
+  // predicate's. Its only test was re-pointed at the predicate when the dead
+  // reporter was deleted, which left this catch uncovered — caught in review,
+  // 30 September 2026. A diagnostic that can take the app down is worse than
+  // no diagnostic.
+  const line = describeStorageDiagnostic(
+    collectStorageDiagnostic(fakeSafeStorage({ throws: true }), { platform: "linux", argv: [] }),
+  );
+
+  assert.match(line, /backend=unknown/);
 });

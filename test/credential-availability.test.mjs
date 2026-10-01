@@ -29,6 +29,7 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "kyb-availability-"));
 let availabilityAsks = 0;
+let backendReads = 0;
 
 mock.module("electron", {
   exports: {
@@ -38,7 +39,10 @@ mock.module("electron", {
         availabilityAsks += 1;
         return true;
       },
-      getSelectedStorageBackend: () => "gnome_libsecret",
+      getSelectedStorageBackend: () => {
+        backendReads += 1;
+        return "gnome_libsecret";
+      },
       encryptString: (s) => Buffer.from(`ENC(${s})`, "utf8"),
       decryptString: (b) => {
         const text = b.toString("utf8");
@@ -145,4 +149,44 @@ test("a session read, a session write and an MCP save ask the OS once between th
     1,
     `asked the OS ${availabilityAsks} times; the answer is latched and each ask can prompt`,
   );
+});
+
+test("the backend name is read at most once for the whole process too", () => {
+  // KYB-603 added a second question ahead of the availability one. It is free —
+  // measured prompt-free on a locked keyring — but it is inside the same latch,
+  // so it must not turn one memoised answer into a read per caller.
+  //
+  // Asserted per platform on purpose. `controlPlane.ts` and `localMcp.ts` do not
+  // inject an environment, so the platform comes from `process`, and off Linux
+  // the name is never asked at all. A flat `=== 1` here would be green on Linux
+  // and red on the macOS arm — which is precisely the defect the KYB-590 UAT
+  // found in three tests in this directory.
+  const expected = process.platform === "linux" ? 1 : 0;
+  assert.equal(backendReads, expected, `read the backend name ${backendReads} time(s)`);
+});
+
+test("on a real backend a saved env value is sealed on disk and recovers to its plaintext", async () => {
+  // Criterion 3(iii): the fix must not break the path that already works. This
+  // runs LAST on purpose — `unsealEnv` asks `isEncryptionAvailable()` directly
+  // rather than through the memoised predicate, so it would add to the counter
+  // the memoisation tests above assert on.
+  //
+  // Recovery is asserted through `unsealEnv`, which is what `localMcp.ts` calls
+  // at spawn time. NOT through `listServers`, which deliberately never
+  // decrypts: it runs on every agent request and asking the keyring is what
+  // raises the prompt.
+  //
+  // One backend name, not two. The name feeds `credentialStoreCanProtect`,
+  // where both `gnome_libsecret` and `kwallet6` are covered; sealing itself
+  // goes through `encryptString` and never sees the name, so looping it here
+  // would assert nothing further.
+  const { looksSealed, unsealEnv } = await import("../src/main/mcpSecrets.ts");
+  const { safeStorage } = await import("electron");
+
+  const persisted = JSON.parse(readFileSync(join(dir, "local-mcp.json"), "utf8")).servers[0];
+  assert.ok(looksSealed(persisted.env.API_KEY), "the value on disk is not sealed");
+
+  const opened = unsealEnv(safeStorage, persisted.env);
+  assert.equal(opened.ok, true, `unsealing failed: ${opened.reason}`);
+  assert.equal(opened.env.API_KEY, "sk-live-1", "the value did not survive the round trip");
 });
