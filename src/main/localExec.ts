@@ -517,9 +517,54 @@ export function relayErrorPayload(id: string, error: unknown): { id: string; err
 
 let running = false;
 let sender: WebContents | null = null;
+let windowOnScreen: (() => void) | null = null;
+let windowWaitTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * How long the loops wait for a window before starting anyway.
+ *
+ * A floor, not a schedule. If `notifyWindowOnScreen` never arrives — a window
+ * that fails to load, a renderer that never paints — local execution must
+ * still come up. A device that silently never announces itself looks like
+ * nothing at all on this machine, while every agent request to it fails.
+ *
+ * What it COSTS, recorded so the next reader does not have to rediscover it:
+ * on Linux with a locked keyring, a `ready-to-show` slower than this releases
+ * the loops while the window is still hidden, and the prompt-with-no-window
+ * this whole gate exists to prevent returns five seconds later. The trade is
+ * deliberate. Losing local execution entirely on macOS — the only platform
+ * with users — is worse than a delayed prompt on a developer's Linux box.
+ */
+export const WINDOW_WAIT_MS = 5_000;
 
 export function setLocalExecWindow(contents: WebContents): void {
   sender = contents;
+}
+
+function releaseWindowGate(): void {
+  if (windowWaitTimer) {
+    clearTimeout(windowWaitTimer);
+    windowWaitTimer = null;
+  }
+  const resolve = windowOnScreen;
+  windowOnScreen = null;
+  resolve?.();
+}
+
+/**
+ * Tell local execution that a window is on screen.
+ *
+ * Called from the window's `ready-to-show` handler. Until it arrives, or
+ * `WINDOW_WAIT_MS` elapses, neither loop runs and so nothing here reaches the
+ * OS credential store. Asking the credential store is what makes the OS unlock
+ * its keyring, and on Linux that is a system password dialog: raised before a
+ * window exists, it is a prompt for the user's login password with no
+ * application behind it.
+ *
+ * Tested: idempotent, and safe to call when nothing is waiting.
+ */
+export function notifyWindowOnScreen(): void {
+  releaseWindowGate();
 }
 
 async function post(path: string, body: unknown): Promise<Response | null> {
@@ -544,7 +589,7 @@ async function post(path: string, body: unknown): Promise<Response | null> {
  * "your computer is disconnected" instead of hanging, and it must keep beating
  * even while a long poll is parked.
  */
-export function startLocalExec(): void {
+export function startLocalExec(waitForWindowMs: number = WINDOW_WAIT_MS): void {
   if (running) return;
   running = true;
   const id = deviceId();
@@ -650,10 +695,26 @@ export function startLocalExec(): void {
     if (sender && !sender.isDestroyed()) sender.send("studio:local-done", { id: request.id });
   };
 
-  void heartbeat();
-  void poll();
+  // Both loops begin `await activeSession()`, and an await evaluates its
+  // operand synchronously — so without this gate the credential store is
+  // reached before `startLocalExec` has even returned, which on a cold start
+  // is before any window exists. See `notifyWindowOnScreen`.
+  const windowUp = new Promise<void>((resolve) => {
+    windowOnScreen = resolve;
+    windowWaitTimer = setTimeout(releaseWindowGate, waitForWindowMs);
+  });
+
+  void (async () => {
+    await windowUp;
+    void heartbeat();
+    void poll();
+  })();
 }
 
 export function stopLocalExec(): void {
   running = false;
+  // Clears the pending timer and unparks anything still awaiting the gate.
+  // Safe: both loops check `running` before touching a session, so releasing
+  // after a stop starts nothing.
+  releaseWindowGate();
 }
