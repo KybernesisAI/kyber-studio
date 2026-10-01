@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { BrowserWindow, app, safeStorage, shell } from "electron";
 import { electronApp, is, optimizer, platform } from "@electron-toolkit/utils";
 import { registerIpc } from "./ipc";
-import { setLocalExecWindow, startLocalExec, stopLocalExec } from "./localExec";
+import { notifyWindowOnScreen, setLocalExecWindow, startLocalExec, stopLocalExec } from "./localExec";
 import { createCredentialStorageReporter } from "./credentialStorage";
 import { focusExistingWindow } from "./singleInstance";
 
@@ -217,6 +217,11 @@ function createWindow(): void {
     // handler. It does not make the window paint first — measured on MATE, it
     // is still blank behind the prompt — and that is accepted.
     reportCredentialStorage();
+    // A window is now on screen, so local execution may go on to ask the OS
+    // credential store. Held until this point for the same reason the reporter
+    // above is: asking raises the keyring dialog, and before now there would
+    // have been nothing behind it.
+    notifyWindowOnScreen();
   });
   // The permission card lives in this window, so local execution must know
   // which contents to ask in — and must refuse rather than assume consent when
