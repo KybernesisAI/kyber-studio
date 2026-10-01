@@ -18,6 +18,13 @@ import { join } from "node:path";
  * its operand synchronously, so `await activeSession()` enters `loadSession`
  * before `startLocalExec` returns.
  *
+ * EVERY TEST THAT STARTS THE LOOPS MUST STOP THEM IN A `finally`. The loops
+ * are `while (running)` with no other exit, so a test that throws before
+ * reaching `stopLocalExec` leaves them spinning and the runner never exits —
+ * a FAILING suite would hang instead of reporting its failures, which is far
+ * worse than the failure itself. Observed: a red run of this file sat at
+ * 792 seconds before it was killed.
+ *
  * ORDER MATTERS. The first test asserts a count of credential-store asks, and
  * `isCredentialStoreAvailable` memoises for the life of the process — so once
  * any test has let the loops run, that counter can never move again. The later
@@ -102,50 +109,54 @@ test("the credential store is not asked before a window is on screen", async () 
   // 900ms: long enough that nothing below can be the timeout floor releasing
   // the gate, short enough to stay under the sleep cap above.
   startLocalExec(900);
-  await settle(60);
+  try {
+    await settle(60);
 
-  assert.equal(
-    availabilityAsks,
-    0,
-    "startLocalExec reached the credential store before any window existed",
-  );
-  assert.deepEqual(relayRequests, [], "neither loop may run before a window is on screen");
+    assert.equal(
+      availabilityAsks,
+      0,
+      "startLocalExec reached the credential store before any window existed",
+    );
+    assert.deepEqual(relayRequests, [], "neither loop may run before a window is on screen");
 
-  notifyWindowOnScreen();
-  await settle(60);
+    notifyWindowOnScreen();
+    await settle(60);
 
-  assert.ok(
-    availabilityAsks >= 1,
-    "the loops never ran after the window appeared — the gate does not release",
-  );
-  assert.ok(
-    relayRequests.some((u) => u.includes("/api/local-exec/hello")),
-    "the heartbeat did not announce this machine after the window appeared",
-  );
-
-  stopLocalExec();
-  await settle(20);
+    assert.ok(
+      availabilityAsks >= 1,
+      "the loops never ran after the window appeared — the gate does not release",
+    );
+    assert.ok(
+      relayRequests.some((u) => u.includes("/api/local-exec/hello")),
+      "the heartbeat did not announce this machine after the window appeared",
+    );
+  } finally {
+    stopLocalExec();
+    await settle(20);
+  }
 });
 
 test("the loops still start if a window never arrives", async () => {
   relayRequests = [];
 
   startLocalExec(120);
-  await settle(30);
-  assert.deepEqual(
-    relayRequests,
-    [],
-    "the loops ran before the floor elapsed — the gate is not holding at all",
-  );
+  try {
+    await settle(30);
+    assert.deepEqual(
+      relayRequests,
+      [],
+      "the loops ran before the floor elapsed — the gate is not holding at all",
+    );
 
-  await settle(250);
-  assert.ok(
-    relayRequests.some((u) => u.includes("/api/local-exec/hello")),
-    "local execution never started: a window that never shows must delay the loops, not lose them",
-  );
-
-  stopLocalExec();
-  await settle(20);
+    await settle(250);
+    assert.ok(
+      relayRequests.some((u) => u.includes("/api/local-exec/hello")),
+      "local execution never started: a window that never shows must delay the loops, not lose them",
+    );
+  } finally {
+    stopLocalExec();
+    await settle(20);
+  }
 });
 
 test("notifyWindowOnScreen is idempotent and safe with nothing waiting", () => {
