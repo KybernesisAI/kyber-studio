@@ -70,6 +70,20 @@ const planted = {
 };
 writeFileSync(join(dir, "session.bin"), Buffer.from(`ENC(${JSON.stringify(planted)})`, "utf8"));
 
+let relayRequests = [];
+globalThis.fetch = async (url) => {
+  const target = String(url);
+  relayRequests.push(target);
+  // 503 on the long poll so it backs off instead of spinning as fast as this
+  // stub can resolve.
+  if (target.includes("/api/local-exec/requests")) return { ok: false, status: 503 };
+  return { ok: true, status: 200, json: async () => ({}) };
+};
+
+const { WINDOW_WAIT_MS, notifyWindowOnScreen, startLocalExec, stopLocalExec } = await import(
+  "../src/main/localExec.ts"
+);
+
 /**
  * Cap the loops' own sleeps.
  *
@@ -81,24 +95,17 @@ writeFileSync(join(dir, "session.bin"), Buffer.from(`ENC(${JSON.stringify(plante
  * The cap cannot mask the thing under test: it only shortens waits of a second
  * or more, and every gate interval these tests use is deliberately below that,
  * so a gate that released early would still be caught.
+ *
+ * WINDOW_WAIT_MS IS EXEMPT, and that exemption is the point of importing it.
+ * Without it, a future test that let the gate use the production default would
+ * silently get 20ms instead of five seconds — green, fast, and proving
+ * nothing. Exempt, such a test waits the real five seconds: slow and honest,
+ * which is the right direction to fail in. Installed after the import because
+ * the value has to exist before it can be excluded.
  */
 const realSetTimeout = globalThis.setTimeout;
 globalThis.setTimeout = (fn, ms, ...rest) =>
-  realSetTimeout(fn, typeof ms === "number" && ms >= 1_000 ? 20 : ms, ...rest);
-
-let relayRequests = [];
-globalThis.fetch = async (url) => {
-  const target = String(url);
-  relayRequests.push(target);
-  // 503 on the long poll so it backs off instead of spinning as fast as this
-  // stub can resolve.
-  if (target.includes("/api/local-exec/requests")) return { ok: false, status: 503 };
-  return { ok: true, status: 200, json: async () => ({}) };
-};
-
-const { notifyWindowOnScreen, startLocalExec, stopLocalExec } = await import(
-  "../src/main/localExec.ts"
-);
+  realSetTimeout(fn, typeof ms === "number" && ms >= 1_000 && ms !== WINDOW_WAIT_MS ? 20 : ms, ...rest);
 
 const settle = (ms) => new Promise((resolve) => realSetTimeout(resolve, ms));
 
@@ -129,6 +136,12 @@ test("the credential store is not asked before a window is on screen", async () 
     assert.ok(
       relayRequests.some((u) => u.includes("/api/local-exec/hello")),
       "the heartbeat did not announce this machine after the window appeared",
+    );
+    // BOTH loops, not just the heartbeat. Without this, deleting `void poll()`
+    // outright leaves every test in this file green — measured, not assumed.
+    assert.ok(
+      relayRequests.some((u) => u.includes("/api/local-exec/requests")),
+      "the long poll never ran: agents could reach this device for nothing",
     );
   } finally {
     stopLocalExec();

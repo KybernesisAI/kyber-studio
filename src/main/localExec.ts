@@ -527,8 +527,15 @@ let windowWaitTimer: ReturnType<typeof setTimeout> | null = null;
  * that fails to load, a renderer that never paints — local execution must
  * still come up. A device that silently never announces itself looks like
  * nothing at all on this machine, while every agent request to it fails.
+ *
+ * What it COSTS, recorded so the next reader does not have to rediscover it:
+ * on Linux with a locked keyring, a `ready-to-show` slower than this releases
+ * the loops while the window is still hidden, and the prompt-with-no-window
+ * this whole gate exists to prevent returns five seconds later. The trade is
+ * deliberate. Losing local execution entirely on macOS — the only platform
+ * with users — is worse than a delayed prompt on a developer's Linux box.
  */
-const WINDOW_WAIT_MS = 5_000;
+export const WINDOW_WAIT_MS = 5_000;
 
 export function setLocalExecWindow(contents: WebContents): void {
   sender = contents;
