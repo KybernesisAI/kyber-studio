@@ -1,4 +1,5 @@
 import { stopAll } from "./localMcp";
+import { stopAllLocalTurns } from "./claudeCode";
 import { warmUp } from "./dictation";
 import { registerUpdater } from "./updater";
 import { join } from "node:path";
@@ -326,4 +327,6 @@ app.on("will-quit", () => {
   // teardown.
   stopLocalExec();
   stopAll();
+  // Local agents run in their own process group, so quitting would not take them with it.
+  stopAllLocalTurns();
 });

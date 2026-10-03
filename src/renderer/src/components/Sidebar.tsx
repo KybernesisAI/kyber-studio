@@ -163,6 +163,11 @@ function Row({
               ○
             </span>
           ) : null}
+          {agent.kind === "local-claude" ? (
+            <span className="row__local" title={`Claude Code on this machine · ${agent.local?.folder ?? ""}`}>
+              local
+            </span>
+          ) : null}
           {agent.pinned ? <span className="row__pin"><Icon name="pin" size={12} /></span> : null}
           <span className="row__time">{last ? timeLabel(last.at) : ""}</span>
         </div>

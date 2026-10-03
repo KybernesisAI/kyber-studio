@@ -24,8 +24,15 @@ export interface Agent {
   /** One-line role, shown under the name in Settings. */
   title?: string;
   description?: string;
-  /** Base URL of the agent's eve deployment. */
+  /** Base URL of the agent's eve deployment. Empty for a local agent. */
   url: string;
+  /**
+   * Where the agent runs. Absent means eve, from the control plane. A
+   * "local-claude" agent is the user's own Claude Code CLI in `local.folder`,
+   * configured on this machine only and never sent to the control plane.
+   */
+  kind?: "eve" | "local-claude";
+  local?: { folder: string; model: string };
   /** Hex color for the generated avatar mark, used when there is no picture. */
   accent: string;
   /**

@@ -588,6 +588,102 @@ function retireGeneration(agentId: string): void {
   generation.set(agentId, currentGeneration(agentId) + 1);
 }
 
+/**
+ * One turn of a local Claude Code agent.
+ *
+ * Same streaming plumbing as an eve turn — stream id, deltas, activity, the
+ * dead-man and the queue — but the session id is whatever the CLI reported,
+ * and it is kept so the next message resumes the same Claude Code session.
+ */
+function sendLocalTurn(
+  get: () => State,
+  set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
+  agentId: string,
+  text: string,
+  at: number,
+): void {
+  if (!window.studio) return;
+  if (get().inflight[agentId]) {
+    set((s) => ({ queued: { ...s.queued, [agentId]: [...(s.queued[agentId] ?? []), text] } }));
+    return;
+  }
+  const streamId = `s${at}`;
+  const bubbleId = `a${at}`;
+  set((s) => ({ streaming: { ...s.streaming, [streamId]: "" } }));
+  ensureListeners(get, set);
+  streamOwners.set(streamId, agentId);
+  set((s) => ({ inflight: { ...s.inflight, [agentId]: { streamId } } }));
+  armDeadMan(get, set, agentId);
+  const sentAtGeneration = currentGeneration(agentId);
+  void window.studio
+    .sendLocal({ agentId, text, sessionId: get().sessions[agentId], streamId })
+    .then((res) => {
+      if (sentAtGeneration !== currentGeneration(agentId)) return;
+      if (res.sessionId) set((s) => ({ sessions: { ...s.sessions, [agentId]: res.sessionId } }));
+      upsertBlock(get, set, agentId, bubbleId, res.reply || "(Claude Code returned no text for this turn)");
+      if (res.reply) alertIfAway(get, agentId, get().agents.find((a) => a.id === agentId)?.name ?? "An agent", res.reply);
+    })
+    .catch((e: unknown) => {
+      if (sentAtGeneration !== currentGeneration(agentId)) return;
+      // Electron prefixes errors thrown in the main process; the person needs the reason, not the channel.
+      const msg = (e instanceof Error ? e.message : String(e)).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
+      upsertBlock(get, set, agentId, bubbleId, msg);
+    })
+    .finally(() => {
+      disarmDeadMan(agentId);
+      set((s) => {
+        const rest = { ...s.streaming };
+        delete rest[streamId];
+        const flight = { ...s.inflight };
+        delete flight[agentId];
+        return { streaming: rest, inflight: flight, activity: { ...s.activity, [agentId]: null } };
+      });
+      setTimeout(() => streamOwners.delete(streamId), 30_000);
+      get().persist();
+      flushQueue(get, agentId);
+    });
+}
+
+/**
+ * This machine's Claude Code agents, as sidebar agents.
+ *
+ * Presentation the user chose locally (name, colour, pin) is kept across
+ * refreshes the same way it is for eve agents. A failure to read them must
+ * not take the control-plane agents down with it.
+ */
+async function localAgentsFor(get: () => State): Promise<Agent[]> {
+  let configs: Awaited<ReturnType<NonNullable<typeof window.studio>["listLocalAgents"]>> = [];
+  try {
+    configs = (await window.studio?.listLocalAgents()) ?? [];
+  } catch {
+    return [];
+  }
+  const existing = new Map(get().agents.map((a) => [a.id, a]));
+  return configs.map((c) => {
+    const prior = existing.get(c.id);
+    const chosen = get().prefs[c.id] ?? {};
+    return {
+      id: c.id,
+      kind: "local-claude" as const,
+      local: { folder: c.folder, model: c.model },
+      name: chosen.name ?? c.name,
+      title: `Claude Code · ${c.model}`,
+      description: c.folder,
+      url: "",
+      accent: chosen.accent ?? prior?.accent ?? "#d97757",
+      avatar: chosen.avatar ?? prior?.avatar,
+      pinned: chosen.pinned ?? prior?.pinned,
+      hidden: chosen.hidden ?? prior?.hidden,
+      unread: prior?.unread,
+      notifications: chosen.notifications ?? prior?.notifications ?? true,
+      // Nothing to probe: it runs on demand, here.
+      status: "online" as const,
+      lastMessageAt: prior?.lastMessageAt,
+      lastMessagePreview: prior?.lastMessagePreview,
+    };
+  });
+}
+
 function armDeadMan(
   get: () => State,
   set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
@@ -1354,6 +1450,13 @@ export const useStore = create<State>((set, get) => ({
 
     const agent = get().agents.find((a) => a.id === agentId);
 
+    // A Claude Code agent on this machine: its own transport, none of the eve
+    // machinery (cursor, questions, session directory) applies.
+    if (agent?.kind === "local-claude") {
+      sendLocalTurn(get, set, agentId, text, at);
+      return;
+    }
+
     // Create the reply bubble on first content rather than up front. An empty
     // "…" bubble alongside the activity line says the same thing twice, and it
     // claims the agent is composing a message before it has written a word.
@@ -1546,6 +1649,8 @@ export const useStore = create<State>((set, get) => ({
     const agent = get().agents.find((a) => a.id === agentId);
     if (!live || !window.studio) return;
 
+    if (agent?.kind === "local-claude") void window.studio.stopLocal(agentId).catch(() => undefined);
+
     if (live.sessionId && agent?.url) {
       void window.studio
         .cancelTurn({ url: agent.url, sessionId: live.sessionId, turnId: live.turnId })
@@ -1567,7 +1672,8 @@ export const useStore = create<State>((set, get) => ({
 
   resetConversation: (agentId) => {
     const agent = get().agents.find((a) => a.id === agentId);
-    if (!agent?.url || !window.studio) return;
+    const isLocal = agent?.kind === "local-claude";
+    if (!agent || (!agent.url && !isLocal) || !window.studio) return;
     const url = agent.url;
     const sessionId = get().sessions[agentId];
     const blocks = get().conversations[agentId] ?? [];
@@ -1595,6 +1701,11 @@ export const useStore = create<State>((set, get) => ({
       },
     }));
     get().persist();
+    if (isLocal) {
+      // A local turn still running belongs to the session being retired.
+      void window.studio.stopLocal(agentId).catch(() => undefined);
+      return;
+    }
     if (sessionId) {
       void window.studio.resetSession({ url, sessionId }).catch(() => undefined);
       // Best effort, for the person's other devices; this device's guard is
@@ -1928,13 +2039,18 @@ export const useStore = create<State>((set, get) => ({
     void window.studio.controlPlane().then((cp) => set({ issuer: cp.url.replace(/^https?:\/\//, "") }));
     try {
       const remote = await window.studio.listAgents();
+      // Local coding agents are this machine's own, not the control plane's,
+      // so they ride along with every refresh instead of being replaced by it.
+      const locals = await localAgentsFor(get);
       if (remote.length === 0) {
         // An honest empty state. Keeping the fixtures here would show a
         // customer three agents they do not have.
         set({
-          agents: [],
+          agents: locals,
           authError:
-            "No agents are granted to your account yet. Register one in the control plane, or ask an admin for a grant.",
+            locals.length > 0
+              ? undefined
+              : "No agents are granted to your account yet. Register one in the control plane, or ask an admin for a grant.",
         });
         return;
       }
@@ -1943,7 +2059,7 @@ export const useStore = create<State>((set, get) => ({
       const palette = ["#2ec4a6", "#f0883e", "#7c6cf0", "#4f9cf0", "#e0609a"];
       const existing = new Map(get().agents.map((a) => [a.id, a]));
       set({
-        agents: remote.map((r, i) => {
+        agents: remote.map((r, i): Agent => {
           const prior = existing.get(r.id);
           const chosen = get().prefs[r.id] ?? {};
           // The account's choice — picture, name, colour — wins over this
@@ -1985,14 +2101,14 @@ export const useStore = create<State>((set, get) => ({
               ? prior?.lastMessagePreview
               : "Registered, but no URL on file in the control plane.",
           };
-        }),
+        }).concat(locals),
         // Stay where the person is. This used to be `remote[0]?.id ?? current`,
         // which ran on EVERY refresh — including the explicit "Refresh agents"
         // menu item — and threw you into the first agent in the control plane's
         // list, out of whatever conversation or room you were reading.
         activeAgentId: (() => {
           const current = get().activeAgentId;
-          if (current && (isRoomId(current) || remote.some((r) => r.id === current))) return current;
+          if (current && (isRoomId(current) || remote.some((r) => r.id === current) || locals.some((l) => l.id === current))) return current;
           return remote[0]?.id ?? current;
         })(),
       });

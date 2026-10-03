@@ -4,6 +4,7 @@ import type { McpServersResult, SaveMcpServersOptions } from "../shared/ipc";
 import type { VoiceContext } from "../shared/ipc";
 import { closeOrbWindow, createLiveSession, moveOrbWindow, toggleOrbWindow, voiceAsk, voiceContext } from "./voice";
 import { loadState, pickFolder, saveState } from "./store";
+import { listLocalAgents, sendLocalTurn, stopLocalTurn } from "./claudeCode";
 import { dictationAvailable, transcribe } from "./dictation";
 import {
   localFileExists,
@@ -132,6 +133,27 @@ export function registerIpc(): void {
   });
 
   ipcMain.handle("studio:listAgents", () => listAgents());
+  // Local coding agents (Claude Code in a folder). Own channels, so the eve
+  // send path above is untouched by them.
+  ipcMain.handle("studio:listLocalAgents", () => listLocalAgents());
+  ipcMain.handle("studio:stopLocal", (_e, agentId: string) => stopLocalTurn(agentId));
+  ipcMain.handle(
+    "studio:sendLocal",
+    (e, input: { agentId: string; text: string; sessionId?: string; streamId: string }) => {
+      const sender: WebContents = e.sender;
+      return sendLocalTurn({
+        agentId: input.agentId,
+        text: input.text,
+        sessionId: input.sessionId,
+        onDelta: (text) => {
+          if (!sender.isDestroyed()) sender.send("studio:delta", { streamId: input.streamId, text });
+        },
+        onActivity: (label) => {
+          if (!sender.isDestroyed()) sender.send("studio:activity", { streamId: input.streamId, label });
+        },
+      });
+    },
+  );
   ipcMain.handle("studio:listRooms", () => listRooms());
   ipcMain.handle("studio:saveRoom", (_e, input: Parameters<typeof saveRoom>[0]) => saveRoom(input));
   ipcMain.handle(

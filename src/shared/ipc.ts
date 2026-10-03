@@ -1,3 +1,4 @@
+import type { LocalAgentConfig } from "./claudeStream";
 import type { Replayed } from "./sessionReplay";
 
 /**
@@ -202,6 +203,17 @@ export interface StudioApi {
   awaitSignIn(): Promise<Session>;
   signOut(): Promise<void>;
   listAgents(): Promise<RemoteAgent[]>;
+  /** Claude Code agents configured on this machine only; never from the control plane. */
+  listLocalAgents(): Promise<LocalAgentConfig[]>;
+  /** One turn of a local agent: the user's own `claude` CLI, run in the agent's folder. */
+  sendLocal(input: { agentId: string; text: string; sessionId?: string; streamId: string }): Promise<{
+    reply: string;
+    sessionId?: string;
+    streamIndex: number;
+    askedQuestion: boolean;
+  }>;
+  /** Kill the running turn of a local agent. False when nothing was running. */
+  stopLocal(agentId: string): Promise<boolean>;
   /** This person's rooms, from the account. */
   listRooms(): Promise<RemoteRoom[]>;
   /** Create or update a room on the account; `archived` hides it. */
