@@ -16,6 +16,7 @@ const studio: StudioApi = {
   listLocalAgents: () => ipcRenderer.invoke("studio:listLocalAgents"),
   sendLocal: (input) => ipcRenderer.invoke("studio:sendLocal", input),
   stopLocal: (agentId) => ipcRenderer.invoke("studio:stopLocal", agentId),
+  claimScheduled: (agentIds) => ipcRenderer.invoke("studio:claimScheduled", agentIds),
   listRooms: () => ipcRenderer.invoke("studio:listRooms"),
   saveRoom: (input) => ipcRenderer.invoke("studio:saveRoom", input),
   saveAgentProfile: (input) => ipcRenderer.invoke("studio:saveAgentProfile", input),

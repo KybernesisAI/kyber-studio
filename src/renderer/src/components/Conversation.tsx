@@ -828,7 +828,10 @@ export function Conversation(): ReactNode {
                       <DeliveredFiles files={deliveredFiles(b.text)} />
                     </>
                   ) : (
-                    <RichText text={b.text} mentions={mentionable} />
+                    <>
+                      {b.scheduled ? <div className="bubble__scheduled">⏰ scheduled {b.scheduled}</div> : null}
+                      <RichText text={b.text} mentions={mentionable} />
+                    </>
                   )}
                 </div>
               );

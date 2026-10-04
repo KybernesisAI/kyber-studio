@@ -191,6 +191,7 @@ input, textarea { font: inherit; color: inherit; }
 /* An agent that was asked and did not answer. Muted rather than alarming: it is
    often a VM that is simply off, not an incident. */
 .row__down { color: var(--danger, #e5484d); flex: none; font-size: 11px; line-height: 1; }
+.bubble__scheduled { font-size: 11px; opacity: 0.65; margin-bottom: 4px; letter-spacing: 0.02em; }
 .row__local { flex: none; font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 4px; border: 1px solid currentColor; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.04em; }
 
 .sidebar__foot { padding: 4px 8px 6px; border-top: 0.5px solid var(--stroke); -webkit-app-region: no-drag; }

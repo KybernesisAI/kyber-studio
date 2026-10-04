@@ -214,6 +214,8 @@ export interface StudioApi {
   }>;
   /** Kill the running turn of a local agent. False when nothing was running. */
   stopLocal(agentId: string): Promise<boolean>;
+  /** Scheduled turns due now for these local agents; each is marked run as it is handed out. */
+  claimScheduled(agentIds: string[]): Promise<{ agentId: string; prompt: string; at: string }[]>;
   /** This person's rooms, from the account. */
   listRooms(): Promise<RemoteRoom[]>;
   /** Create or update a room on the account; `archived` hides it. */

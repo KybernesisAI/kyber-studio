@@ -4,7 +4,7 @@ import type { McpServersResult, SaveMcpServersOptions } from "../shared/ipc";
 import type { VoiceContext } from "../shared/ipc";
 import { closeOrbWindow, createLiveSession, moveOrbWindow, toggleOrbWindow, voiceAsk, voiceContext } from "./voice";
 import { loadState, pickFolder, saveState } from "./store";
-import { listLocalAgents, sendLocalTurn, stopLocalTurn } from "./claudeCode";
+import { claimDueScheduledTurns, listLocalAgents, sendLocalTurn, stopLocalTurn } from "./claudeCode";
 import { dictationAvailable, transcribe } from "./dictation";
 import {
   localFileExists,
@@ -137,6 +137,7 @@ export function registerIpc(): void {
   // send path above is untouched by them.
   ipcMain.handle("studio:listLocalAgents", () => listLocalAgents());
   ipcMain.handle("studio:stopLocal", (_e, agentId: string) => stopLocalTurn(agentId));
+  ipcMain.handle("studio:claimScheduled", (_e, agentIds: string[]) => claimDueScheduledTurns(agentIds));
   ipcMain.handle(
     "studio:sendLocal",
     (e, input: { agentId: string; text: string; sessionId?: string; streamId: string }) => {

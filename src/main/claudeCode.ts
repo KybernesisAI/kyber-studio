@@ -7,6 +7,7 @@ import {
   parseStreamLine,
   stderrTail,
 } from "../shared/claudeStream";
+import { isDue, localDateKey } from "../shared/schedule";
 import { loadState, saveState } from "./store";
 
 /**
@@ -39,6 +40,31 @@ export function listLocalAgents(): LocalAgentConfig[] {
   if (Array.isArray(saved)) return saved;
   saveState(FILE, SEED);
   return SEED;
+}
+
+/** Last scheduled run per agent, by local date. Kept apart from the config the user edits. */
+const SCHEDULE_STATE = "local-schedule-state.json";
+
+/**
+ * Hand out the scheduled turns that are due, and record them as run.
+ *
+ * The renderer asks (it is the one that can post a turn the way a person
+ * does), and only for agents it actually has on screen, so a turn is never
+ * marked done for a window that could not show it. Recorded before it is
+ * sent: a turn that fails is visible in the conversation, while one that
+ * fires twice is a second unrequested run.
+ */
+export function claimDueScheduledTurns(
+  agentIds: string[],
+  now: Date = new Date(),
+): { agentId: string; prompt: string; at: string }[] {
+  const known = new Set(agentIds);
+  const state = loadState<Record<string, string>>(SCHEDULE_STATE, {});
+  const due = listLocalAgents().filter((a) => known.has(a.id) && isDue(a.schedule, now, state[a.id]));
+  if (due.length === 0) return [];
+  for (const a of due) state[a.id] = localDateKey(now);
+  saveState(SCHEDULE_STATE, state);
+  return due.map((a) => ({ agentId: a.id, prompt: a.schedule!.prompt, at: a.schedule!.at }));
 }
 
 /** Where `claude` lives and the PATH it expects, from the user's login shell. */

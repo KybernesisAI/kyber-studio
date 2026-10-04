@@ -108,6 +108,8 @@ export type Block =
        * disagreed with each other.
        */
       speaker?: { id: string; name: string; accent: string };
+      /** Set on a turn Studio sent on a schedule, e.g. "06:00", so it never reads as typed. */
+      scheduled?: string;
     }
   | { kind: "peer-activity"; id: string; at: number; events: PeerEvent[] }
   /**

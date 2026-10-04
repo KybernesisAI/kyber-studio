@@ -8,6 +8,8 @@
  * src/main/claudeCode.ts. No Electron imports, so node --test loads this file.
  */
 
+import type { AgentSchedule } from "./schedule";
+
 export interface LocalAgentConfig {
   id: string;
   name: string;
@@ -15,6 +17,8 @@ export interface LocalAgentConfig {
   folder: string;
   /** Passed to --model as-is: an alias ("sonnet") or a full model id. */
   model: string;
+  /** A daily turn posted into this agent's conversation. See ./schedule. */
+  schedule?: AgentSchedule;
 }
 
 /** Arguments for one turn. The first turn starts a session; later ones resume it. */

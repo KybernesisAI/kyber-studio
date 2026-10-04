@@ -76,6 +76,34 @@ function startCrossDeviceRefresh(get: () => State): void {
   refresh();
 }
 
+let schedulerReady = false;
+/**
+ * Post scheduled turns for local agents, as turns in their conversations.
+ *
+ * Polled rather than pushed: the main process only hands a turn out when this
+ * window asks with agents it has loaded, so a turn is never marked as run for a
+ * window that could not show it. Runs whether or not the window is visible —
+ * a 06:00 run has to fire with nobody looking.
+ */
+function startScheduler(get: () => State): void {
+  if (schedulerReady || !window.studio) return;
+  schedulerReady = true;
+  const tick = async (): Promise<void> => {
+    const ids = get().agents.filter((a) => a.kind === "local-claude").map((a) => a.id);
+    if (ids.length === 0) return;
+    const due = await window.studio!.claimScheduled(ids).catch(() => []);
+    for (const turn of due) get().send(turn.agentId, turn.prompt, false, undefined, { scheduled: turn.at });
+  };
+  setInterval(() => void tick(), 30_000);
+  void tick();
+  // A scheduled reply that landed in the open conversation while the window was
+  // in the background is seen the moment the window comes back.
+  window.addEventListener("focus", () => {
+    const id = get().activeAgentId;
+    if (id && get().agents.some((a) => a.id === id && a.unread)) get().select(id);
+  });
+}
+
 function ensureListeners(
   get: () => State,
   set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
@@ -601,6 +629,7 @@ function sendLocalTurn(
   agentId: string,
   text: string,
   at: number,
+  scheduled = false,
 ): void {
   if (!window.studio) return;
   if (get().inflight[agentId]) {
@@ -621,6 +650,11 @@ function sendLocalTurn(
       if (sentAtGeneration !== currentGeneration(agentId)) return;
       if (res.sessionId) set((s) => ({ sessions: { ...s.sessions, [agentId]: res.sessionId } }));
       upsertBlock(get, set, agentId, bubbleId, res.reply || "(Claude Code returned no text for this turn)");
+      // Nobody asked for a scheduled turn, so nobody is waiting on it: flag it
+      // until it is opened, the same dot an unread message gets.
+      if (scheduled && (get().activeAgentId !== agentId || !document.hasFocus())) {
+        set((s) => ({ agents: s.agents.map((a) => (a.id === agentId ? { ...a, unread: true } : a)) }));
+      }
       if (res.reply) alertIfAway(get, agentId, get().agents.find((a) => a.id === agentId)?.name ?? "An agent", res.reply);
     })
     .catch((e: unknown) => {
@@ -898,7 +932,14 @@ interface State {
   setPluginsOpen(open: boolean): void;
   setPaletteOpen(open: boolean): void;
 
-  send(agentId: string, text: string, fromQueue?: boolean, attachments?: PendingAttachment[]): void;
+  send(
+    agentId: string,
+    text: string,
+    fromQueue?: boolean,
+    attachments?: PendingAttachment[],
+    /** Sent by Studio on a schedule rather than typed; `scheduled` is the slot, e.g. "06:00". */
+    opts?: { scheduled?: string },
+  ): void;
   /** Ask the agent to stop the turn it is running. */
   stopTurn(agentId: string): void;
   /**
@@ -1416,7 +1457,7 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  send: (agentId, text, fromQueue, attachments) => {
+  send: (agentId, text, fromQueue, attachments, opts) => {
     const at = Date.now();
     // A queued message was already shown when the user typed it. Adding it again
     // on flush is how one message becomes two identical bubbles.
@@ -1436,6 +1477,7 @@ export const useStore = create<State>((set, get) => ({
                 ? [text, attachments.map((a) => `📎 ${a.name}`).join("\n")].filter(Boolean).join("\n\n")
                 : text,
               at,
+              ...(opts?.scheduled ? { scheduled: opts.scheduled } : {}),
             },
           ],
         },
@@ -1453,7 +1495,7 @@ export const useStore = create<State>((set, get) => ({
     // A Claude Code agent on this machine: its own transport, none of the eve
     // machinery (cursor, questions, session directory) applies.
     if (agent?.kind === "local-claude") {
-      sendLocalTurn(get, set, agentId, text, at);
+      sendLocalTurn(get, set, agentId, text, at, Boolean(opts?.scheduled));
       return;
     }
 
@@ -2027,6 +2069,7 @@ export const useStore = create<State>((set, get) => ({
 
       await get().refreshAgents();
       startCrossDeviceRefresh(get);
+      startScheduler(get);
     } catch (e) {
       set({ authState: "signed-out", authError: e instanceof Error ? e.message : String(e) });
     }
