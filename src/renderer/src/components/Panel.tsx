@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { ComputerCard } from "./Computer";
 import { isImage, toAvatarDataUrl } from "../lib/avatarImage";
 import { useEffect, useState, useRef } from "react";
 import {
@@ -330,6 +331,14 @@ function Overview(): ReactNode {
     <>
       <Head title={agent.name} onClose={() => setPanel("none")} />
       <div className="panel__body">
+        <div style={{ marginBottom: 12, display: "flex", gap: 8 }}>
+          <button className="btn" style={{ flex: 1 }} onClick={() => setPluginsOpen(true)}>
+            Plugins
+          </button>
+          <button className="btn" style={{ flex: 1 }} onClick={() => setPanel("settings")}>
+            Settings
+          </button>
+        </div>
         <div className="card" style={{ marginBottom: 4 }}>
           <div className="stack-row" style={{ marginBottom: 6 }}>
             <span style={{ flex: 1 }} className="muted">Host</span>
@@ -342,6 +351,8 @@ function Overview(): ReactNode {
             </span>
           </div>
         </div>
+
+        <ComputerCard />
 
         <Section title="Routines" count={loaded ? schedules.length : undefined}>
           <NewRoutine />
@@ -413,15 +424,6 @@ function Overview(): ReactNode {
             ))}
           </Section>
         ) : null}
-
-        <div style={{ marginTop: 20, display: "flex", gap: 8 }}>
-          <button className="btn" style={{ flex: 1 }} onClick={() => setPluginsOpen(true)}>
-            Plugins
-          </button>
-          <button className="btn" style={{ flex: 1 }} onClick={() => setPanel("settings")}>
-            Settings
-          </button>
-        </div>
       </div>
     </>
   );

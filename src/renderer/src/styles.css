@@ -1082,3 +1082,64 @@ input, textarea { font: inherit; color: inherit; }
 .agent-portrait__actions { display: flex; gap: 6px; }
 .agent-portrait__error { font-size: 12px; color: var(--danger); }
 .btn--small { padding: 3px 10px; font-size: 12px; }
+
+/* ── The agent's computer ──────────────────────────────────────────── */
+
+.computer { margin: var(--sp-3) 0 2px; }
+.computer__screen {
+  position: relative; display: block; width: 100%; overflow: hidden;
+  border-radius: 14px; background: #17181c; cursor: pointer; padding: 0;
+  box-shadow: 0 0 0 0.5px rgba(16, 18, 24, 0.12);
+}
+.computer__canvas, .computer__canvas > canvas { width: 100%; height: 100%; display: block; }
+.computer__canvas { position: absolute; inset: 0; }
+.computer__state {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  color: rgba(255, 255, 255, 0.72); font-size: var(--fs-sm);
+}
+.computer__open {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  display: inline-flex; align-items: center; gap: 7px; padding: 8px 16px 8px 13px;
+  border-radius: 999px; background: rgba(16, 18, 24, 0.78); color: #fff;
+  font-size: var(--fs-base); font-weight: 560; opacity: 0; transition: opacity 120ms ease;
+  pointer-events: none;
+}
+.computer__screen::after {
+  content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0);
+  transition: background 120ms ease; pointer-events: none;
+}
+.computer__screen:hover::after { background: rgba(0, 0, 0, 0.22); }
+.computer__screen:hover .computer__open { opacity: 1; }
+.computer__caption { text-align: center; color: var(--ink-tertiary); font-size: var(--fs-sm); margin-top: 10px; }
+
+.computer-view {
+  position: fixed; inset: 0; z-index: 55; display: flex; flex-direction: column;
+  background: rgba(16, 18, 24, 0.86); -webkit-app-region: no-drag;
+}
+.computer-view__bar {
+  display: flex; align-items: center; gap: 12px; padding: 10px 14px 10px 86px; height: 48px;
+  color: #fff; -webkit-app-region: drag;
+}
+.computer-view__title { font-weight: 600; font-size: var(--fs-base); }
+.computer-view__hint { flex: 1; color: rgba(255, 255, 255, 0.6); font-size: var(--fs-sm); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.computer-view__close {
+  width: 32px; height: 32px; border-radius: 999px; display: grid; place-items: center;
+  background: rgba(255, 255, 255, 0.12); color: #fff; -webkit-app-region: no-drag;
+}
+.computer-view__close:hover { background: rgba(255, 255, 255, 0.22); }
+.computer-view__bar .btn { -webkit-app-region: no-drag; background: rgba(255, 255, 255, 0.14); color: #fff; }
+.computer-view__stage { flex: 1; min-height: 0; padding: 0 14px 14px; display: flex; }
+.computer-view__canvas {
+  flex: 1; min-width: 0; min-height: 0; border-radius: 12px; overflow: hidden; background: #000;
+  box-shadow: var(--shadow-modal);
+}
+.computer-view__canvas > canvas { display: block; }
+
+/* The card is a picture of the screen, not the screen: the pointer stays ours,
+   the click is ours, and nothing in it can take focus. */
+.computer__canvas, .computer__canvas > canvas { pointer-events: none; }
+.computer__canvas > canvas:focus, .computer__screen:focus, .computer-view__canvas > canvas:focus { outline: none; }
+/* Chromium paints its own focus ring (the system accent colour) on a button that
+   received focus programmatically; the panel toggle picked one up when the
+   screen's canvas handed focus around. Mouse users never need it here. */
+.topbar__btn:focus { outline: none; }

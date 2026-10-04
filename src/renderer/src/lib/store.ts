@@ -641,6 +641,12 @@ function flushQueue(get: () => State, agentId: string): void {
 
 export type PanelView = "none" | "overview" | "routine" | "settings";
 
+/** What an agent reports about its own computer (see @kybernesis/manage's /computer route). */
+export interface ComputerInfo {
+  name: string;
+  screen: { width: number; height: number };
+}
+
 interface State {
   agents: Agent[];
   conversations: Record<string, Block[]>;
@@ -650,6 +656,10 @@ interface State {
   activeRoutineId: string | null;
   pluginsOpen: boolean;
   paletteOpen: boolean;
+  /** The agent's own computer, per agent: what its management routes report. undefined = not asked, null = none. */
+  computers: Record<string, ComputerInfo | null | undefined>;
+  /** The full-screen view of the active agent's computer. */
+  computerOpen: boolean;
 
   authState: "loading" | "signed-in" | "signed-out";
   authError: string | null;
@@ -791,6 +801,9 @@ interface State {
   openRoutine(id: string): void;
   setPluginsOpen(open: boolean): void;
   setPaletteOpen(open: boolean): void;
+  setComputerOpen(open: boolean): void;
+  /** Ask the agent whether it has a computer. Cheap; the panel asks on every open. */
+  loadComputer(agentId: string): Promise<void>;
 
   send(agentId: string, text: string, fromQueue?: boolean, attachments?: PendingAttachment[]): void;
   /** Ask the agent to stop the turn it is running. */
@@ -877,6 +890,8 @@ export const useStore = create<State>((set, get) => ({
   panel: "none",
   activeRoutineId: null,
   pluginsOpen: false,
+  computers: {},
+  computerOpen: false,
   paletteOpen: false,
 
   authState: "loading",
@@ -1212,6 +1227,16 @@ export const useStore = create<State>((set, get) => ({
   openRoutine: (id) => set({ panel: "routine", activeRoutineId: id }),
   setPluginsOpen: (pluginsOpen) => set({ pluginsOpen }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
+  setComputerOpen: (computerOpen) => set({ computerOpen }),
+  loadComputer: async (agentId) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (!window.studio || !agent?.url) return;
+    // An agent without the management routes answers 404; an agent with them
+    // and no computer answers { computer: null }. Both are "no card".
+    const res = await window.studio.manage({ url: agent.url, path: "/computer" });
+    const computer = res.ok ? ((res.data as { computer?: ComputerInfo | null }).computer ?? null) : null;
+    set((s) => ({ computers: { ...s.computers, [agentId]: computer } }));
+  },
   createRoom: (memberIds) => {
     const id = `${ROOM_PREFIX}${Date.now().toString(36)}`;
     set((s) => ({
@@ -2046,6 +2071,7 @@ export const useStore = create<State>((set, get) => ({
       live: x.live,
     }));
     info.channels = [...info.channels, ...extra];
+    void get().loadComputer(agentId);
 
     /**
      * Adopt the agent's own conversation, so a routine's answer shows up here.
