@@ -78,6 +78,28 @@ function countStudio() {
 }
 
 /**
+ * How many processes a clean-up would still take — the SAME set `killStudio`
+ * acts on.
+ *
+ * `countStudio` counts main processes only, which is right for "is one Studio
+ * up?" but wrong for "did the kill work?". The kill rule deliberately reaches
+ * further, to helpers and to the `electron-vite preview` parent that would
+ * respawn or orphan them. Verifying the broad kill with the narrow count means
+ * a survivor that is killable but not countable — the preview parent is
+ * exactly that — outlives the runner and reads as a clean exit. Worse, it does
+ * not self-correct: the next run's stale sweep gated its own SIGKILL
+ * escalation on the same narrow count, so the survivor was never escalated
+ * either.
+ *
+ * Own pid and parent excluded, matching `killStudio`, so the runner cannot
+ * count itself as a survivor of its own clean-up.
+ */
+function countKillable() {
+  return selectKillableStudioProcesses(readProcessTable(), ROOT, [process.pid, process.ppid])
+    .length;
+}
+
+/**
  * Kill this checkout's Studio processes. Returns how many were signalled.
  *
  * Own pid and parent excluded. This is insurance rather than a known hazard:
@@ -116,7 +138,7 @@ async function clearStaleProcesses() {
     if (killStudio("SIGKILL") > 0) await sleep(1000);
   }
 
-  const verdict = checkStudioCount(countStudio(), 0);
+  const verdict = checkStudioCount(countKillable(), 0);
   if (!verdict.ok) fail(verdict.message);
 }
 
@@ -170,12 +192,12 @@ async function shutdown(code, signal) {
   try {
     if (killStudio("SIGTERM") > 0) {
       await sleep(500);
-      if (countStudio() > 0) {
+      if (countKillable() > 0) {
         killStudio("SIGKILL");
         await sleep(300);
       }
     }
-    const verdict = checkStudioCount(countStudio(), 0);
+    const verdict = checkStudioCount(countKillable(), 0);
     if (!verdict.ok) console.error(`[dev] ${verdict.message}`);
   } catch (error) {
     // Reaping is best effort: never turn a clean exit into a crash.

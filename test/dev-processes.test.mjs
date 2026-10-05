@@ -355,10 +355,87 @@ test("the boundary admits the forms a real command line actually takes", () => {
   );
 });
 
-test("a later occurrence still counts when an earlier one is not at a boundary", () => {
+test("belongsToCheckout keeps scanning past an occurrence that is not at a boundary", () => {
   // The scan must not stop at the first non-boundary hit: here the real path
   // follows a mention of a prefixed copy on the same command line.
   const command = `/mnt/data${LINUX_ROOT}/node_modules/x ${LINUX_ROOT}/node_modules/electron/dist/electron`;
   assert.equal(belongsToCheckout(command, LINUX_ROOT), true);
-  assert.equal(isMainStudioProcess(command, LINUX_ROOT), true);
+});
+
+test("naming the Electron binary in an ARGUMENT is not running it", () => {
+  // DELIBERATE BEHAVIOUR CHANGE, KYB-589. This command line used to be counted
+  // as a running Studio and selected for SIGTERM, because the rule was a bare
+  // `includes("electron/dist")` anywhere in the string. argv[0] here is some
+  // other binary and the Electron path is an argument to it.
+  //
+  // It is the same class as the editor and backup cases below, and the reason
+  // the change is worth the narrowing: a process that merely NAMES the binary
+  // is not running it, and must not be signalled.
+  const command = `/mnt/data${LINUX_ROOT}/node_modules/x ${LINUX_ROOT}/node_modules/electron/dist/electron`;
+  assert.equal(belongsToCheckout(command, LINUX_ROOT), true, "still this checkout's tree");
+  assert.equal(isMainStudioProcess(command, LINUX_ROOT), false);
+  assert.equal(isKillableStudioProcess(command, LINUX_ROOT), false);
+});
+
+test("an editor with a file under electron/dist open is neither counted nor killed", () => {
+  // The worst outcome in this file. The old rule sent SIGTERM to this, which
+  // destroys work that has nothing to do with Studio.
+  const vim = `vim ${LINUX_ROOT}/node_modules/electron/dist/resources/default_app.asar`;
+  assert.equal(belongsToCheckout(vim, LINUX_ROOT), true, "it IS in this checkout");
+  assert.equal(isHelperProcess(vim), false, "and it carries no --type= to exclude it");
+  assert.equal(isMainStudioProcess(vim, LINUX_ROOT), false);
+  assert.equal(isKillableStudioProcess(vim, LINUX_ROOT), false);
+});
+
+test("a backup reading electron/dist is neither counted nor killed", () => {
+  const rsync = `rsync -a ${LINUX_ROOT}/node_modules/electron/dist/ /srv/backup/`;
+  assert.equal(belongsToCheckout(rsync, LINUX_ROOT), true);
+  assert.equal(isMainStudioProcess(rsync, LINUX_ROOT), false);
+  assert.equal(isKillableStudioProcess(rsync, LINUX_ROOT), false);
+});
+
+test("every form a real launch actually takes still matches", () => {
+  // The guard on the narrowing. Each of these must keep being found, and the
+  // last two are why the rule is a prefix test rather than a split on
+  // whitespace: tokenising argv[0] yields `/home/my` for an unquoted root
+  // containing a space, and a real Studio would stop being reaped.
+  const SPACED = "/home/my dev/kyber-studio";
+  const forms = [
+    [`${LINUX_ROOT}/node_modules/electron/dist/electron .`, LINUX_ROOT, "argv[0] at offset zero"],
+    [
+      `${DARWIN_ROOT}/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron .`,
+      DARWIN_ROOT,
+      "the darwin bundle",
+    ],
+    [
+      `"${WINDOWS_ROOT}\\node_modules\\electron\\dist\\electron.exe" .`,
+      WINDOWS_ROOT,
+      "a quoted argv[0] with backslashes",
+    ],
+    [`  ${LINUX_ROOT}/node_modules/electron/dist/electron .`, LINUX_ROOT, "leading whitespace"],
+    [
+      `${SPACED}/node_modules/electron/dist/electron .`,
+      SPACED,
+      "an UNQUOTED checkout root containing a space",
+    ],
+    [
+      `"${SPACED}/node_modules/electron/dist/electron" .`,
+      SPACED,
+      "a quoted checkout root containing a space",
+    ],
+    [
+      `${LINUX_ROOT}/node_modules/electron/dist/chrome-sandbox ${LINUX_ROOT}/node_modules/electron/dist/electron --type=zygote`,
+      LINUX_ROOT,
+      "the linux chrome-sandbox zygote host",
+    ],
+  ];
+  for (const [command, root, what] of forms) {
+    assert.equal(isKillableStudioProcess(command, root), true, `must still be killable: ${what}`);
+  }
+
+  // And the preview parent, which is why the kill rule keeps a substring test:
+  // its binary is not at the front of the command line.
+  const preview = `node ${LINUX_ROOT}/node_modules/.bin/electron-vite preview`;
+  assert.equal(isKillableStudioProcess(preview, LINUX_ROOT), true, "the preview parent");
+  assert.equal(isMainStudioProcess(preview, LINUX_ROOT), false, "but it is not an app");
 });

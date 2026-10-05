@@ -65,7 +65,7 @@ async function goneWithin(pid, ms) {
  * A checkout-shaped temp directory. `realpathSync` because the script resolves
  * its own root through symlinks and macOS hands out /var/folders -> /private.
  */
-function buildRig() {
+function buildRig({ stubbornPlanted = false, previewParent = false } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "kyb588-")));
 
   mkdirSync(join(root, "scripts", "lib"), { recursive: true });
@@ -80,6 +80,25 @@ function buildRig() {
   mkdirSync(join(root, "node_modules", "electron", "dist"), { recursive: true });
   symlinkSync(process.execPath, join(root, "node_modules", "electron", "dist", "electron"));
   writeFileSync(join(root, "idle.cjs"), "setTimeout(() => {}, 300000);\n");
+
+  // Ignores SIGTERM, so only the SIGKILL escalation can reap it. KYB-588 added
+  // that escalation; nothing committed exercised it, because the plain planted
+  // process above dies to the first TERM and the branch is never reached.
+  writeFileSync(
+    join(root, "stubborn.cjs"),
+    'process.on("SIGTERM", () => {});\nsetTimeout(() => {}, 300000);\n',
+  );
+
+  // The preview parent: matches the KILL rule and not the COUNT rule, which is
+  // the asymmetry KYB-589 is about. Its command line carries the literal
+  // `electron-vite preview`, and its binary is NOT at the front — which is why
+  // the kill rule keeps a substring test for it.
+  mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
+  writeFileSync(
+    join(root, "node_modules", ".bin", "electron-vite"),
+    '#!/usr/bin/env node\nprocess.on("SIGTERM", () => {});\nsetTimeout(() => {}, 300000);\n',
+  );
+  chmodSync(join(root, "node_modules", ".bin", "electron-vite"), 0o755);
 
   // Stub npm. `run build` succeeds silently; `run start` behaves like Studio —
   // a startup burst, a planted Electron, then a line after first paint.
@@ -98,11 +117,21 @@ if (script === "start") {
   for (let i = 1; i <= ${BURST_LINES}; i++) console.log("startup line " + i);
   const planted = spawn(
     ${JSON.stringify(join(root, "node_modules", "electron", "dist", "electron"))},
-    [${JSON.stringify(join(root, "idle.cjs"))}],
+    [${JSON.stringify(join(root, stubbornPlanted ? "stubborn.cjs" : "idle.cjs"))}],
     { stdio: "ignore" },
   );
   console.log("STUB " + process.pid);
   console.log("PLANTED " + planted.pid);
+  ${
+    previewParent
+      ? `const preview = spawn(
+    ${JSON.stringify(join(root, "node_modules", ".bin", "electron-vite"))},
+    ["preview"],
+    { stdio: "ignore" },
+  );
+  console.log("PREVIEW " + preview.pid);`
+      : ""
+  }
   // Deliberately no signal forwarding: the script under test must reap this.
   setTimeout(() => console.log(${JSON.stringify(LATE_LINE)}), ${LATE_DELAY_MS});
   setTimeout(() => {}, 300000);
@@ -270,3 +299,94 @@ test("positive control: the old redirect-sleep-tail shape loses both ends of the
   assert.ok(!sampled.includes("startup line 1"), "the old shape should have cut the first lines off");
   assert.ok(!sampled.some((line) => line.includes(LATE_LINE)), "the old shape should have missed the late line");
 });
+
+test(
+  "a survivor that is KILLABLE but not COUNTABLE is escalated, not passed over",
+  { skip: POSIX ? false : "the rig uses a shebang stub; Windows is unverified, per KYB-588" },
+  async () => {
+    // KYB-589, item 1. The runner kills a wider set than it counts: the kill
+    // rule takes the `electron-vite preview` parent, the count rule does not.
+    // Verifying the wide kill with the narrow count meant this process
+    // survived SIGTERM, never triggered the SIGKILL escalation, and the runner
+    // reported a clean exit over the top of it.
+    //
+    // RED WHEN: either verdict or the escalation trigger in dev.mjs goes back
+    // to countStudio(). The preview parent then stays alive and this fails
+    // with "the preview parent survived".
+    const root = buildRig({ previewParent: true });
+    const runner = startRunner(root);
+    let planted = null;
+    let stub = null;
+    let preview = null;
+    try {
+      assert.ok(await runner.waitFor("PREVIEW", 15_000), `no preview pid:\n${runner.text()}`);
+      planted = pidFrom(runner.text(), "PLANTED");
+      stub = pidFrom(runner.text(), "STUB");
+      preview = pidFrom(runner.text(), "PREVIEW");
+      assert.ok(preview, "the rig did not report a preview pid");
+      assert.ok(isAlive(preview), "the preview parent was not running to begin with");
+
+      const exited = new Promise((resolve) => runner.child.on("exit", resolve));
+      runner.child.kill("SIGINT");
+      assert.notEqual(await Promise.race([exited, sleep(15_000)]), undefined);
+
+      assert.ok(
+        await goneWithin(preview, 8000),
+        "the preview parent survived: the runner verified with a narrower rule than it killed with",
+      );
+    } finally {
+      for (const pid of [planted, stub, preview]) {
+        if (pid) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {}
+        }
+      }
+      runner.child.kill("SIGKILL");
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "a process that ignores SIGTERM is still reaped, by escalation",
+  { skip: POSIX ? false : "the rig uses a shebang stub; Windows is unverified, per KYB-588" },
+  async () => {
+    // Coverage for the TERM -> verify -> KILL escalation KYB-588 added, which
+    // had none: the ordinary planted process dies to the first TERM, so the
+    // branch was never entered by any committed test.
+    //
+    // RED WHEN: the SIGKILL escalation is removed from shutdown(). Not a
+    // regression test for KYB-589 itself — it passes before and after the fix,
+    // because this process IS countable and so always triggered escalation.
+    const root = buildRig({ stubbornPlanted: true });
+    const runner = startRunner(root);
+    let planted = null;
+    let stub = null;
+    try {
+      assert.ok(await runner.waitFor("PLANTED", 15_000), `no planted pid:\n${runner.text()}`);
+      planted = pidFrom(runner.text(), "PLANTED");
+      stub = pidFrom(runner.text(), "STUB");
+      assert.ok(planted && isAlive(planted), "the stubborn process was not running to begin with");
+
+      const exited = new Promise((resolve) => runner.child.on("exit", resolve));
+      runner.child.kill("SIGINT");
+      assert.notEqual(await Promise.race([exited, sleep(15_000)]), undefined);
+
+      assert.ok(
+        await goneWithin(planted, 8000),
+        "a process ignoring SIGTERM outlived the runner: the SIGKILL escalation did not fire",
+      );
+    } finally {
+      for (const pid of [planted, stub]) {
+        if (pid) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {}
+        }
+      }
+      runner.child.kill("SIGKILL");
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
