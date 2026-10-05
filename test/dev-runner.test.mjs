@@ -435,6 +435,10 @@ test(
         await goneWithin(stale.pid, 8000),
         "a stale killable-but-uncountable process outlived the startup sweep",
       );
+      // Cannot fail as the code stands, and is kept deliberately: fail() exits
+      // before runBuild(), so every path that prints this also prevents STUB
+      // and the assertion above fires first. It is here as a guard for the day
+      // that verdict stops being fatal.
       assert.ok(
         !runner.text().includes("survived the kill"),
         `the sweep reported a survivor it had in fact reaped:\n${runner.text()}`,

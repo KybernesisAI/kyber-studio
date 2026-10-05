@@ -394,6 +394,23 @@ test("a backup reading electron/dist is neither counted nor killed", () => {
   assert.equal(isKillableStudioProcess(rsync, LINUX_ROOT), false);
 });
 
+test("a sibling directory whose name merely begins with dist is not this checkout's Electron", () => {
+  // The trailing edge of the boundary. KYB-588 anchored the checkout marker and
+  // KYB-589 anchored the front of the Electron path; without a trailing
+  // separator the match still ran past the directory name, so a stale copy or a
+  // backup directory beside the real one was counted and sent SIGTERM.
+  for (const sibling of ["dist-old", "dist.bak", "distfoo", "distelectron"]) {
+    const command = `${LINUX_ROOT}/node_modules/electron/${sibling}/electron .`;
+    assert.equal(
+      belongsToCheckout(command, LINUX_ROOT),
+      true,
+      `${sibling}: still in this checkout`,
+    );
+    assert.equal(isMainStudioProcess(command, LINUX_ROOT), false, `${sibling}: not counted`);
+    assert.equal(isKillableStudioProcess(command, LINUX_ROOT), false, `${sibling}: not killed`);
+  }
+});
+
 test("every form a real launch actually takes still matches", () => {
   // The guard on the narrowing. Each of these must keep being found, and the
   // last two are why the rule is a prefix test rather than a split on

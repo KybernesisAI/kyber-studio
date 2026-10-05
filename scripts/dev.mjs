@@ -89,12 +89,19 @@ function countStudio() {
  * exactly that — outlives the runner and reads as a clean exit, and the next
  * run's stale sweep then reports a clean start over the top of it.
  *
- * The stale sweep still REAPS such a survivor: its SIGKILL escalation is gated
- * on `killStudio("SIGTERM") > 0`, never on a count, so it always ran. Only the
- * two verdicts were narrow. An earlier version of this comment said the sweep
- * gated its escalation on the narrow count; that was wrong, and a reviewer
- * reading it concluded this change could make a stale survivor fatal. It
- * cannot.
+ * The stale sweep still REAPS such a survivor: BOTH its gates are kills, never
+ * counts, so its escalation always ran and only its verdict was narrow.
+ * `shutdown()` is the one that was genuinely broken — there the escalation
+ * TRIGGER was count-based too, which is why a survivor was never escalated and
+ * then reported as clean.
+ *
+ * Two corrections to this comment are recorded because each one misled a
+ * reader. It first said the sweep gated its escalation on the narrow count; a
+ * reviewer believed that and concluded the change could make a stale survivor
+ * fatal, which it cannot. It then said "only the two verdicts were narrow",
+ * which is true of the sweep but not of this file: a reader believing it would
+ * revert `shutdown()`'s trigger, the one mutation measured red three runs of
+ * three.
  *
  * Own pid and parent excluded, matching `killStudio`, so the runner cannot
  * count itself as a survivor of its own clean-up.
