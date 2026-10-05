@@ -44,6 +44,67 @@ export function checkoutMarker(root) {
  */
 const ELECTRON_DIST = "electron/dist";
 
+/**
+ * Where this checkout's Electron lives, as a path prefix.
+ *
+ * Every platform's binary sits under it:
+ *
+ *   linux    <marker>/electron/dist/electron
+ *   darwin   <marker>/electron/dist/Electron.app/Contents/MacOS/Electron
+ *   win32    <marker>/electron/dist/electron.exe
+ *
+ * as does the Linux `chrome-sandbox` zygote host, which execs the binary and
+ * must still be reaped.
+ */
+export function checkoutElectronPrefix(root) {
+  return `${checkoutMarker(root)}/${ELECTRON_DIST}`;
+}
+
+/**
+ * Is this command line RUNNING this checkout's Electron, as opposed to merely
+ * mentioning it?
+ *
+ * The rule used to be a bare `includes("electron/dist")` anywhere in the
+ * string, which is true of any process that happens to name a file under that
+ * directory. `vim <root>/node_modules/electron/dist/resources/default_app.asar`
+ * carries this checkout's node_modules, has no `--type=`, and so was both
+ * counted as a running Studio and selected for SIGTERM. So was a backup:
+ * `rsync -a <root>/node_modules/electron/dist/ /backup/`. Sending SIGTERM to
+ * somebody's editor is the worst thing in this file, because it destroys work
+ * that has nothing to do with Studio.
+ *
+ * The binary must therefore be what the command line INVOKES — at the front,
+ * not in an argument.
+ *
+ * Deliberately NOT done by splitting on whitespace and testing argv[0]. A
+ * checkout root containing a space is unquoted in `ps` output, so tokenising
+ * yields `/home/my` and a real Studio stops being found. Testing the prefix
+ * needs no parsing and is correct for every form, spaces included.
+ *
+ * The prefix carries a trailing `/`, so the match is bounded at BOTH ends. A
+ * bare prefix would still take a sibling directory whose name merely begins
+ * with `dist` — `electron/dist-old/electron`, `dist.bak`, `distfoo` — which is
+ * the same looseness this function exists to remove, one character along.
+ * Every real binary has a path segment after `dist`.
+ *
+ * A process that merely NAMES the binary is not running it, and nor is a
+ * wrapper that execs it: `sh -c '<root>/.../electron/dist/electron app'` is no
+ * longer selected, because its own argv[0] is the shell. That cannot orphan a
+ * Studio — the Electron process the wrapper execs has the binary at its own
+ * argv[0] and is still reaped, and the wrapper exits when its child dies. The
+ * one wrapper that would respawn Electron is the `electron-vite preview`
+ * parent, which has its own token below.
+ */
+export function runsCheckoutElectron(command, root) {
+  let normalised = normalisePath(command).replace(/^\s+/, "");
+  // One optional opening quote: Windows quotes a path containing a space, and
+  // `ps` on POSIX preserves whatever the caller used.
+  if (normalised.startsWith('"') || normalised.startsWith("'")) {
+    normalised = normalised.slice(1);
+  }
+  return normalised.startsWith(`${checkoutElectronPrefix(root)}/`);
+}
+
 /** The vite process that spawns Electron as a child, and orphans it when killed. */
 const PREVIEW = "electron-vite preview";
 
@@ -110,7 +171,7 @@ export function belongsToCheckout(command, root) {
  */
 export function isMainStudioProcess(command, root) {
   if (!belongsToCheckout(command, root)) return false;
-  if (!normalisePath(command).includes(ELECTRON_DIST)) return false;
+  if (!runsCheckoutElectron(command, root)) return false;
   return !isHelperProcess(command);
 }
 
@@ -123,8 +184,11 @@ export function isMainStudioProcess(command, root) {
  */
 export function isKillableStudioProcess(command, root) {
   if (!belongsToCheckout(command, root)) return false;
-  const normalised = normalisePath(command);
-  return normalised.includes(ELECTRON_DIST) || normalised.includes(PREVIEW);
+  // The preview parent stays a substring test. Its command line is
+  // `<interpreter> <root>/node_modules/.bin/electron-vite preview`, so the
+  // binary is not at the front and a prefix rule would stop matching it. The
+  // token carries its own space and is specific enough not to collide.
+  return runsCheckoutElectron(command, root) || normalisePath(command).includes(PREVIEW);
 }
 
 /**
