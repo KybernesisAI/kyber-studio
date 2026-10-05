@@ -338,9 +338,17 @@ test(
     // survived SIGTERM, never triggered the SIGKILL escalation, and the runner
     // reported a clean exit over the top of it.
     //
-    // RED WHEN: either verdict or the escalation trigger in dev.mjs goes back
-    // to countStudio(). The preview parent then stays alive and this fails
-    // with "the preview parent survived".
+    // RED WHEN: the SIGKILL escalation TRIGGER in shutdown() goes back to
+    // countStudio() — measured red 3 runs of 3. The preview parent then
+    // survives and this fails with "the preview parent survived".
+    //
+    // Reverting only the VERDICT does NOT make this red, and the criterion
+    // that said it would was corrected. Once the trigger is right the
+    // survivor is killed either way, so nothing observable through process
+    // liveness separates the two. The verdict change is still correct — it is
+    // what would report a survivor that cannot be killed at all, one owned by
+    // another user whose EPERM killStudio swallows — but that is unreachable
+    // in this rig and is asserted by nothing here.
     const root = buildRig({ previewParent: true });
     const runner = startRunner(root);
     let planted = null;
