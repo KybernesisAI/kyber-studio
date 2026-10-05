@@ -4,6 +4,7 @@ import {
   chmodSync,
   closeSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -42,6 +43,21 @@ const LATE_DELAY_MS = 1200;
 
 const POSIX = process.platform !== "win32";
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+/**
+ * Wait until a stand-in has installed its signal handler.
+ *
+ * Signalling before this point measures Node's boot time rather than the
+ * runner's reaping, and makes the result non-deterministic.
+ */
+async function ready(path, ms) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (existsSync(path)) return true;
+    await sleep(50);
+  }
+  return false;
+}
 
 function isAlive(pid) {
   try {
@@ -84,9 +100,19 @@ function buildRig({ stubbornPlanted = false, previewParent = false } = {}) {
   // Ignores SIGTERM, so only the SIGKILL escalation can reap it. KYB-588 added
   // that escalation; nothing committed exercised it, because the plain planted
   // process above dies to the first TERM and the branch is never reached.
+  //
+  // The handler is installed BEFORE the readiness marker is written, and the
+  // test waits for that marker before signalling anything. Without it there is
+  // a race: the stub prints the pid the instant it spawns, while this process
+  // is still booting Node and has no handler yet, so a SIGTERM arriving in
+  // that window kills it by default action and the test passes for the wrong
+  // reason. Measured: under a mutation that removes the SIGKILL escalation,
+  // the preview test went pass / fail / fail across three runs before this.
   writeFileSync(
     join(root, "stubborn.cjs"),
-    'process.on("SIGTERM", () => {});\nsetTimeout(() => {}, 300000);\n',
+    'process.on("SIGTERM", () => {});\n' +
+      `require("node:fs").writeFileSync(${JSON.stringify(join(root, "stubborn.ready"))}, "y");\n` +
+      "setTimeout(() => {}, 300000);\n",
   );
 
   // The preview parent: matches the KILL rule and not the COUNT rule, which is
@@ -96,7 +122,9 @@ function buildRig({ stubbornPlanted = false, previewParent = false } = {}) {
   mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
   writeFileSync(
     join(root, "node_modules", ".bin", "electron-vite"),
-    '#!/usr/bin/env node\nprocess.on("SIGTERM", () => {});\nsetTimeout(() => {}, 300000);\n',
+    '#!/usr/bin/env node\nprocess.on("SIGTERM", () => {});\n' +
+      `require("node:fs").writeFileSync(${JSON.stringify(join(root, "preview.ready"))}, "y");\n` +
+      "setTimeout(() => {}, 300000);\n",
   );
   chmodSync(join(root, "node_modules", ".bin", "electron-vite"), 0o755);
 
@@ -324,6 +352,10 @@ test(
       stub = pidFrom(runner.text(), "STUB");
       preview = pidFrom(runner.text(), "PREVIEW");
       assert.ok(preview, "the rig did not report a preview pid");
+      assert.ok(
+        await ready(join(root, "preview.ready"), 10_000),
+        "the preview parent never installed its SIGTERM handler",
+      );
       assert.ok(isAlive(preview), "the preview parent was not running to begin with");
 
       const exited = new Promise((resolve) => runner.child.on("exit", resolve));
@@ -367,6 +399,10 @@ test(
       assert.ok(await runner.waitFor("PLANTED", 15_000), `no planted pid:\n${runner.text()}`);
       planted = pidFrom(runner.text(), "PLANTED");
       stub = pidFrom(runner.text(), "STUB");
+      assert.ok(
+        await ready(join(root, "stubborn.ready"), 10_000),
+        "the stubborn process never installed its SIGTERM handler",
+      );
       assert.ok(planted && isAlive(planted), "the stubborn process was not running to begin with");
 
       const exited = new Promise((resolve) => runner.child.on("exit", resolve));
