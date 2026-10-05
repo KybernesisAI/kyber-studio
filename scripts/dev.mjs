@@ -86,10 +86,15 @@ function countStudio() {
  * further, to helpers and to the `electron-vite preview` parent that would
  * respawn or orphan them. Verifying the broad kill with the narrow count means
  * a survivor that is killable but not countable — the preview parent is
- * exactly that — outlives the runner and reads as a clean exit. Worse, it does
- * not self-correct: the next run's stale sweep gated its own SIGKILL
- * escalation on the same narrow count, so the survivor was never escalated
- * either.
+ * exactly that — outlives the runner and reads as a clean exit, and the next
+ * run's stale sweep then reports a clean start over the top of it.
+ *
+ * The stale sweep still REAPS such a survivor: its SIGKILL escalation is gated
+ * on `killStudio("SIGTERM") > 0`, never on a count, so it always ran. Only the
+ * two verdicts were narrow. An earlier version of this comment said the sweep
+ * gated its escalation on the narrow count; that was wrong, and a reviewer
+ * reading it concluded this change could make a stale survivor fatal. It
+ * cannot.
  *
  * Own pid and parent excluded, matching `killStudio`, so the runner cannot
  * count itself as a survivor of its own clean-up.
@@ -138,7 +143,7 @@ async function clearStaleProcesses() {
     if (killStudio("SIGKILL") > 0) await sleep(1000);
   }
 
-  const verdict = checkStudioCount(countKillable(), 0);
+  const verdict = checkStudioCount(countStudio(), 0);
   if (!verdict.ok) fail(verdict.message);
 }
 

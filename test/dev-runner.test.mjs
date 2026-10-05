@@ -389,6 +389,71 @@ test(
 );
 
 test(
+  "a stale survivor from a previous run is reaped before the next one starts",
+  { skip: POSIX ? false : "the rig uses a shebang stub; Windows is unverified, per KYB-588" },
+  async () => {
+    // clearStaleProcesses() is the other call site KYB-589 widened, and the
+    // only changed path whose verdict is FATAL — it calls fail() rather than
+    // shutdown()'s console.error, so a wrong answer here stops `npm run dev`
+    // from starting at all. Nothing exercised it.
+    //
+    // The planted process is what a previous run leaves behind: killable, NOT
+    // countable, and ignoring SIGTERM, so only the escalation can reap it.
+    //
+    // RED WHEN: the SIGKILL escalation in clearStaleProcesses() is removed, or
+    // its kill is narrowed to the counted set. NOT red when its verdict alone
+    // is reverted to countStudio(): by then the survivor is already dead, so
+    // the two verdicts agree. That verdict differs only for a process that
+    // survives SIGKILL itself — another user's, where process.kill throws
+    // EPERM and killStudio swallows it — which cannot be planted here and is
+    // asserted by nothing.
+    const root = buildRig();
+    const stale = spawn(join(root, "node_modules", ".bin", "electron-vite"), ["preview"], {
+      stdio: "ignore",
+    });
+    let runner = null;
+    let planted = null;
+    let stub = null;
+    try {
+      assert.ok(
+        await ready(join(root, "preview.ready"), 10_000),
+        "the stale process never installed its SIGTERM handler",
+      );
+      assert.ok(isAlive(stale.pid), "the stale process was not running to begin with");
+
+      runner = startRunner(root);
+      // fail() aborts before the build, so reaching the stub at all proves the
+      // sweep returned a clean verdict rather than refusing to start.
+      assert.ok(
+        await runner.waitFor("STUB", 20_000),
+        `the runner never got past its stale sweep:\n${runner.text()}`,
+      );
+      planted = pidFrom(runner.text(), "PLANTED");
+      stub = pidFrom(runner.text(), "STUB");
+
+      assert.ok(
+        await goneWithin(stale.pid, 8000),
+        "a stale killable-but-uncountable process outlived the startup sweep",
+      );
+      assert.ok(
+        !runner.text().includes("survived the kill"),
+        `the sweep reported a survivor it had in fact reaped:\n${runner.text()}`,
+      );
+    } finally {
+      for (const pid of [stale.pid, planted, stub]) {
+        if (pid) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {}
+        }
+      }
+      if (runner) runner.child.kill("SIGKILL");
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "a process that ignores SIGTERM is still reaped, by escalation",
   { skip: POSIX ? false : "the rig uses a shebang stub; Windows is unverified, per KYB-588" },
   async () => {
