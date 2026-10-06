@@ -142,27 +142,22 @@ function whenShort(iso: string): string {
 }
 
 /**
- * Every conversation this agent has had — this app's, the phone's, iMessage,
- * Buzz — and the routines feed, from the agent's own list. The chat shows one
- * at a time; this is how you get to the others, which until now sat on the
- * agent's disk with no door.
+ * The compact entry in the drawer: the routines feed (one tap, it is the thing
+ * people look for most) and a door to the full list. The list itself lives in
+ * its own drawer so the overview stays an overview.
  */
-function Conversations(): ReactNode {
-  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, startConversation, loadSessions, inflight } = useStore();
+function ConversationsEntry(): ReactNode {
+  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, loadSessions, setPanel } = useStore();
   const list = agentSessions[activeAgentId];
   const current = sessions[activeAgentId];
   const routinesId = routinesSessions[activeAgentId];
-  const [showAll, setShowAll] = useState(false);
   useEffect(() => {
     void loadSessions(activeAgentId);
   }, [activeAgentId, loadSessions]);
   const routines = list?.find((s) => s.id === routinesId || s.surface === "routines");
   const others = (list ?? []).filter((s) => s.id !== routines?.id);
-  const shown = showAll ? others : others.slice(0, 8);
-  const busy = Boolean(inflight[activeAgentId]);
   return (
-    <Section title="Conversations" count={list ? others.length : undefined}>
-      <Row icon={<Icon name="plus" size={14} />} title="New conversation" detail={busy ? "Wait for the current turn to finish" : undefined} onClick={busy ? undefined : () => startConversation(activeAgentId)} />
+    <Section title="Conversations">
       {routines ? (
         <Row
           icon={<Icon name="clock" size={14} />}
@@ -172,24 +167,70 @@ function Conversations(): ReactNode {
           onClick={() => void openSession(activeAgentId, routines.id)}
         />
       ) : null}
-      {list === undefined ? <Empty loaded={false} none="" /> : null}
-      {list && others.length === 0 ? <Empty loaded none="No conversations yet." /> : null}
-      {shown.map((s) => (
-        <Row
-          key={s.id}
-          icon={<Icon name="monitor" size={14} />}
-          title={s.title}
-          detail={`${SURFACE_LABEL[s.surface] ?? s.surface}${s.channel ? ` · ${s.channel}` : ""} · ${whenShort(s.updatedAt)}${s.status === "alive" ? "" : " · ended"}`}
-          active={current === s.id}
-          onClick={() => void openSession(activeAgentId, s.id)}
-        />
-      ))}
-      {!showAll && others.length > 8 ? (
-        <button className="btn btn--small" style={{ margin: "4px 8px" }} onClick={() => setShowAll(true)}>
-          Show all {others.length}
-        </button>
-      ) : null}
+      <Row
+        icon={<Icon name="chevronRight" size={14} />}
+        title="Show conversations"
+        detail={list ? `${others.length} thread${others.length === 1 ? "" : "s"} across this app, your phone and iMessage` : "Loading…"}
+        onClick={() => setPanel("conversations")}
+      />
     </Section>
+  );
+}
+
+/**
+ * Every conversation this agent has had — this app's, the phone's, iMessage,
+ * Buzz — in its own drawer. The chat shows one at a time; this is how you get
+ * to the others, which until now sat on the agent's disk with no door.
+ */
+function ConversationsView(): ReactNode {
+  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, startConversation, loadSessions, inflight, setPanel } = useStore();
+  const list = agentSessions[activeAgentId];
+  const current = sessions[activeAgentId];
+  const routinesId = routinesSessions[activeAgentId];
+  useEffect(() => {
+    void loadSessions(activeAgentId);
+  }, [activeAgentId, loadSessions]);
+  const others = (list ?? []).filter((s) => s.id !== routinesId && s.surface !== "routines");
+  const busy = Boolean(inflight[activeAgentId]);
+  const pick = (id: string) => {
+    void openSession(activeAgentId, id);
+    setPanel("overview");
+  };
+  return (
+    <>
+      <Head title="Conversations" onBack={() => setPanel("overview")} onClose={() => setPanel("none")} />
+      <div className="panel__body">
+        <Row
+          icon={<Icon name="plus" size={14} />}
+          title="New conversation"
+          detail={busy ? "Wait for the current turn to finish" : "Leaves this thread where it is; the next message starts a fresh one."}
+          onClick={
+            busy
+              ? undefined
+              : () => {
+                  startConversation(activeAgentId);
+                  setPanel("none");
+                }
+          }
+        />
+        <div className="panel__section-head" style={{ marginTop: 16 }}>
+          <span className="panel__section-title">All threads</span>
+          {list ? <span className="muted">{others.length}</span> : null}
+        </div>
+        {list === undefined ? <Empty loaded={false} none="" /> : null}
+        {list && others.length === 0 ? <Empty loaded none="No conversations yet." /> : null}
+        {others.map((s) => (
+          <Row
+            key={s.id}
+            icon={<Icon name="monitor" size={14} />}
+            title={s.title}
+            detail={`${SURFACE_LABEL[s.surface] ?? s.surface}${s.channel ? ` · ${s.channel}` : ""} · ${whenShort(s.updatedAt)}${s.status === "alive" ? "" : " · ended"}`}
+            active={current === s.id}
+            onClick={() => pick(s.id)}
+          />
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -426,7 +467,7 @@ function Overview(): ReactNode {
 
         <ComputerCard />
 
-        <Conversations />
+        <ConversationsEntry />
 
         <Section title="Routines" count={loaded ? schedules.length : undefined}>
           <NewRoutine />
@@ -934,6 +975,7 @@ export function Panel(): ReactNode {
       {shown === "routine" ? <RoutineView /> : null}
       {shown === "settings" ? <Settings /> : null}
       {shown === "vault" ? <VaultView /> : null}
+      {shown === "conversations" ? <ConversationsView /> : null}
     </aside>
   );
 }

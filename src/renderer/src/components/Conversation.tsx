@@ -14,6 +14,8 @@ import { LocalAskCard } from "./LocalAsk";
 import { Markdown } from "./Markdown";
 import { record, type Recorder } from "../lib/dictation";
 import { DeliveredFiles } from "./DeliveredFiles";
+import { SpendRequestCard, VaultAskCard } from "./Asks";
+import { approvalPrompt, parseSpendRequestAsk, parseVaultItemAsk } from "@shared/asks";
 import { deliveredFiles } from "../../../shared/deliveredFiles";
 import { Spinner } from "./Spinner";
 import { Avatar, Icon, RichText, timeLabel } from "./primitives";
@@ -170,14 +172,19 @@ function QuestionCard({
   onAnswer,
 }: {
   block: Extract<Block, { kind: "question" }>;
-  onAnswer(answer: { optionId?: string; text?: string }): void;
+  onAnswer(answer: { optionId?: string; text?: string; label?: string }): void;
 }): ReactNode {
   const [text, setText] = useState("");
+  const vault = parseVaultItemAsk(block.prompt);
+  const spend = parseSpendRequestAsk(block.prompt);
+  const approval = approvalPrompt(block.prompt);
+  // What the transcript shows once answered: the sentence, not the marker line.
+  const shownPrompt = vault ? `Needed ${vault.ask.kind === "login" ? "a login" : vault.ask.kind === "card" ? "a card" : `an ${vault.ask.kind}`}${vault.ask.site ? ` for ${vault.ask.site}` : ""}` : spend ? `Purchase approval · ${spend.ask.merchant ?? spend.ask.merchant_url ?? ""}` : approval ? approval.title : block.prompt;
 
   if (block.answered) {
     return (
       <div className="ask ask--done">
-        <div className="ask__title" style={{ fontWeight: 500 }}>{block.prompt}</div>
+        <div className="ask__title" style={{ fontWeight: 500 }}>{shownPrompt}</div>
         <div className="ask__answered">
           <Icon name="check" size={13} /> {block.answered}
         </div>
@@ -185,9 +192,12 @@ function QuestionCard({
     );
   }
 
+  if (vault) return <VaultAskCard block={block} ask={vault.ask} text={vault.text} onAnswer={onAnswer} />;
+  if (spend) return <SpendRequestCard block={block} ask={spend.ask} text={spend.text} onAnswer={onAnswer} />;
+
   return (
     <div className="ask">
-      <div className="ask__title" style={{ marginBottom: 10 }}>{block.prompt}</div>
+      <div className="ask__title" style={{ marginBottom: 10 }}>{approval ? approval.title : block.prompt}</div>
       {block.options?.length ? (
         <div className="ask__options">
           {block.options.map((o) => (

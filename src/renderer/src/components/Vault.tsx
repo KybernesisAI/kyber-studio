@@ -143,8 +143,8 @@ function Group({ title, items, render, onRemove }: { title: string; items: Vault
   );
 }
 
-function AddForm({ kind, onCancel, onSaved }: { kind: VaultKind; onCancel(): void; onSaved(): Promise<void> }): ReactNode {
-  const [form, setForm] = useState<Record<string, string>>({});
+export function AddForm({ kind, onCancel, onSaved, initial, compact }: { kind: VaultKind; onCancel(): void; onSaved(item: VaultItem): Promise<void>; initial?: Record<string, string>; compact?: boolean }): ReactNode {
+  const [form, setForm] = useState<Record<string, string>>(initial ?? {});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
@@ -154,10 +154,10 @@ function AddForm({ kind, onCancel, onSaved }: { kind: VaultKind; onCancel(): voi
     setError(null);
     try {
       const input = buildInput(kind, form);
-      await window.studio?.vaultAdd(input);
+      const item = await window.studio?.vaultAdd(input);
       // Nothing from this form survives the save: not in state, not in the DOM.
       setForm({});
-      await onSaved();
+      if (item) await onSaved(item);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -173,8 +173,8 @@ function AddForm({ kind, onCancel, onSaved }: { kind: VaultKind; onCancel(): voi
   );
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
-      <div style={{ marginBottom: 8 }}>{kind === "login" ? "New login" : kind === "card" ? "New card" : "New address"}</div>
+    <div className={compact ? undefined : "card"} style={compact ? undefined : { marginBottom: 12 }}>
+      {compact ? null : <div style={{ marginBottom: 8 }}>{kind === "login" ? "New login" : kind === "card" ? "New card" : "New address"}</div>}
       {field("label", "Label", { placeholder: kind === "login" ? "e.g. GitHub" : kind === "card" ? "e.g. Personal Visa" : "e.g. Home" })}
       {kind === "login" ? (
         <>
@@ -210,9 +210,9 @@ function AddForm({ kind, onCancel, onSaved }: { kind: VaultKind; onCancel(): voi
       ) : null}
       {error ? <div className="agent-portrait__error">{error}</div> : null}
       <div className="stack-row" style={{ marginTop: 8 }}>
-        <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
+        {compact ? null : <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>}
         <div style={{ flex: 1 }} />
-        <button className="btn btn--primary" onClick={() => void submit()} disabled={busy}>{busy ? "Saving…" : "Save"}</button>
+        <button className="btn btn--primary" onClick={() => void submit()} disabled={busy}>{busy ? "Saving…" : compact ? "Save to vault and continue" : "Save"}</button>
       </div>
     </div>
   );

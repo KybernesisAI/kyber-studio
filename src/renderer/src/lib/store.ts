@@ -639,7 +639,7 @@ function flushQueue(get: () => State, agentId: string): void {
   setTimeout(() => get().send(agentId, next, true), 0);
 }
 
-export type PanelView = "none" | "overview" | "routine" | "settings" | "vault";
+export type PanelView = "none" | "overview" | "routine" | "settings" | "vault" | "conversations";
 
 /** One conversation as the agent's management routes describe it (see @kybernesis/manage's /sessions). */
 export interface AgentSession {
@@ -849,7 +849,7 @@ interface State {
    * message queues behind it forever.
    */
   resetConversation(agentId: string): void;
-  answerQuestion(agentId: string, blockId: string, answer: { optionId?: string; text?: string }): void;
+  answerQuestion(agentId: string, blockId: string, answer: { optionId?: string; text?: string; label?: string }): void;
   patchAgent(id: string, patch: Partial<Agent>): void;
 
   bootstrap(): Promise<void>;
@@ -1686,7 +1686,10 @@ export const useStore = create<State>((set, get) => ({
     const block = (get().conversations[agentId] ?? []).find((b) => b.id === blockId);
     if (!block || block.kind !== "question") return;
 
+    // A card may name what was chosen in its own words; a vault answer in
+    // particular carries an item id the person should never see as "their answer".
     const label =
+      answer.label ??
       answer.text ??
       block.options?.find((o) => o.id === answer.optionId)?.label ??
       answer.optionId ??
