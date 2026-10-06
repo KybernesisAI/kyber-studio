@@ -29,7 +29,8 @@
     "prepackage:linux": "node scripts/fetch-speech-model.mjs",
     "prerelease:mac": "node scripts/fetch-speech-model.mjs",
     "prerelease:linux": "node scripts/fetch-speech-model.mjs",
-    "verify:package": "node scripts/verify-package.mjs"
+    "verify:package": "node scripts/verify-package.mjs",
+    "install:appydave": "bash scripts/install-appydave.sh"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.1",
