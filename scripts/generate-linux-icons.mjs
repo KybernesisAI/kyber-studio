@@ -3,7 +3,7 @@
 // AppImage consumes the same set; this file makes no claim about whether an
 // un-integrated AppImage displays it.)
 //
-//   npm i --no-save sharp     # see DEPENDENCY below
+//   npm i --no-save sharp@0.34   # see DEPENDENCY below
 //   node scripts/generate-linux-icons.mjs
 //   git add build/icons       # the output is committed, not built on demand
 //
@@ -13,9 +13,11 @@
 //   {"icons":[{"file":"build/icon.png","size":1024}]}
 // — and app-builder-lib's FpmTarget installs that icon, alone, to
 // /usr/share/icons/hicolor/1024x1024/apps/. The index.theme governing that tree
-// ships in the hicolor-icon-theme package, and its Directories= key lists
-// 16x16 22x22 24x24 32x32 36x36 48x48 64x64 72x72 96x96 128x128 192x192
-// 256x256 512x512 — and no 1024x1024. Nothing searches that directory, so the
+// ships in the hicolor-icon-theme package, and its Directories= key lists these
+// pixel sizes — alongside @2 variants, scalable, symbolic and non-Application
+// contexts, so expect hundreds of entries, not thirteen:
+//   16x16 22x22 24x24 32x32 36x36 48x48 64x64 72x72 96x96 128x128 192x192
+//   256x256 512x512 — and no 1024x1024. Nothing searches that directory, so the
 // application menu fell back to a generic icon. That was KYB-609.
 //
 // WHY THESE EIGHT SIZES. Each one appears in that Directories= list. The five
@@ -26,8 +28,9 @@
 //
 // DEPENDENCY. sharp is not declared in package.json. It resolves transitively
 // today, which is not a thing to rely on, so install it for the length of this
-// one job with `npm i --no-save sharp` — that leaves package.json and the
-// lockfile untouched.
+// one job with `npm i --no-save sharp@0.34` — that leaves package.json and the
+// lockfile untouched. The major is pinned so a regeneration years from now does
+// not emit different bytes from a newer libvips encoder.
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
