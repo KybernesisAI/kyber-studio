@@ -104,7 +104,7 @@
       "icon": "build/icon.png"
     },
     "linux": {
-      "icon": "build/icon.png",
+      "icon": "build/icons",
       "target": [
         {
           "target": "AppImage",
