@@ -1,12 +1,15 @@
 name: release
 
-# Builds, signs, notarizes, and publishes the macOS app to a GitHub Release on
-# this repo. electron-updater in the shipped app polls that release's
-# latest-mac.yml, so apps on a lower version show the in-app update control.
+# Builds, signs, notarizes and publishes the macOS app, and publishes the Linux
+# AppImage and .deb, to a GitHub Release on this repo. electron-updater in the
+# shipped app polls that release's latest-mac.yml on macOS and latest-linux.yml
+# on Linux, so apps on a lower version show the in-app update control.
 #
-# The Linux lane below is a port of the PACKAGING stage only: it uploads
-# workflow artefacts and publishes nothing. Turning on Linux publishing is a
-# separate decision and deliberately not taken here.
+# Linux publishing was turned on in KYB-607, the last PR of the KYB-500 epic.
+# The Linux lane still PACKAGES with `--publish never` and still asserts before
+# anything leaves the runner. The upload to the release is a separate job,
+# publish-linux, at the bottom of this file — see its comment for why it is a
+# job of its own and not one more step.
 #
 # Trigger: push a tag `vX.Y.Z` matching package.json "version".
 #
@@ -226,3 +229,145 @@ jobs:
             dist/*.deb
             dist/latest-linux.yml
           retention-days: 14
+
+  # KYB-607 — the Linux upload to the release.
+  #
+  # Why this is a JOB and not a step at the end of release-linux: the two lanes
+  # RACE, and release-linux usually wins. The mac lane's `--publish always` is
+  # what CREATES the GitHub release, and measured across the last three tags the
+  # Linux job finished 39 s and 66 s BEFORE the mac lane published it on two of
+  # them, and 296 s after it on the third. An upload inside release-linux would
+  # therefore have found no release to upload to on most tags. `needs` is a
+  # happens-before edge; a retry loop would only have been a slower way to lose
+  # the same race.
+  #
+  # `needs: release-linux` does the other half of the work. It is what makes
+  # "a failing assertion publishes nothing" structural rather than a matter of
+  # step order: if the speech-model assert, the AppImage size ceiling or
+  # verify-package.mjs fails, that job fails and this one never starts. A job
+  # `if:` with no status-check function keeps the implicit success() over needs,
+  # so the guard below does not weaken that edge.
+  #
+  # The bytes published here are the bytes that were verified — they come down
+  # from release-linux's own artefact. Re-invoking electron-builder to publish
+  # would have rebuilt first, and published objects nothing had checked.
+  #
+  # If the mac lane fails there is no release, so Linux publishes nothing. That
+  # is accepted rather than worked around: a `gh release create` fallback here
+  # would let a Linux-only release exist carrying no latest-mac.yml. The real
+  # decoupling is KYB-536's restructure — one publish job gated on BOTH lanes'
+  # assertions, uploading both platforms — not a fallback inside this job.
+  publish-linux:
+    needs: [release-linux, release-mac]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Publish only from a pushed tag.
+    #
+    # The event check is load-bearing and `startsWith` alone is NOT enough.
+    # Under workflow_dispatch, github.ref is the ref the run was dispatched
+    # AGAINST, which may be a tag — so a tag dispatch satisfies startsWith. This
+    # workflow also takes a separate `ref` input that both lanes check out, so
+    # without the event check a dispatch against tag vX.Y.Z carrying
+    # `ref: some-branch` would build branch bytes, assert them, and then clobber
+    # vX.Y.Z's release assets with artefacts that are not that tag's code.
+    # Restricting to `push` means the ref that triggered the run is the ref that
+    # was built.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      # v8, not v6. v6 runs on node20 and treats a digest mismatch as a log
+      # warning; v8 runs on node24 and defaults `digest-mismatch: error`, which
+      # is what actually enforces this job's central claim that the bytes
+      # published are the bytes release-linux verified. A warning that is then
+      # published with --clobber would be that claim in name only.
+      #
+      # By exact name rather than a pattern, deliberately. release-linux's matrix
+      # is x64 only. Adding a second arch to it needs a decision here first,
+      # because each arch's artefact carries its own latest-linux.yml and merging
+      # them would silently leave one arch's updater feed overwriting the
+      # other's. Downloading one known name publishes one known arch instead.
+      - name: Download the artefacts release-linux verified
+        uses: actions/download-artifact@v8
+        with:
+          name: kyber-studio-linux-x64
+          path: dist
+
+      - name: What will be published
+        run: ls -la dist
+
+      # Fail rather than publish a partial set. latest-linux.yml is the file an
+      # updater actually polls, so a release carrying only the two installers
+      # would look complete on the releases page and update nobody.
+      - name: Assert all three artefacts arrived
+        run: |
+          ls -1 dist/*.AppImage >/dev/null
+          ls -1 dist/*.deb >/dev/null
+          test -s dist/latest-linux.yml
+
+      # GH_REPO, because this job has no checkout. gh resolves the target
+      # repository from GH_REPO or from the git remotes of the working
+      # directory, and does NOT read Actions' GITHUB_REPOSITORY — without it
+      # every invocation here dies with "failed to run git: fatal: not a git
+      # repository". The mac lane's `gh release edit` works only because that
+      # job checks the source out; this job should not have the source tree, so
+      # it names the repository instead.
+      #
+      # --clobber, so re-running replaces assets instead of failing on "asset
+      # already exists". Note what re-running does and does not do: "re-run
+      # failed jobs" re-runs this job alone, so the bytes come from the original
+      # attempt's artefact and are NOT rebuilt — the safety property still holds,
+      # because that artefact only exists if the assertions passed, but it holds
+      # for that reason rather than because anything was rebuilt.
+      #
+      # build.publish sets releaseType: release, so the mac lane leaves a
+      # published release rather than a draft, and the by-tag lookup gh uses
+      # resolves it.
+      - name: Upload the Linux artefacts to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release upload "${TAG}" \
+            dist/*.AppImage \
+            dist/*.deb \
+            dist/latest-linux.yml \
+            --clobber
+
+      # Prove the end state, and prove the thing that actually matters: that
+      # every name the UPDATE FEED points at exists as an asset. The three
+      # earlier greps matched only extensions, so they would have gone green
+      # over a release whose feed resolved to nothing — a check that a bad
+      # release passes is worse than no check. This compares the feed's own
+      # names against the published asset list, verbatim.
+      - name: Assert every name the feed declares exists on the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          assets="$(gh release view "${TAG}" --json assets --jq '.assets[].name')"
+          echo "release ${TAG} carries:"
+          printf '%s\n' "${assets}" | sed 's/^/  /'
+
+          want="$(sed -n 's/^[[:space:]]*-[[:space:]]*url:[[:space:]]*//p; s/^path:[[:space:]]*//p' dist/latest-linux.yml | sort -u)"
+          missing=0
+          while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            if ! printf '%s\n' "${assets}" | grep -qxF -- "$n"; then
+              echo "::error::the update feed names '$n' but the release has no such asset"
+              missing=1
+            fi
+          done <<WANT
+          $want
+          WANT
+
+          # The .deb is not in the feed — the updater never fetches it — but the
+          # acceptance line requires it on the release, so check it separately.
+          printf '%s\n' "${assets}" | grep -q '\.deb$' || {
+            echo "::error::no .deb asset on the release"; missing=1; }
+          printf '%s\n' "${assets}" | grep -qxF 'latest-linux.yml' || {
+            echo "::error::no latest-linux.yml asset on the release"; missing=1; }
+
+          [ "$missing" -eq 0 ]
