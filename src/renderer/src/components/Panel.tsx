@@ -849,7 +849,7 @@ function Settings(): ReactNode {
           <div style={{ flex: 1 }}>
             <div>Vault</div>
             <div className="muted">
-              Logins, cards and addresses the agent can type into pages on its computer without ever seeing them.
+              This agent's own logins, cards and addresses, kept apart from every other agent's. It types them into pages on its computer without ever seeing them.
             </div>
           </div>
           <button className="btn" onClick={() => setPanel("vault")}>

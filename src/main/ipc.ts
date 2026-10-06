@@ -171,12 +171,12 @@ export function registerIpc(): void {
   });
   ipcMain.handle("studio:pickFolder", () => pickFolder());
 
-  ipcMain.handle("studio:vaultList", () => vaultList());
-  ipcMain.handle("studio:vaultAdd", (_e, input: Record<string, unknown>) => vaultAdd(input));
-  ipcMain.handle("studio:vaultRemove", (_e, id: string) => vaultRemove(id));
+  ipcMain.handle("studio:vaultList", (_e, agent: string) => vaultList(agent));
+  ipcMain.handle("studio:vaultAdd", (_e, agent: string, input: Record<string, unknown>) => vaultAdd(agent, input));
+  ipcMain.handle("studio:vaultRemove", (_e, agent: string, id: string) => vaultRemove(agent, id));
   ipcMain.handle(
     "studio:vaultImport",
-    (_e, rows: { name?: string; url?: string; username?: string; password?: string }[]) => vaultImport(rows),
+    (_e, agent: string, rows: { name?: string; url?: string; username?: string; password?: string }[]) => vaultImport(agent, rows),
   );
   ipcMain.handle(
     "studio:manage",

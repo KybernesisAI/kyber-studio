@@ -12,8 +12,16 @@ import { Icon } from "./primitives";
  * form, sent to the control plane over the signed-in session, and sealed
  * there; this window keeps no copy and nothing here can show one back.
  */
+/** The name the control plane knows this agent by. A vault is per agent, so every call carries it. */
+export function vaultAgentName(): string {
+  const { agents, activeAgentId, details } = useStore.getState();
+  const agent = agents.find((a) => a.id === activeAgentId);
+  return (agent?.registeredName ?? details[activeAgentId]?.name ?? agent?.name ?? activeAgentId).toLowerCase();
+}
+
 export function VaultView(): ReactNode {
-  const { setPanel } = useStore();
+  const { setPanel, agents, activeAgentId } = useStore();
+  const agentLabel = agents.find((a) => a.id === activeAgentId)?.name ?? "this agent";
   const [items, setItems] = useState<VaultItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState<VaultKind | null>(null);
@@ -22,7 +30,7 @@ export function VaultView(): ReactNode {
 
   const refresh = async (): Promise<void> => {
     try {
-      setItems((await window.studio?.vaultList()) ?? []);
+      setItems((await window.studio?.vaultList(vaultAgentName())) ?? []);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -34,7 +42,7 @@ export function VaultView(): ReactNode {
 
   const remove = async (item: VaultItem): Promise<void> => {
     try {
-      await window.studio?.vaultRemove(item.id);
+      await window.studio?.vaultRemove(vaultAgentName(), item.id);
       setItems((list) => (list ?? []).filter((i) => i.id !== item.id));
     } catch (e) {
       setError((e as Error).message);
@@ -48,7 +56,7 @@ export function VaultView(): ReactNode {
         setNotice("No logins found in that file. Chrome exports columns name, url, username, password.");
         return;
       }
-      const result = await window.studio?.vaultImport(rows);
+      const result = await window.studio?.vaultImport(vaultAgentName(), rows);
       setNotice(
         `Imported ${result?.added ?? 0} login${result?.added === 1 ? "" : "s"}${result?.skipped.length ? `, skipped ${result.skipped.length} without a site, username or password` : ""}.`,
       );
@@ -67,14 +75,14 @@ export function VaultView(): ReactNode {
         <button className="topbar__btn" onClick={() => setPanel("settings")} style={{ WebkitAppRegion: "no-drag" } as never}>
           <Icon name="chevronLeft" />
         </button>
-        <span className="panel__title">Vault</span>
+        <span className="panel__title">{agentLabel}'s Vault</span>
         <button className="topbar__btn" onClick={() => setPanel("none")} style={{ WebkitAppRegion: "no-drag" } as never}>
           <Icon name="close" />
         </button>
       </div>
       <div className="panel__body">
         <div className="muted" style={{ marginBottom: 10 }}>
-          Saved here, sealed on your account. An agent sees labels and usernames, and can type an item into a page on its own computer; it never reads the secret. A login only fills on its own site, and a card asks you first.
+          {agentLabel}'s vault, for you. Sealed on your account, separate from every other agent's, and only ever reachable in your own conversations with {agentLabel}. The agent sees labels and usernames and can type an item into a page on its own computer; it never reads the secret. A login only fills on its own site, and a card asks you first.
         </div>
 
         {error ? <div className="agent-portrait__error" style={{ marginBottom: 8 }}>{error}</div> : null}
@@ -154,7 +162,7 @@ export function AddForm({ kind, onCancel, onSaved, initial, compact }: { kind: V
     setError(null);
     try {
       const input = buildInput(kind, form);
-      const item = await window.studio?.vaultAdd(input);
+      const item = await window.studio?.vaultAdd(vaultAgentName(), input);
       // Nothing from this form survives the save: not in state, not in the DOM.
       setForm({});
       if (item) await onSaved(item);

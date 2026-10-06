@@ -2081,6 +2081,7 @@ export async function testRemoteMcp(
 
 export interface VaultItem {
   id: string;
+  agentName: string;
   kind: "login" | "card" | "address" | "contact";
   label: string;
   origin: string | null;
@@ -2105,22 +2106,26 @@ async function vaultCall<T>(method: string, path: string, body?: unknown): Promi
   return (await res.json()) as T;
 }
 
-export async function vaultList(): Promise<VaultItem[]> {
-  const body = await vaultCall<{ items?: VaultItem[] }>("GET", "/api/me/vault");
+// A vault belongs to one agent. Every call names it; the control plane refuses one that does not.
+const agentParam = (agent: string): string => `agent=${encodeURIComponent(agent.trim().toLowerCase())}`;
+
+export async function vaultList(agent: string): Promise<VaultItem[]> {
+  const body = await vaultCall<{ items?: VaultItem[] }>("GET", `/api/me/vault?${agentParam(agent)}`);
   return body.items ?? [];
 }
 
-export async function vaultAdd(input: Record<string, unknown>): Promise<VaultItem> {
-  const body = await vaultCall<{ item: VaultItem }>("POST", "/api/me/vault", input);
+export async function vaultAdd(agent: string, input: Record<string, unknown>): Promise<VaultItem> {
+  const body = await vaultCall<{ item: VaultItem }>("POST", `/api/me/vault?${agentParam(agent)}`, input);
   return body.item;
 }
 
-export async function vaultRemove(id: string): Promise<void> {
-  await vaultCall("DELETE", `/api/me/vault?id=${encodeURIComponent(id)}`);
+export async function vaultRemove(agent: string, id: string): Promise<void> {
+  await vaultCall("DELETE", `/api/me/vault?id=${encodeURIComponent(id)}&${agentParam(agent)}`);
 }
 
 export async function vaultImport(
+  agent: string,
   rows: { name?: string; url?: string; username?: string; password?: string }[],
 ): Promise<{ added: number; skipped: string[] }> {
-  return vaultCall("POST", "/api/me/vault/import", { rows });
+  return vaultCall("POST", `/api/me/vault/import?${agentParam(agent)}`, { rows });
 }
