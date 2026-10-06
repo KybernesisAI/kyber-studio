@@ -641,6 +641,19 @@ function flushQueue(get: () => State, agentId: string): void {
 
 export type PanelView = "none" | "overview" | "routine" | "settings" | "vault";
 
+/** One conversation as the agent's management routes describe it (see @kybernesis/manage's /sessions). */
+export interface AgentSession {
+  id: string;
+  title: string;
+  surface: "chat" | "routines" | "imessage" | "buzz" | "api";
+  trigger: string;
+  routine?: string;
+  channel?: string;
+  status: "alive" | "ended" | "failed";
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** What an agent reports about its own computer (see @kybernesis/manage's /computer route). */
 export interface ComputerInfo {
   name: string;
@@ -737,6 +750,20 @@ interface State {
   closeExchange: () => void;
   /** Per-agent eve session id, so a conversation keeps its thread across turns. */
   sessions: Record<string, string | undefined>;
+  /**
+   * Every conversation the agent itself knows about, from its management
+   * routes — Studio's, the phone's, iMessage threads, Buzz rooms, the routines
+   * feed. undefined = not asked yet.
+   */
+  agentSessions: Record<string, AgentSession[] | undefined>;
+  /** The agent's routines conversation, when it has one. Shown as a feed, never adopted as the chat. */
+  routinesSessions: Record<string, string | null | undefined>;
+  /**
+   * A conversation the person picked on purpose, and when. Cross-device sync
+   * may only replace it with a thread that moved AFTER the pick; otherwise
+   * opening an older conversation flipped back within thirty seconds.
+   */
+  sessionChoice: Record<string, { sessionId: string; at: number } | undefined>;
   streamIndexes: Record<string, number | undefined>;
   /** Per-agent "what it is doing right now", or null when idle. */
   activity: Record<string, string | null>;
@@ -788,6 +815,12 @@ interface State {
   hydrate(agentId: string, mode?: "fill" | "merge"): Promise<void>;
   /** Learn which threads this account has, from the control-plane directory. */
   syncSessions(): Promise<void>;
+  /** Ask the agent for every conversation it has had. */
+  loadSessions(agentId: string): Promise<AgentSession[]>;
+  /** Switch the chat to one of the agent's conversations and read it. */
+  openSession(agentId: string, sessionId: string): Promise<void>;
+  /** Leave the current thread and start fresh, with an empty transcript. */
+  startConversation(agentId: string): void;
   /** Pick up turns that happened on another device. Cheap; safe to call often. */
   refreshFromOthers(): Promise<void>;
   /** Rooms from the account: adopt what other devices made, publish what this one has. */
@@ -899,6 +932,9 @@ export const useStore = create<State>((set, get) => ({
   issuer: "agent.kybernesis.ai",
   account: null,
   sessions: {},
+  agentSessions: {},
+  routinesSessions: {},
+  sessionChoice: {},
   streamIndexes: {},
   rooms: [],
   roomQueue: {},
@@ -987,6 +1023,10 @@ export const useStore = create<State>((set, get) => ({
       const localAt = localLastAt(agent.id);
       const remoteAt = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
       if (localSession === entry.sessionId) continue;
+      // A thread the person opened on purpose stays unless the directory's
+      // newest moved AFTER they picked (someone really did talk elsewhere).
+      const choice = get().sessionChoice[agent.id];
+      if (choice && choice.sessionId === localSession && remoteAt <= choice.at) continue;
 
       /**
        * Two-way. The account's thread is adopted when it is the newer one;
@@ -1224,6 +1264,50 @@ export const useStore = create<State>((set, get) => ({
   },
 
   setPanel: (panel) => set({ panel, activeRoutineId: null }),
+  loadSessions: async (agentId) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (!window.studio || !agent?.url) return [];
+    try {
+      const res = await window.studio.manage({ url: agent.url, path: "/sessions?limit=60" });
+      if (!res.ok) return get().agentSessions[agentId] ?? [];
+      const data = res.data as { sessions?: AgentSession[]; routines?: string | null };
+      const sessions = data.sessions ?? [];
+      set((st) => ({
+        agentSessions: { ...st.agentSessions, [agentId]: sessions },
+        routinesSessions: { ...st.routinesSessions, [agentId]: data.routines ?? null },
+      }));
+      return sessions;
+    } catch {
+      return get().agentSessions[agentId] ?? [];
+    }
+  },
+  openSession: async (agentId, sessionId) => {
+    if (get().sessions[agentId] === sessionId) return;
+    if (get().inflight[agentId]) return; // a turn is running in the current thread; let it finish
+    retireGeneration(agentId);
+    set((st) => {
+      const streamIndexes = { ...st.streamIndexes };
+      // The cursor belongs to the thread being left.
+      delete streamIndexes[agentId];
+      return {
+        sessions: { ...st.sessions, [agentId]: sessionId },
+        conversations: { ...st.conversations, [agentId]: [] },
+        streamIndexes,
+        sessionChoice: { ...st.sessionChoice, [agentId]: { sessionId, at: Date.now() } },
+        activity: { ...st.activity, [agentId]: null },
+      };
+    });
+    get().persist();
+    await get().hydrate(agentId);
+  },
+  startConversation: (agentId) => {
+    get().resetConversation(agentId);
+    set((st) => ({
+      conversations: { ...st.conversations, [agentId]: [] },
+      sessionChoice: { ...st.sessionChoice, [agentId]: undefined },
+    }));
+    get().persist();
+  },
   openRoutine: (id) => set({ panel: "routine", activeRoutineId: id }),
   setPluginsOpen: (pluginsOpen) => set({ pluginsOpen }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
@@ -1842,6 +1926,7 @@ export const useStore = create<State>((set, get) => ({
       streamIndexes: Record<string, number | undefined>;
       prefs: State["prefs"];
       rooms: Room[];
+      sessionChoice?: State["sessionChoice"];
     }>("conversations.json");
     if (saved?.rooms) set({ rooms: saved.rooms });
     if (saved?.prefs && !saved?.conversations) set({ prefs: saved.prefs });
@@ -1849,6 +1934,7 @@ export const useStore = create<State>((set, get) => ({
       set({
         conversations: saved.conversations,
         sessions: saved.sessions ?? {},
+        sessionChoice: saved.sessionChoice ?? {},
         streamIndexes: saved.streamIndexes ?? {},
         prefs: saved.prefs ?? {},
         rooms: saved.rooms ?? [],
@@ -1873,6 +1959,7 @@ export const useStore = create<State>((set, get) => ({
         streamIndexes: get().streamIndexes,
         prefs: get().prefs,
         rooms: get().rooms,
+        sessionChoice: get().sessionChoice,
       },
     });
   },
@@ -2074,36 +2161,26 @@ export const useStore = create<State>((set, get) => ({
     void get().loadComputer(agentId);
 
     /**
-     * Adopt the agent's own conversation, so a routine's answer shows up here.
+     * The agent's conversations, and which one this chat shows.
      *
-     * A routine cannot post into whichever session this app happened to start:
-     * eve reserves the session namespace, and the only thing that can address a
-     * session by id is handed to HTTP route handlers, never to a schedule. So
-     * the agent keeps ONE canonical conversation, every routine delivers into
-     * it, and this side joins it rather than holding a second one. Then what a
-     * routine says and what the person types are the same thread.
-     *
-     * Only when it differs from what we hold, and only when the agent actually
-     * has one — before the first routine delivers there is nothing to adopt,
-     * and switching to an empty thread would throw away a live conversation.
+     * Routines deliver into the agent's own canonical thread. This side used to
+     * ADOPT that thread as the chat, so the person's conversation was replaced
+     * by a feed of reminders on every refresh, and everything they had said
+     * before was still on disk but nowhere on screen. Now the canonical thread
+     * is listed as the routines feed, and the chat only picks a thread when it
+     * has none: the newest live conversation a person actually had.
      */
-    const canonical = await window.studio.manage({ url: agent.url, path: "/session" });
-    const named = canonical.ok
-      ? (canonical.data as { session?: { sessionId?: string } | null }).session?.sessionId
-      : undefined;
-    if (typeof named === "string" && named !== "" && get().sessions[agentId] !== named) {
-      set((st) => {
-        const streamIndexes = { ...st.streamIndexes };
-        // The cursor belongs to the thread being left; carrying it over would
-        // read from the wrong offset in the one being joined.
-        delete streamIndexes[agentId];
-        return {
-          sessions: { ...st.sessions, [agentId]: named },
-          conversations: { ...st.conversations, [agentId]: [] },
-          streamIndexes,
-        };
-      });
-      await get().hydrate(agentId);
+    const listed = await get().loadSessions(agentId);
+    if (!get().sessions[agentId]) {
+      const newest = listed.find((x) => x.surface === "chat" && x.status === "alive");
+      if (newest) {
+        set((st) => {
+          const streamIndexes = { ...st.streamIndexes };
+          delete streamIndexes[agentId];
+          return { sessions: { ...st.sessions, [agentId]: newest.id }, conversations: { ...st.conversations, [agentId]: [] }, streamIndexes };
+        });
+        await get().hydrate(agentId);
+      }
     }
     set((s) => ({
       details: { ...s.details, [agentId]: info },

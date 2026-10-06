@@ -98,11 +98,13 @@ function Row({
   title,
   detail,
   onClick,
+  active,
 }: {
   icon: ReactNode;
   title: string;
   detail?: string;
   onClick?: () => void;
+  active?: boolean;
 }): ReactNode {
   const body = (
     <>
@@ -113,12 +115,81 @@ function Row({
       </span>
     </>
   );
+  const cls = `routine-row${active ? " routine-row--active" : ""}`;
   return onClick ? (
-    <button className="routine-row" onClick={onClick}>
+    <button className={cls} onClick={onClick}>
       {body}
     </button>
   ) : (
-    <div className="routine-row">{body}</div>
+    <div className={cls}>{body}</div>
+  );
+}
+
+const SURFACE_LABEL: Record<string, string> = { chat: "Chat", routines: "Routines", imessage: "iMessage", buzz: "Buzz", api: "API" };
+
+function whenShort(iso: string): string {
+  const t = Date.parse(iso);
+  if (!t) return "";
+  const diff = Date.now() - t;
+  const m = Math.round(diff / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.round(h / 24);
+  if (d < 7) return `${d} d ago`;
+  return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/**
+ * Every conversation this agent has had — this app's, the phone's, iMessage,
+ * Buzz — and the routines feed, from the agent's own list. The chat shows one
+ * at a time; this is how you get to the others, which until now sat on the
+ * agent's disk with no door.
+ */
+function Conversations(): ReactNode {
+  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, startConversation, loadSessions, inflight } = useStore();
+  const list = agentSessions[activeAgentId];
+  const current = sessions[activeAgentId];
+  const routinesId = routinesSessions[activeAgentId];
+  const [showAll, setShowAll] = useState(false);
+  useEffect(() => {
+    void loadSessions(activeAgentId);
+  }, [activeAgentId, loadSessions]);
+  const routines = list?.find((s) => s.id === routinesId || s.surface === "routines");
+  const others = (list ?? []).filter((s) => s.id !== routines?.id);
+  const shown = showAll ? others : others.slice(0, 8);
+  const busy = Boolean(inflight[activeAgentId]);
+  return (
+    <Section title="Conversations" count={list ? others.length : undefined}>
+      <Row icon={<Icon name="plus" size={14} />} title="New conversation" detail={busy ? "Wait for the current turn to finish" : undefined} onClick={busy ? undefined : () => startConversation(activeAgentId)} />
+      {routines ? (
+        <Row
+          icon={<Icon name="clock" size={14} />}
+          title="Routines feed"
+          detail={`${routines.routine ? `Last: ${routines.routine} · ` : ""}${whenShort(routines.updatedAt)}`}
+          active={current === routines.id}
+          onClick={() => void openSession(activeAgentId, routines.id)}
+        />
+      ) : null}
+      {list === undefined ? <Empty loaded={false} none="" /> : null}
+      {list && others.length === 0 ? <Empty loaded none="No conversations yet." /> : null}
+      {shown.map((s) => (
+        <Row
+          key={s.id}
+          icon={<Icon name="monitor" size={14} />}
+          title={s.title}
+          detail={`${SURFACE_LABEL[s.surface] ?? s.surface}${s.channel ? ` · ${s.channel}` : ""} · ${whenShort(s.updatedAt)}${s.status === "alive" ? "" : " · ended"}`}
+          active={current === s.id}
+          onClick={() => void openSession(activeAgentId, s.id)}
+        />
+      ))}
+      {!showAll && others.length > 8 ? (
+        <button className="btn btn--small" style={{ margin: "4px 8px" }} onClick={() => setShowAll(true)}>
+          Show all {others.length}
+        </button>
+      ) : null}
+    </Section>
   );
 }
 
@@ -354,6 +425,8 @@ function Overview(): ReactNode {
         </div>
 
         <ComputerCard />
+
+        <Conversations />
 
         <Section title="Routines" count={loaded ? schedules.length : undefined}>
           <NewRoutine />

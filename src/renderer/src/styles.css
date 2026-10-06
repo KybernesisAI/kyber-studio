@@ -482,6 +482,8 @@ input, textarea { font: inherit; color: inherit; }
 
 .routine-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px; border-radius: var(--radius); width: 100%; text-align: left; }
 .routine-row:hover { background: var(--hover); }
+.routine-row--active { background: var(--selected); }
+.routine-row--active .routine-row__dot { color: var(--accent, var(--ink)); }
 .routine-row__name { font-size: var(--fs-base); }
 .routine-row__when { font-size: var(--fs-sm); color: var(--ink-tertiary); }
 .routine-row__dot { color: var(--ink-tertiary); margin-top: 2px; }
