@@ -151,6 +151,9 @@
         "from": "resources/models",
         "to": "models"
       }
-    ]
+    ],
+    "appImage": {
+      "artifactName": "KYBER-Studio-${version}.${ext}"
+    }
   }
 }
