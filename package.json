@@ -20,6 +20,7 @@
     "package": "npm run build && electron-builder",
     "package:linux": "npm run build && electron-builder --linux",
     "package:win": "npm run build && electron-builder --win",
+    "prepackage:win": "node scripts/fetch-speech-model.mjs",
     "release:mac": "npm run build && electron-builder --mac --publish always",
     "release:linux": "npm run build && electron-builder --linux --publish always",
     "release": "npm version patch -m \"release: v%s\" && git push --follow-tags",
@@ -28,7 +29,6 @@
     "fetch:speech": "node scripts/fetch-speech-model.mjs",
     "prepackage": "node scripts/fetch-speech-model.mjs",
     "prepackage:linux": "node scripts/fetch-speech-model.mjs",
-    "prepackage:win": "node scripts/fetch-speech-model.mjs",
     "prerelease:mac": "node scripts/fetch-speech-model.mjs",
     "prerelease:linux": "node scripts/fetch-speech-model.mjs",
     "verify:package": "node scripts/verify-package.mjs"
@@ -123,6 +123,14 @@
         "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/x64/dxil.dll"
       ]
     },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
+    },
     "linux": {
       "icon": "build/icons",
       "target": [
@@ -172,13 +180,8 @@
         "to": "models"
       }
     ],
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "runAfterFinish": true
+    "appImage": {
+      "artifactName": "KYBER-Studio-${version}.${ext}"
     }
   }
 }
