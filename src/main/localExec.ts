@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { hostname, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import * as electron from "electron";
 import { app, type WebContents } from "electron";
 import { activeSession, authHeaders, deviceId, issuer } from "./controlPlane";
 
@@ -549,46 +550,111 @@ export function startLocalExec(): void {
   running = true;
   const id = deviceId();
 
-  const heartbeat = async (): Promise<void> => {
-    while (running) {
-      if (await activeSession()) {
-        const hello = await post("/api/local-exec/hello", {
-          deviceId: id,
-          label: hostname().replace(/\.local$/, ""),
-          platform: platform(),
-        });
-        console.log(`[local] hello ${hello ? hello.status : "no session/failed"}`);
-      }
-      await new Promise((r) => setTimeout(r, 10_000));
+  /**
+   * How hard to ask, by whether anyone is here to be answered.
+   *
+   * The relay exists so an agent can run work on THIS machine. That only
+   * matters while a person is at it, and the old loop did not know: it held a
+   * poll open around the clock, with the control plane asking Postgres every
+   * 0.7s, so Neon's compute never got to idle. Three states now:
+   *
+   * - active: a Studio window is focused, the Mac was used in the last two
+   *   minutes, or local work ran in the last five. The poll is held open the
+   *   whole window and the next one opens straight away — a command starts in
+   *   about a second, as before.
+   * - idle: nobody has touched the Mac for a while. One look at the queue a
+   *   minute, with the same heartbeat, so a request from a schedule still
+   *   reaches this machine within a minute.
+   * - away: the Mac has been untouched for half an hour, or the screen is
+   *   locked. The desktop says so once and stops asking, so agents are told
+   *   the machine is not connected instead of queueing work no one can
+   *   approve, and the database can sleep. Any activity brings it back.
+   */
+  type Cadence = "active" | "idle" | "away";
+  const ACTIVE_IDLE_S = 120;
+  const AWAY_IDLE_S = 30 * 60;
+  const RECENT_WORK_MS = 5 * 60_000;
+  const IDLE_TICK_MS = 60_000;
+  const HEARTBEAT_MS = 60_000;
+  let lastWorkAt = 0;
+  let screenLocked = false;
+  // Reached through the namespace, not named imports: the test rig mocks
+  // `electron` with only the surface each test needs, and a missing named
+  // export fails at link time. Absent here (tests), the Mac counts as active.
+  const power = (electron as { powerMonitor?: Electron.PowerMonitor }).powerMonitor;
+  const windows = (electron as { BrowserWindow?: typeof Electron.BrowserWindow }).BrowserWindow;
+  power?.on("lock-screen", () => { screenLocked = true; });
+  power?.on("unlock-screen", () => { screenLocked = false; });
+  const cadence = (): Cadence => {
+    const idle = power?.getSystemIdleTime() ?? 0;
+    if (screenLocked || idle >= AWAY_IDLE_S) return "away";
+    if (windows?.getFocusedWindow?.() || idle < ACTIVE_IDLE_S || Date.now() - lastWorkAt < RECENT_WORK_MS) return "active";
+    return "idle";
+  };
+  const hello = async (gone = false): Promise<void> => {
+    const res = await post("/api/local-exec/hello", {
+      deviceId: id,
+      label: hostname().replace(/\.local$/, ""),
+      platform: platform(),
+      heartbeatMs: HEARTBEAT_MS,
+      ...(gone ? { gone: true } : {}),
+    });
+    console.log(`[local] hello${gone ? " (gone)" : ""} ${res ? res.status : "no session/failed"}`);
+  };
+  sayGoodbye = () => hello(true);
+
+  const pollOnce = async (windowMs: number): Promise<void> => {
+    const s = await activeSession();
+    if (!s) return;
+    const res = await fetch(
+      `${issuer()}/api/local-exec/requests?deviceId=${encodeURIComponent(id)}&window=${windowMs}`,
+      { headers: authHeaders(s), signal: AbortSignal.timeout(windowMs + 40_000) },
+    );
+    if (!res.ok) {
+      console.log(`[local] poll HTTP ${res.status}`);
+      await new Promise((r) => setTimeout(r, 3_000));
+      return;
+    }
+    const body = (await res.json()) as {
+      requests?: { id: string; agent: string; action: LocalAction; payload: Record<string, unknown> }[];
+    };
+    if ((body.requests ?? []).length) {
+      lastWorkAt = Date.now();
+      console.log(`[local] ${body.requests!.length} request(s)`);
+    }
+    for (const request of body.requests ?? []) {
+      void handle(request);
     }
   };
 
-  const poll = async (): Promise<void> => {
+  const loop = async (): Promise<void> => {
+    let lastHello = 0;
+    let saidGone = false;
     while (running) {
-      const s = await activeSession();
-      if (!s) {
+      if (!(await activeSession())) {
         await new Promise((r) => setTimeout(r, 3_000));
         continue;
       }
+      const state = cadence();
       try {
-        const res = await fetch(
-          `${issuer()}/api/local-exec/requests?deviceId=${encodeURIComponent(id)}`,
-          {
-            headers: authHeaders(s),
-            signal: AbortSignal.timeout(60_000),
-          },
-        );
-        if (!res.ok) {
-          console.log(`[local] poll HTTP ${res.status}`);
-          await new Promise((r) => setTimeout(r, 3_000));
+        if (state === "away") {
+          if (!saidGone) {
+            await hello(true);
+            saidGone = true;
+          }
+          await new Promise((r) => setTimeout(r, 15_000));
           continue;
         }
-        const body = (await res.json()) as {
-          requests?: { id: string; agent: string; action: LocalAction; payload: Record<string, unknown> }[];
-        };
-        if ((body.requests ?? []).length) console.log(`[local] ${body.requests!.length} request(s)`);
-        for (const request of body.requests ?? []) {
-          void handle(request);
+        if (saidGone || Date.now() - lastHello >= HEARTBEAT_MS) {
+          await hello();
+          lastHello = Date.now();
+          saidGone = false;
+        }
+        if (state === "active") {
+          await pollOnce(20_000);
+        } else {
+          await pollOnce(0);
+          await new Promise((r) => setTimeout(r, IDLE_TICK_MS));
         }
       } catch (e) {
         console.log(`[local] poll error: ${e instanceof Error ? e.message : String(e)}`);
@@ -650,10 +716,16 @@ export function startLocalExec(): void {
     if (sender && !sender.isDestroyed()) sender.send("studio:local-done", { id: request.id });
   };
 
-  void heartbeat();
-  void poll();
+  void loop();
 }
 
 export function stopLocalExec(): void {
   running = false;
+}
+
+/** Tell the control plane this machine is going away, so agents are not offered it. Best effort, bounded. */
+let sayGoodbye: (() => Promise<void>) | null = null;
+export async function leaveLocalExec(): Promise<void> {
+  if (!sayGoodbye) return;
+  await Promise.race([sayGoodbye().catch(() => undefined), new Promise<void>((r) => setTimeout(r, 3_000))]);
 }
