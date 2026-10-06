@@ -1,6 +1,6 @@
 {
   "name": "kyber-studio",
-  "version": "0.5.11",
+  "version": "0.5.10",
   "description": "KYBER Studio — the desktop door to your Kybernesis agents.",
   "homepage": "https://github.com/KybernesisAI/kyber-studio",
   "main": "./out/main/index.js",
@@ -104,7 +104,7 @@
       "icon": "build/icon.png"
     },
     "linux": {
-      "icon": "build/icon.png",
+      "icon": "build/icons",
       "target": [
         {
           "target": "AppImage",
