@@ -639,7 +639,7 @@ function flushQueue(get: () => State, agentId: string): void {
   setTimeout(() => get().send(agentId, next, true), 0);
 }
 
-export type PanelView = "none" | "overview" | "routine" | "settings";
+export type PanelView = "none" | "overview" | "routine" | "settings" | "vault";
 
 /** What an agent reports about its own computer (see @kybernesis/manage's /computer route). */
 export interface ComputerInfo {

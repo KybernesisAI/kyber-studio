@@ -75,6 +75,10 @@ const studio: StudioApi = {
     ipcRenderer.on("studio:turn", listener);
     return () => ipcRenderer.off("studio:turn", listener);
   },
+  vaultList: () => ipcRenderer.invoke("studio:vaultList"),
+  vaultAdd: (input) => ipcRenderer.invoke("studio:vaultAdd", input),
+  vaultRemove: (id) => ipcRenderer.invoke("studio:vaultRemove", id),
+  vaultImport: (rows) => ipcRenderer.invoke("studio:vaultImport", rows),
   connectors: (agent) => ipcRenderer.invoke("studio:connectors", agent),
   connectService: (input) => ipcRenderer.invoke("studio:connectService", input),
   disconnectService: (input) => ipcRenderer.invoke("studio:disconnectService", input),

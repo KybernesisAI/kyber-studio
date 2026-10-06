@@ -60,6 +60,10 @@ import {
   DEFAULT_ISSUER,
   issuer,
   setIssuer,
+  vaultAdd,
+  vaultImport,
+  vaultList,
+  vaultRemove,
 } from "./controlPlane";
 
 /**
@@ -167,6 +171,13 @@ export function registerIpc(): void {
   });
   ipcMain.handle("studio:pickFolder", () => pickFolder());
 
+  ipcMain.handle("studio:vaultList", () => vaultList());
+  ipcMain.handle("studio:vaultAdd", (_e, input: Record<string, unknown>) => vaultAdd(input));
+  ipcMain.handle("studio:vaultRemove", (_e, id: string) => vaultRemove(id));
+  ipcMain.handle(
+    "studio:vaultImport",
+    (_e, rows: { name?: string; url?: string; username?: string; password?: string }[]) => vaultImport(rows),
+  );
   ipcMain.handle(
     "studio:manage",
     (_e, input: { url: string; path: string; body?: unknown }) => manageCall(input),

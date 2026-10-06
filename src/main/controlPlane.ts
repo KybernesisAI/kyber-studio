@@ -2072,3 +2072,55 @@ export async function testRemoteMcp(
     return { ok: false, error: "Could not reach the control plane." };
   }
 }
+
+// ---- The person's vault -----------------------------------------------------
+// Secrets travel here exactly once, on add, over the signed-in session; the
+// control plane seals them. Listing returns labels and handles only, which is
+// also all an agent ever gets. Studio never holds a vault secret after the
+// request that carried it.
+
+export interface VaultItem {
+  id: string;
+  kind: "login" | "card" | "address" | "contact";
+  label: string;
+  origin: string | null;
+  summary: Record<string, unknown>;
+  updatedAt: string;
+}
+
+async function vaultCall<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const s = await activeSession();
+  if (!s) throw new Error("Not signed in.");
+  const res = await fetch(`${issuer()}${path}`, {
+    method,
+    headers: authHeaders(s, { json: body !== undefined }),
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (res.status === 401) throw new Error("Session expired. Sign in again.");
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(detail.error ?? `The vault request failed (HTTP ${res.status}).`);
+  }
+  return (await res.json()) as T;
+}
+
+export async function vaultList(): Promise<VaultItem[]> {
+  const body = await vaultCall<{ items?: VaultItem[] }>("GET", "/api/me/vault");
+  return body.items ?? [];
+}
+
+export async function vaultAdd(input: Record<string, unknown>): Promise<VaultItem> {
+  const body = await vaultCall<{ item: VaultItem }>("POST", "/api/me/vault", input);
+  return body.item;
+}
+
+export async function vaultRemove(id: string): Promise<void> {
+  await vaultCall("DELETE", `/api/me/vault?id=${encodeURIComponent(id)}`);
+}
+
+export async function vaultImport(
+  rows: { name?: string; url?: string; username?: string; password?: string }[],
+): Promise<{ added: number; skipped: string[] }> {
+  return vaultCall("POST", "/api/me/vault/import", { rows });
+}

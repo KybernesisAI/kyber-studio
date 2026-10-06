@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { ComputerCard } from "./Computer";
+import { VaultView } from "./Vault";
 import { isImage, toAvatarDataUrl } from "../lib/avatarImage";
 import { useEffect, useState, useRef } from "react";
 import {
@@ -732,6 +733,18 @@ function Settings(): ReactNode {
 
         <div className="card stack-row">
           <div style={{ flex: 1 }}>
+            <div>Vault</div>
+            <div className="muted">
+              Logins, cards and addresses the agent can type into pages on its computer without ever seeing them.
+            </div>
+          </div>
+          <button className="btn" onClick={() => setPanel("vault")}>
+            Open
+          </button>
+        </div>
+
+        <div className="card stack-row">
+          <div style={{ flex: 1 }}>
             <div>Start a fresh conversation</div>
             <div className="muted">
               {sessions[activeAgentId]
@@ -847,6 +860,7 @@ export function Panel(): ReactNode {
       {shown === "overview" ? <Overview /> : null}
       {shown === "routine" ? <RoutineView /> : null}
       {shown === "settings" ? <Settings /> : null}
+      {shown === "vault" ? <VaultView /> : null}
     </aside>
   );
 }
