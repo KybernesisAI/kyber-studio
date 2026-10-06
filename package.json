@@ -1,6 +1,6 @@
 {
   "name": "kyber-studio",
-  "version": "0.5.15",
+  "version": "0.5.14",
   "description": "KYBER Studio — the desktop door to your Kybernesis agents.",
   "homepage": "https://github.com/KybernesisAI/kyber-studio",
   "main": "./out/main/index.js",
@@ -151,6 +151,9 @@
         "from": "resources/models",
         "to": "models"
       }
-    ]
+    ],
+    "appImage": {
+      "artifactName": "KYBER-Studio-${version}.${ext}"
+    }
   }
 }
