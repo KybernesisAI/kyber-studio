@@ -39,9 +39,15 @@ export function VaultView(): ReactNode {
       setError((e as Error).message);
     }
   };
+  // Refetch whenever the drawer's agent changes. The screen stays mounted while
+  // the person switches agents, so a list fetched for Sid stayed on screen under
+  // Kyber's title — which looked exactly like a shared vault (2026-10-07).
   useEffect(() => {
+    setItems(null);
+    setAdding(null);
+    setNotice(null);
     void refresh();
-  }, []);
+  }, [activeAgentId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const remove = async (item: VaultItem): Promise<void> => {
     try {
