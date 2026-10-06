@@ -16,7 +16,10 @@ import { Icon } from "./primitives";
 export function vaultAgentName(): string {
   const { agents, activeAgentId, details } = useStore.getState();
   const agent = agents.find((a) => a.id === activeAgentId);
-  return (agent?.registeredName ?? details[activeAgentId]?.name ?? agent?.name ?? activeAgentId).toLowerCase();
+  // The registered name is what the credential carries; the display name is a
+  // person's label and may be anything. Never the eve app name from /info.
+  void details;
+  return (agent?.registeredName ?? agent?.name ?? activeAgentId).trim().toLowerCase();
 }
 
 export function VaultView(): ReactNode {

@@ -1104,9 +1104,16 @@ export function Plugins(): ReactNode {
   const query = q.trim().toLowerCase();
   const match = (t: string): boolean => !query || t.toLowerCase().includes(query);
 
+  // An item IS its own package. Its dependency list may also name packages it
+  // builds on (vault and payments both need computer), and having one of those
+  // does not mean the item is installed — every agent with a computer looked
+  // like it had a Link wallet.
   const isInstalled = (item: { name: string; dependencies?: string[] }): boolean => {
-    const deps = item.dependencies ?? [`@kybernesis/${item.name}`];
-    return deps.some((d) => (cat?.installed ?? []).includes(d));
+    const installed = cat?.installed ?? [];
+    const own = `@kybernesis/${item.name}`;
+    const deps = item.dependencies ?? [own];
+    if (deps.includes(own)) return installed.includes(own);
+    return deps.every((d) => installed.includes(d));
   };
 
   const marketplace = (cat?.items ?? []).filter(
