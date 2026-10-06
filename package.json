@@ -1,6 +1,6 @@
 {
   "name": "kyber-studio",
-  "version": "0.5.15",
+  "version": "0.5.14",
   "description": "KYBER Studio — the desktop door to your Kybernesis agents.",
   "homepage": "https://github.com/KybernesisAI/kyber-studio",
   "main": "./out/main/index.js",
@@ -19,6 +19,7 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "package": "npm run build && electron-builder",
     "package:linux": "npm run build && electron-builder --linux",
+    "package:win": "npm run build && electron-builder --win",
     "release:mac": "npm run build && electron-builder --mac --publish always",
     "release:linux": "npm run build && electron-builder --linux --publish always",
     "release": "npm version patch -m \"release: v%s\" && git push --follow-tags",
@@ -27,6 +28,7 @@
     "fetch:speech": "node scripts/fetch-speech-model.mjs",
     "prepackage": "node scripts/fetch-speech-model.mjs",
     "prepackage:linux": "node scripts/fetch-speech-model.mjs",
+    "prepackage:win": "node scripts/fetch-speech-model.mjs",
     "prerelease:mac": "node scripts/fetch-speech-model.mjs",
     "prerelease:linux": "node scripts/fetch-speech-model.mjs",
     "verify:package": "node scripts/verify-package.mjs"
@@ -101,7 +103,22 @@
       ]
     },
     "win": {
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "artifactName": "KYBER-Studio-${version}-win-${arch}.${ext}",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "files": [
+        "out/**/*",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/darwin/**",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/linux/**",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**"
+      ]
     },
     "linux": {
       "icon": "build/icons",
@@ -151,6 +168,14 @@
         "from": "resources/models",
         "to": "models"
       }
-    ]
+    ],
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
+    }
   }
 }
