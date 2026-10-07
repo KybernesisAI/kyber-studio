@@ -1,6 +1,7 @@
 import { callServer, listServers } from "./localMcp";
 import { writeAtomic } from "./atomicWrite";
 import { spawn } from "node:child_process";
+import { killTree, shellInvocation } from "./platformShell";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { hostname, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -220,8 +221,12 @@ function runCommand(
   return new Promise((res) => {
     // A login shell so the user's own PATH and toolchains are present — an agent
     // told "run npm test" should get the npm the user has, not a bare PATH.
-    const child = spawn(process.env.SHELL ?? "/bin/bash", ["-lc", command], {
+    // On Windows there is no profile to source and no `-lc`; see ./platformShell
+    // for what replaces this and why `shell: true` is not it.
+    const invocation = shellInvocation(command);
+    const child = spawn(invocation.file, invocation.args, {
       cwd: existsSync(cwd) ? cwd : app.getPath("home"),
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
     let stdout = "";
     let stderr = "";
@@ -252,7 +257,9 @@ function runCommand(
       if (!settled) {
         settled = true;
         stopTick();
-        child.kill("SIGKILL");
+        // Not `child.kill` directly: on Windows the pid we hold is `cmd.exe`,
+        // and the command it started would outlive this timeout. See killTree.
+        killTree(child);
         res({ exitCode: null, stdout, stderr, timedOut: true, timeoutMs });
       }
     }, timeoutMs);
