@@ -120,22 +120,32 @@ test("a publish that cannot happen reports the failure AND clears the temp file"
   // MOVEFILE_REPLACE_EXISTING cannot target a directory at all, empty or not.
   writeFileSync(join(target, "occupant"), "x", "utf8");
 
-  // MEASURED by running this suite on Windows 11: `renameSync` onto a directory
-  // reports EPERM, not EISDIR. The comment above used to predict EACCES, and
-  // that prediction was simply wrong — this is the measurement that replaced it.
+  // `syscall` is pinned as well as `code`, and the code alone is not enough.
+  // On POSIX a rename onto a directory and a WRITE to a directory both report
+  // EISDIR — the first with syscall "rename", the second with syscall "open" —
+  // so a code-only matcher passes for an implementation that fails at the temp
+  // write and never attempts the rename. Review demonstrated exactly that
+  // against a stub, and the second assertion below passes for it too, because a
+  // temp file that was never created does not survive. The syscall is what
+  // makes this test about publishing rather than about writing.
   //
-  // The errno is still pinned rather than dropped, because the assertion is
-  // about the RENAME having failed; accepting any error would also accept a
-  // write that never got that far. What is NOT platform-specific is the next
-  // test in this file: it occupies `${target}.tmp` with a directory instead, so
-  // the failure comes from `writeFileSync`, and its EISDIR matcher passed
-  // unchanged on Windows. Opening a directory for writing is the same errno
-  // everywhere; only renaming onto one differs.
+  // That matters more on Windows, where EPERM is the catch-all mapping for
+  // ERROR_ACCESS_DENIED rather than a statement about directories.
+  //
+  // MEASURED on Windows 11 by running this suite: the failure is
+  // `EPERM: operation not permitted, rename '…\state.json.tmp' -> '…\state.json'`,
+  // so both the code and the syscall are observed, not predicted. The comment
+  // above previously predicted EACCES, and that prediction was wrong.
+  //
+  // The next test in this file occupies `${target}.tmp` with a directory, so its
+  // failure comes from the temp write instead, and its EISDIR matcher passed
+  // unchanged on Windows. Opening a directory for writing is the same errno on
+  // both platforms; only renaming onto one differs.
   const cannotPublish = process.platform === "win32" ? "EPERM" : "EISDIR";
 
   assert.throws(
     () => writeAtomic(target, '{"doomed":true}'),
-    { code: cannotPublish },
+    { code: cannotPublish, syscall: "rename" },
     "a write that never reached the target must not be reported as a success",
   );
   assert.equal(

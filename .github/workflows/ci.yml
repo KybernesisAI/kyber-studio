@@ -29,22 +29,48 @@ jobs:
     # the arm runs and reports for two weeks first and the decision is taken
     # from that data. KYB-601 records the follow-up.
     #
-    # The WINDOWS arm is blocking from the start, and the difference is evidence
+    # The WINDOWS arm is NOT advisory, and the difference from macOS is evidence
     # rather than confidence. macOS was added without anyone having run this
-    # suite on a Mac, so its flake rate was unknown and gating on it would have
-    # converted that unknown into a merge-queue problem. Before this arm was
-    # added the whole suite was run on a Windows 11 machine: 408 tests, one
-    # deterministic failure — an errno this PR corrects — and no flakes.
+    # suite on a Mac, so its flake rate was genuinely unknown. This arm was
+    # added only after the whole suite had been run on a Windows 11 machine:
+    # one deterministic failure, an errno this commit corrects, and no flakes.
     #
-    # The risk described just above does not even arise here. The
-    # race-observing tests are the ones that watch a temp file's MODE from a
-    # worker thread, and `mode` is meaningless on Windows, so all of them skip
-    # there. The tests whose behaviour differed between ext4 and APFS do not
-    # execute on this arm at all.
+    # Read `continue-on-error` for what it is, which is narrower than "blocking".
+    # It decides whether a failing arm fails the JOB. On this repository it does
+    # not gate a merge either way: the branch API reports `main` as
+    # `protected: false`, with no required status checks and enforcement off
+    # (measured 7 October 2026), and a new matrix entry would not join a
+    # required-check list even if one existed. Rulesets were NOT checked — no
+    # tool to hand enumerates them — so read this as "protection is off",
+    # not as "nothing anywhere could require a check". So the choice here is between a
+    # red result and a green one on a failing Windows run — not between blocking
+    # a merge and permitting it. A green result on a real failure is the thing
+    # worth avoiding, because Windows is the platform where nothing was executed
+    # before merge at all, and an arm that reports success either way restores
+    # exactly that blind spot.
     #
-    # It is also the whole reason this arm exists: Windows was the one platform
-    # where nothing was ever executed before merge, and an advisory arm reports
-    # without gating, which is exactly what was already missing.
+    # The race described just above does not arise on this arm, and the way to
+    # check that rather than take it on trust: the tests that sample a temp file
+    # from a worker thread are the ones guarded by the POSIX-mode skip in
+    # test/atomic-write.test.mjs, because what they sample IS the mode. `mode` is
+    # not reported on win32, so that guard skips all of them there. What is NOT
+    # measured, and is only inherited from the comment above, is the claim that
+    # their behaviour differs between ext4 and APFS.
+    #
+    # Two things that would have made a first red a non-defect, both checked
+    # before choosing this and neither live: `.gitattributes` pins
+    # `* text=auto eol=lf`, so a Windows checkout is not reformatted under us;
+    # and package-lock.json does carry the win32 optional dependencies
+    # (@img/sharp-win32-*, @esbuild/win32-*), so `npm ci` has entries to install
+    # from on this platform.
+    #
+    # KEEP EVERY `run:` BLOCK BELOW TO ONE COMMAND. The default shell on
+    # windows-latest is pwsh, where the runner appends `exit $LASTEXITCODE` and
+    # the step therefore reports only the LAST command's status — unlike bash,
+    # which gets fail-fast from `-e`. A multi-line `run:` whose first command
+    # fails and whose second succeeds reports SUCCESS on Windows and failure on
+    # Linux. Chain commands with separate steps, or set `shell: bash` on the
+    # step. Every block below is a single command today.
     continue-on-error: ${{ matrix.os == 'macos-15' }}
     steps:
       - uses: actions/checkout@v5
