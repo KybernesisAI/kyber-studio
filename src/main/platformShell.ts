@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { join } from "node:path";
 
 /**
  * How to run a command line, and how to stop it, on the platform we are on.
@@ -47,20 +48,29 @@ export interface ShellInvocation {
  *
  * ## Why not `shell: true`
  *
- * It is runtime-deprecated as of node 24 (DEP0190) when an args array is also
- * passed, because the args are space-joined rather than escaped. We are on node
- * >= 24.15.0, so that route is closed on purpose rather than by preference.
+ * Because on POSIX it runs `/bin/sh`, NOT a login shell — which would throw
+ * away the entire reason this module exists. Everything above about the user's
+ * own PATH would stop being true.
+ *
+ * There is also DEP0190, a runtime deprecation as of node 24 covering
+ * `shell: true` when an args array is passed too, because those args are
+ * space-joined rather than escaped. That one does not strictly apply to us —
+ * node only emits it when `args.length > 0` — so it is a reason to distrust the
+ * option, not the reason this module does not use it.
  *
  * ## The two Windows switches
  *
  * - `/d` skips any `AutoRun` command the user has in the registry. Without it,
  *   every agent-issued command would first run whatever `AutoRun` holds, and
  *   its output would arrive interleaved with the command's own.
- * - `/s`, paired with `windowsVerbatimArguments`, is the combination node
- *   documents under "Shell requirements". `/s` makes `cmd.exe` strip one outer
- *   pair of quotes and otherwise leave the string alone, and the verbatim flag
- *   stops node quoting it a second time on the way in. Either one without the
- *   other mangles a command containing quotes.
+ * - `/s` makes `cmd.exe` strip the FIRST and LAST quote of the string after
+ *   `/c` and otherwise leave it alone. That is why the command line is wrapped
+ *   in a pair of quotes here: the pair `/s` eats has to be OURS. Without the
+ *   wrap it eats the caller's, so `"C:\\Program Files\\nodejs\\npm.cmd" test`
+ *   becomes an attempt to run `C:\\Program` — and a path under
+ *   `C:\\Program Files` is the ordinary Windows shape, not an edge case.
+ *   `windowsVerbatimArguments` then stops node adding quoting of its own on
+ *   top. This is the form node itself uses internally for `shell: true`.
  *
  * What is TESTED: the file and argv this returns on both platforms, that the
  * command line is always the last element, and that `ComSpec` and `SHELL` are
@@ -75,7 +85,10 @@ export function shellInvocation(commandLine: string): ShellInvocation {
       // Microsoft requires %COMSPEC% in the root environment but not in a
       // child's, so node falls back to the bare name; so do we.
       file: process.env.ComSpec ?? "cmd.exe",
-      args: ["/d", "/s", "/c", commandLine],
+      // The wrap is load-bearing, not decoration — see the docblock. Review
+      // found this missing: the comment above described the mechanism
+      // correctly while the code supplied no pair for `/s` to strip.
+      args: ["/d", "/s", "/c", `"${commandLine}"`],
       windowsVerbatimArguments: true,
     };
   }
@@ -88,46 +101,73 @@ export function shellInvocation(commandLine: string): ShellInvocation {
 /**
  * Stop a shell-spawned child and anything it started.
  *
- * ## Why this is not just `child.kill()`
+ * ## The name is only fully true on Windows. Read this before trusting it.
  *
- * On POSIX, `bash -c <single command>` normally execs the command, replacing
- * the shell, so the pid we hold IS the command and a signal reaches it.
+ * **On Windows** `cmd.exe /c` never execs: it creates a separate child and
+ * waits. Terminating the pid we hold would stop `cmd.exe` and leave the actual
+ * command — a build, a test run, a dev server — running with no parent and no
+ * handle. `taskkill /T` walks the tree and `/F` does not ask, so here the whole
+ * tree really does go.
  *
- * `cmd.exe /c` never execs: it always creates a separate child and waits. So
- * terminating the pid we hold stops `cmd.exe` and leaves the actual command —
- * a build, a test run, a dev server — running with no parent and no handle.
- * Every timeout would leak a process onto the user's machine.
+ * **On POSIX only the direct child is signalled, and a compound command can
+ * still orphan.** `bash -lc 'sleep 5'` execs, so the pid we hold IS `sleep`.
+ * `bash -lc 'sleep 5 && echo done'` does not: bash stays, forks, and killing
+ * the pid we hold leaves `sleep` reparented to init. Compound lines are exactly
+ * what the relay is for, so this is a real hole — but it is PRE-EXISTING and
+ * unchanged by this module, which is why it is documented rather than fixed
+ * here. Closing it needs a process group (`detached` at the spawn plus
+ * `process.kill(-pid)`), which is a live behaviour change on the platform that
+ * has users, and belongs in its own ticket.
  *
- * `taskkill /T` walks the tree and `/F` does not ask. If it cannot be spawned
- * at all we still terminate the handle we have, which is strictly better than
- * nothing.
+ * Measured, not assumed: `bash -lc 'sleep 5 && echo done'` then `kill -9` on
+ * the shell's pid leaves `sleep` running with ppid 1.
  *
- * REASONED, not measured: the claim that `cmd.exe /c` orphans its child is from
- * its documented behaviour, not from an observation on Windows. The observation
+ * ## The signal, and why it is a parameter
+ *
+ * Callers had different ones and both are preserved. `stopAll` used a bare
+ * `child.kill()`, which is SIGTERM — an MCP server's one chance to flush state
+ * or drop a lockfile — so SIGTERM is the default. The relay's timeout used
+ * SIGKILL and passes it explicitly.
+ *
+ * On Windows the distinction does not exist: `taskkill /F` is forceful either
+ * way, because there is no graceful signal to send. Stated rather than hidden.
+ *
+ * REASONED, not measured: that `cmd.exe /c` orphans its child. It follows from
+ * documented behaviour, not from an observation on Windows. The observation
  * that would confirm it is a timed-out `run-command` on Windows leaving no
  * stray process in Task Manager.
  *
- * What is TESTED: that POSIX signals the child directly, that Windows shells
- * out to `taskkill` with the tree and force flags and the child's own pid, and
- * that a child with no pid falls back to signalling the handle.
+ * What is TESTED: the signal each caller gets on POSIX, that Windows shells out
+ * to `taskkill` with the tree and force flags and the child's own pid, and both
+ * fallbacks when `taskkill` cannot run.
  */
-export function killTree(child: ChildProcess): void {
-  if (process.platform === "win32" && typeof child.pid === "number") {
-    try {
-      // Detached and fully ignored: we are not waiting on the killer, and its
-      // output would otherwise be attributed to the command being killed.
-      const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
-        stdio: "ignore",
-        detached: true,
-      });
-      killer.unref();
-      // A failed `taskkill` must not surface as an unhandled error event on a
-      // process we are already abandoning.
-      killer.on("error", () => child.kill());
-      return;
-    } catch {
-      // Fall through to the handle we hold.
+export function killTree(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): void {
+  if (process.platform === "win32") {
+    if (typeof child.pid === "number") {
+      try {
+        // Absolute path rather than the bare name: this is the process-control
+        // path of a component that runs agent-supplied commands, so it should
+        // not be resolvable through PATH.
+        const taskkill = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+        // Detached and fully ignored: we are not waiting on the killer, and its
+        // output would otherwise be attributed to the command being killed.
+        const killer = spawn(taskkill, ["/pid", String(child.pid), "/T", "/F"], {
+          stdio: "ignore",
+          detached: true,
+        });
+        killer.unref();
+        // A failed `taskkill` must not surface as an unhandled error event on a
+        // process we are already abandoning.
+        killer.on("error", () => child.kill());
+        return;
+      } catch {
+        // Fall through to the handle we hold.
+      }
     }
+    // No signal name: once we are down to the handle on Windows this is a
+    // TerminateProcess either way, and `signal` has nothing left to express.
+    child.kill();
+    return;
   }
-  child.kill(process.platform === "win32" ? undefined : "SIGKILL");
+  child.kill(signal);
 }

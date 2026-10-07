@@ -259,7 +259,9 @@ function runCommand(
         stopTick();
         // Not `child.kill` directly: on Windows the pid we hold is `cmd.exe`,
         // and the command it started would outlive this timeout. See killTree.
-        killTree(child);
+        // SIGKILL explicitly, which is what this path sent before killTree
+        // existed — a timed-out command has already had its chance.
+        killTree(child, "SIGKILL");
         res({ exitCode: null, stdout, stderr, timedOut: true, timeoutMs });
       }
     }, timeoutMs);

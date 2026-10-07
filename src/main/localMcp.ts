@@ -741,7 +741,9 @@ export async function testServer(id: string): Promise<{
 export function stopAll(): void {
   // killTree, not kill: on Windows the pid is `cmd.exe` and the server itself
   // would survive the app closing, which is exactly what this promises not to
-  // allow.
+  // allow. No signal argument on purpose — killTree defaults to SIGTERM, which
+  // is what the bare `child.kill()` here sent before, and it is a server's only
+  // chance to flush state or drop a lockfile.
   for (const [, state] of running) killTree(state.child);
   running.clear();
 }

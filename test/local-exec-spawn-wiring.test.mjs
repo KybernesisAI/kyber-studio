@@ -9,10 +9,10 @@ import { join } from "node:path";
  * The relay's spawn, wired — not the invocation module in isolation.
  *
  * `platform-shell.test.mjs` proves `shellInvocation` returns the right argv.
- * It cannot prove `localExec.ts` passes that argv to `spawn` rather than, say,
- * handing it the args array as the file. This file closes that seam, which is
- * the one the repo has been bitten at before: every real defect in the
- * credential work was in the wiring, not in the pure module.
+ * It cannot prove `localExec.ts` passes that argv to `spawn`, nor that the
+ * timeout path asks for the signal it used to send. This file closes that
+ * seam, which is the one this repo has been bitten at before: the real defects
+ * in the credential work were all in the wiring, not in the pure module.
  *
  * `executeLocalAction` is the dispatcher and does not itself gate on
  * permissions — consent is enforced by the caller above it — so a `run-command`
@@ -59,8 +59,9 @@ mock.module("node:child_process", {
       };
       child.unref = () => {};
       spawned.push(child);
-      // `taskkill` is spawned by killTree and must not itself close the command.
-      if (autoClose && file !== "taskkill") setImmediate(() => child.emit("close", 0));
+      // The killer must not close the command it was spawned to kill.
+      const isKiller = file.includes("taskkill");
+      if (autoClose && !isKiller) setImmediate(() => child.emit("close", 0));
       return child;
     },
   },
@@ -78,12 +79,23 @@ async function onPlatform(value, fn) {
   }
 }
 
-test("a relayed command on POSIX goes through a login shell, with the line last", async () => {
+/**
+ * Drive one relayed command. `hang` leaves the child running so the timeout
+ * fires; the flag is restored unconditionally, so one failing assertion cannot
+ * cascade into the next test.
+ */
+async function relay(platform, payload, { hang = false } = {}) {
   spawned.length = 0;
-  autoClose = true;
-  const result = await onPlatform("linux", () =>
-    executeLocalAction("run-command", { command: "npm test && echo done" }),
-  );
+  autoClose = !hang;
+  try {
+    return await onPlatform(platform, () => executeLocalAction("run-command", payload));
+  } finally {
+    autoClose = true;
+  }
+}
+
+test("a relayed command on POSIX goes through a login shell, with the line last", async () => {
+  const result = await relay("linux", { command: "npm test && echo done" });
 
   assert.equal(spawned.length, 1);
   const child = spawned[0];
@@ -92,69 +104,51 @@ test("a relayed command on POSIX goes through a login shell, with the line last"
   assert.equal(result.exitCode, 0);
 });
 
-test("a relayed command on Windows goes through cmd.exe, not /bin/bash", async () => {
-  spawned.length = 0;
-  autoClose = true;
-  await onPlatform("win32", () =>
-    executeLocalAction("run-command", { command: "npm test && echo done" }),
-  );
+test("a relayed command on Windows goes through cmd.exe, quoted, not /bin/bash", async () => {
+  await relay("win32", { command: "npm test && echo done" });
 
   const child = spawned[0];
   // The defect this lane exists to fix: before it, this was literally
   // "/bin/bash" with ["-lc", ...] on a machine that has neither.
   assert.notEqual(child.file, "/bin/bash");
   assert.equal(child.file, process.env.ComSpec ?? "cmd.exe");
-  assert.deepEqual(child.args, ["/d", "/s", "/c", "npm test && echo done"]);
-  // Without this the line is quoted twice and a command containing quotes
-  // arrives at cmd.exe mangled.
+  // Quoted, because `/s` strips the outer pair — review found this missing.
+  assert.deepEqual(child.args, ["/d", "/s", "/c", '"npm test && echo done"']);
   assert.equal(child.options.windowsVerbatimArguments, true);
 });
 
-test("the file is the program and the args are the args, not swapped", async () => {
-  // Guards the dullest possible wiring mistake, which a typecheck does not
-  // catch because both are strings/arrays either way.
-  spawned.length = 0;
-  autoClose = true;
-  await onPlatform("win32", () => executeLocalAction("run-command", { command: "dir" }));
-  const child = spawned[0];
-  assert.equal(typeof child.file, "string");
-  assert.ok(Array.isArray(child.args));
-  assert.ok(!child.file.includes("/d"), "the switches must not end up in the file");
-  assert.ok(child.args.includes("dir"), "the command must be in the args");
+test("a quoted Windows path reaches cmd.exe intact through the relay", async () => {
+  // End to end for the case that was broken: the agent's own quotes must still
+  // be there after cmd.exe strips the pair we added.
+  const command = '"C:\\Program Files\\nodejs\\npm.cmd" test';
+  await relay("win32", { command });
+
+  const passed = spawned[0].args.at(-1);
+  assert.equal(passed.slice(1, -1), command);
 });
 
 test("the working directory is still honoured", async () => {
-  spawned.length = 0;
-  autoClose = true;
-  await onPlatform("win32", () => executeLocalAction("run-command", { command: "dir", cwd: dir }));
+  await relay("win32", { command: "dir", cwd: dir });
   assert.equal(spawned[0].options.cwd, dir);
 });
 
 test("a timed-out command on Windows kills the tree, not just cmd.exe", async () => {
-  spawned.length = 0;
-  autoClose = false; // hang, so the timeout fires
-  const result = await onPlatform("win32", () =>
-    executeLocalAction("run-command", { command: "npm run dev", timeoutMs: 20 }),
-  );
+  const result = await relay("win32", { command: "npm run dev", timeoutMs: 20 }, { hang: true });
 
   assert.equal(result.timedOut, true);
-  const killer = spawned.find((c) => c.file === "taskkill");
+  const killer = spawned.find((c) => c.file.includes("taskkill"));
   assert.ok(killer, "a timeout on Windows must reach taskkill");
   // /T is the point: cmd.exe is not the command, so killing only the pid we
   // hold would leave the dev server running with no parent.
   assert.deepEqual(killer.args, ["/pid", "4242", "/T", "/F"]);
-  autoClose = true;
 });
 
-test("a timed-out command on POSIX is signalled directly, with no helper process", async () => {
-  spawned.length = 0;
-  autoClose = false;
-  const result = await onPlatform("linux", () =>
-    executeLocalAction("run-command", { command: "sleep 100", timeoutMs: 20 }),
-  );
+test("a timed-out command on POSIX still gets SIGKILL, as it did before killTree", async () => {
+  // killTree defaults to SIGTERM for stopAll's sake. The relay must opt back
+  // in to SIGKILL explicitly, or this path quietly got weaker.
+  const result = await relay("linux", { command: "sleep 100", timeoutMs: 20 }, { hang: true });
 
   assert.equal(result.timedOut, true);
   assert.equal(spawned.length, 1, "POSIX must not spawn a killer");
   assert.deepEqual(spawned[0].signals, ["SIGKILL"]);
-  autoClose = true;
 });
