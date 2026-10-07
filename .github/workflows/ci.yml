@@ -16,7 +16,7 @@ jobs:
       # thrown away.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15]
+        os: [ubuntu-latest, macos-15, windows-latest]
     runs-on: ${{ matrix.os }}
     # The macOS arm is ADVISORY, not blocking, and this line is where that is
     # set: flipping it to blocking means deleting this key, nothing else.
@@ -28,6 +28,23 @@ jobs:
     # day one converts an unmeasured flake rate into a merge queue problem, so
     # the arm runs and reports for two weeks first and the decision is taken
     # from that data. KYB-601 records the follow-up.
+    #
+    # The WINDOWS arm is blocking from the start, and the difference is evidence
+    # rather than confidence. macOS was added without anyone having run this
+    # suite on a Mac, so its flake rate was unknown and gating on it would have
+    # converted that unknown into a merge-queue problem. Before this arm was
+    # added the whole suite was run on a Windows 11 machine: 408 tests, one
+    # deterministic failure — an errno this PR corrects — and no flakes.
+    #
+    # The risk described just above does not even arise here. The
+    # race-observing tests are the ones that watch a temp file's MODE from a
+    # worker thread, and `mode` is meaningless on Windows, so all of them skip
+    # there. The tests whose behaviour differed between ext4 and APFS do not
+    # execute on this arm at all.
+    #
+    # It is also the whole reason this arm exists: Windows was the one platform
+    # where nothing was ever executed before merge, and an advisory arm reports
+    # without gating, which is exactly what was already missing.
     continue-on-error: ${{ matrix.os == 'macos-15' }}
     steps:
       - uses: actions/checkout@v5

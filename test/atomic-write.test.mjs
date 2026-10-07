@@ -118,13 +118,24 @@ test("a publish that cannot happen reports the failure AND clears the temp file"
   // It does NOT help on Windows, and an earlier version of this comment claimed
   // it did — twice, in two different wrong ways. MoveFileExW with
   // MOVEFILE_REPLACE_EXISTING cannot target a directory at all, empty or not.
-  // The likely Windows error is EACCES rather than EISDIR, so the matcher below
-  // will need revisiting when KYB-500's Windows lane turns CI on.
   writeFileSync(join(target, "occupant"), "x", "utf8");
+
+  // MEASURED by running this suite on Windows 11: `renameSync` onto a directory
+  // reports EPERM, not EISDIR. The comment above used to predict EACCES, and
+  // that prediction was simply wrong — this is the measurement that replaced it.
+  //
+  // The errno is still pinned rather than dropped, because the assertion is
+  // about the RENAME having failed; accepting any error would also accept a
+  // write that never got that far. What is NOT platform-specific is the next
+  // test in this file: it occupies `${target}.tmp` with a directory instead, so
+  // the failure comes from `writeFileSync`, and its EISDIR matcher passed
+  // unchanged on Windows. Opening a directory for writing is the same errno
+  // everywhere; only renaming onto one differs.
+  const cannotPublish = process.platform === "win32" ? "EPERM" : "EISDIR";
 
   assert.throws(
     () => writeAtomic(target, '{"doomed":true}'),
-    { code: "EISDIR" },
+    { code: cannotPublish },
     "a write that never reached the target must not be reported as a success",
   );
   assert.equal(
