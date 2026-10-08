@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { killTree, shellInvocation } from "./platformShell";
 import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { app, safeStorage } from "electron";
@@ -488,11 +489,18 @@ function ensure(server: LocalMcpServer): Running {
     throw new ServerCredentialsError("store-unavailable", server.name);
   }
 
+  // Joined into one line because a shell is what resolves `npx` to the user's
+  // own install. The join is lossy for an argument containing a space, which no
+  // config the UI can produce has: Plugins.tsx splits a single text box on
+  // whitespace, so every token is whitespace-free by construction. Hand-editing
+  // local-mcp.json can defeat that; see the ticket linked from Lane A.
   const line = [server.command, ...server.args].join(" ");
-  const child = spawn(process.env.SHELL ?? "/bin/bash", ["-lc", line], {
+  const invocation = shellInvocation(line);
+  const child = spawn(invocation.file, invocation.args, {
     cwd: server.cwd ?? app.getPath("home"),
     env: { ...process.env, ...env },
     stdio: ["pipe", "pipe", "pipe"],
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   }) as ChildProcessWithoutNullStreams;
 
   const state: Running = {
@@ -731,7 +739,12 @@ export async function testServer(id: string): Promise<{
 
 /** Stop everything. Called when the app quits, so no server outlives the window. */
 export function stopAll(): void {
-  for (const [, state] of running) state.child.kill();
+  // killTree, not kill: on Windows the pid is `cmd.exe` and the server itself
+  // would survive the app closing, which is exactly what this promises not to
+  // allow. No signal argument on purpose — killTree defaults to SIGTERM, which
+  // is what the bare `child.kill()` here sent before, and it is a server's only
+  // chance to flush state or drop a lockfile.
+  for (const [, state] of running) killTree(state.child);
   running.clear();
 }
 
