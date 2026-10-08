@@ -1,0 +1,382 @@
+name: tmp kyb-617 release-win rehearsal
+
+# TEMPORARY — deleted before this PR merges. Do not build on it.
+#
+# release.yml triggers only on a v* tag and on workflow_dispatch, and its
+# release-mac job runs `npm run release:mac`, which is `--publish always` and
+# CREATES the GitHub release. So there is no way to exercise release-win through
+# release.yml from a branch without risking a real publish.
+#
+# Job 1 carries the release-win job VERBATIM, key included, so the two can be
+# diffed mechanically rather than eyeballed.
+#
+# Job 2 is a negative control. It needs no build: it fabricates a dist/ holding
+# a space-free but WRONG installer name — the exact case a review showed the
+# previous version of the assertion passing with exit 0 — and requires the real
+# assertion step to go red on it. A check that only ever passes is not evidence.
+
+on:
+  push:
+    branches:
+      - mikasa/kyb-617-release-win
+
+permissions:
+  contents: read
+
+jobs:
+  # KYB-617 — the Windows packaging lane.
+  #
+  # A Windows runner, not a cross-build, for the same reason release-linux uses
+  # a real Ubuntu one: sharp / @img/* are per-platform optional dependencies, so
+  # an `npm install` on any other host never puts the win32 variants on disk and
+  # the packaged app ships a sharp it cannot load.
+  release-win:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    # Packages and uploads a workflow artefact; publishes nothing. The
+    # file-level `contents: write` exists for release-mac's Release creation,
+    # and narrowing it here keeps that reach off this job.
+    permissions:
+      contents: read
+
+    strategy:
+      # A matrix of one, deliberately, exactly as release-linux does it. arm64
+      # becomes one more entry here plus one in build.win.target — so the arch
+      # is threaded through to electron-builder rather than hardcoded in a path
+      # or an artefact name anywhere below.
+      fail-fast: false
+      matrix:
+        arch: [x64]
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # ci, not install, and a clean one rather than a cache restored from
+      # another platform: the per-platform optional dependencies above are the
+      # entire reason this job needs a Windows machine, and a carried-over
+      # node_modules would defeat it.
+      - run: npm ci --no-audit --no-fund
+
+      # package:win, not a release:* script. package.json's release:mac and
+      # release:linux both end `--publish always`, and this workflow carries a
+      # workflow_dispatch trigger — so reusing that shape here would publish to
+      # a real release from a dispatch. There is deliberately no release:win.
+      #
+      # --publish never is load-bearing rather than stylistic: build.publish
+      # names a GitHub provider, so electron-builder schedules an upload for
+      # every artefact and then dies with "GitHub Personal Access Token is not
+      # set" AFTER a full build has succeeded. Measured the expensive way during
+      # KYB-508 (run 33611485421).
+      #
+      # The extra flags append to the END of the script string, so
+      # electron-builder receives `--win --x64 --publish never` and the
+      # `npm run build` half is untouched. prepackage:win still fires, colon and
+      # all — and that hook is what fetches the speech model, so this lane needs
+      # no separate fetch step.
+      - name: Package
+        run: npm run package:win -- --${{ matrix.arch }} --publish never
+
+      # bash rather than the Windows default of pwsh, for every multi-command
+      # step in this job. PowerShell does not stop on a failing NATIVE command,
+      # and Actions makes a pwsh step's status the exit code of the LAST command
+      # it ran — so a multi-line pwsh block silently discards an early
+      # assertion's failure. An assertion that cannot fail the step is the exact
+      # defect class this lane exists to prevent, and it would fail open.
+      #
+      # It also keeps these assertions textually identical to release-linux's,
+      # which is what makes the two lanes reviewable side by side.
+      #
+      # The subtle one, inherited from release-linux: resources/models/ is
+      # gitignored, so a clean checkout never has it — and a missing
+      # extraResources source is a WARNING in electron-builder, not an error.
+      # app-builder-lib's fileMatcher logs "file source doesn't exist" and
+      # returns, so a lane that failed to fetch the model would still go green
+      # and ship an app with no speech model. Assert it into the artefact.
+      - name: Assert the speech model is in the packaged app
+        shell: bash
+        run: |
+          unpacked="dist/win-unpacked"
+          echo "checking speech model under ${unpacked}"
+          test -s "${unpacked}/resources/models/Xenova/whisper-base.en/onnx/encoder_model_quantized.onnx"
+
+      # Exactly one installer, and its name free of spaces.
+      #
+      # build.win.artifactName is explicitly space-free
+      # (KYBER-Studio-${version}-win-${arch}.${ext}) precisely so the three-way
+      # filename split measured in KYB-607 cannot arise: NSIS's default name
+      # interpolates ${productName}, and ours is "KYBER Studio". That makes this
+      # a regression gate on the artifactName, not decoration — PR-5 publishes
+      # these bytes under the names the feed declares, and a space here is what
+      # made electron-builder, the feed and `gh release upload` disagree three
+      # ways last time.
+      - name: Assert exactly one installer, named as build.win.artifactName says
+        shell: bash
+        run: |
+          # dist/*.exe is NON-RECURSIVE on purpose. dist/win-unpacked/ contains
+          # "KYBER Studio.exe", which legitimately has a space in it, so a
+          # recursive find here would both inflate the count and fail the space
+          # check on a perfectly good build. Do not "improve" this to a find.
+          # The trailing `|| true` is load-bearing, not defensive noise: the
+          # runner invokes bash with `-e -o pipefail`, so with no .exe present
+          # ls fails, pipefail propagates its status out of the substitution,
+          # and -e aborts the assignment BEFORE the annotation below can print.
+          # Measured: exit 2 and a raw ls error, instead of "found 0". So the
+          # most likely real failure — the build produced nothing — would give
+          # the least legible message.
+          count="$(ls -1 dist/*.exe 2>/dev/null | wc -l | tr -d ' ' || true)"
+          if [ "${count}" != "1" ]; then
+            echo "::error::expected exactly 1 installer in dist/, found ${count}"
+            ls -la dist/ || true
+            exit 1
+          fi
+          installer="$(ls -1 dist/*.exe)"
+          name="$(basename "${installer}")"
+
+          # The expected name is INTERPOLATED FROM build.win.artifactName, not
+          # restated here, so package.json remains the only place the template
+          # lives. If a macro is ever added to that template, the literal ${...}
+          # survives this substitution and the comparison fails naming both
+          # strings — a loud failure rather than a silent pass.
+          expected="$(node -p '
+            const p = require("./package.json");
+            p.build.win.artifactName
+              .replace("${version}", p.version)
+              .replace("${arch}", process.argv[1])
+              .replace("${ext}", "exe")
+          ' "${{ matrix.arch }}")"
+
+          if [ "${name}" != "${expected}" ]; then
+            echo "::error::installer name does not match build.win.artifactName"
+            echo "  built:    ${name}"
+            echo "  expected: ${expected}"
+            exit 1
+          fi
+
+          # Kept even though the name now has to equal the template, because
+          # this guards the TEMPLATE rather than the output: artifactName could
+          # be edited to contain a space, in which case built and expected would
+          # agree with each other and both be wrong. KYB-607 is what a space in
+          # this name costs — electron-builder, the update feed and the upload
+          # each normalised one filename a different way.
+          case "${name}" in
+            *" "*)
+              echo "::error::installer name contains a space: ${name}"
+              echo "  build.win.artifactName must stay space-free — see KYB-607"
+              exit 1 ;;
+          esac
+
+          bytes="$(stat -c %s "${installer}")"
+          awk -v b="${bytes}" -v f="${name}" \
+            'BEGIN { printf "%s: %d bytes = %.1f MB = %.1f MiB\n", f, b, b/1000000, b/1048576 }'
+
+      # latest.yml is asserted HERE rather than in PR-5, because this is the job
+      # that either produces it or does not. Windows writes an unsuffixed
+      # latest.yml — getUpdateInfoFileName() applies an OS suffix only for
+      # non-Windows platforms — so it does not collide with latest-linux.yml or
+      # latest-mac.yml. It is the file an updater actually polls, and without it
+      # PR-5 would fail for a reason that looks like PR-5's fault.
+      - name: Assert the updater feed was produced and names the installer we built
+        shell: bash
+        run: |
+          test -s dist/latest.yml
+
+          # The feed and the bytes must agree on the filename, and this is a
+          # DIFFERENT property from the artifactName check above rather than a
+          # second go at it. latest.yml's path is derived from whatever was
+          # actually built, so a broken template yields the same wrong name in
+          # both places and they would agree. What this catches is the KYB-607
+          # class: the file on disk and the name an updater will resolve
+          # diverging because something normalised one of them.
+          declared="$(sed -n 's/^path:[[:space:]]*//p' dist/latest.yml | head -1 | tr -d '\r')"
+          declared="${declared%\"}"; declared="${declared#\"}"
+          declared="${declared%\'}"; declared="${declared#\'}"
+          built="$(basename "$(ls -1 dist/*.exe)")"
+
+          if [ -z "${declared}" ]; then
+            echo "::error::dist/latest.yml has no path: entry"
+            cat dist/latest.yml
+            exit 1
+          fi
+          if [ "${declared}" != "${built}" ]; then
+            echo "::error::the updater feed and the built installer disagree on the filename"
+            echo "  latest.yml path: ${declared}"
+            echo "  file in dist/:   ${built}"
+            exit 1
+          fi
+          echo "feed and installer agree on the filename: ${built}"
+
+      # The steps above prove the artefacts exist, are named correctly and carry
+      # the model. This proves the app inside them can load what it imports and
+      # run what it loads — the same script the mac and Linux lanes call, which
+      # is why KYB-615 taught it the win32 layout rather than this workflow
+      # learning the layout a third time.
+      #
+      # It also asserts, in its own section 4, that every exclusion declared in
+      # build.win.files is genuinely absent from the package — so the epic's
+      # "does not carry another platform's onnxruntime prebuilds" line is
+      # enforced by name rather than inferred from a total.
+      #
+      # That is NOT a substitute for release-linux's AppImage size ceiling, and
+      # an earlier version of this comment wrongly claimed it was. Section 4 is
+      # exact for the exclusions that are DECLARED and structurally blind to
+      # growth nobody declared: a new transitive dependency, emitted sourcemaps,
+      # asar/unpacked duplication, a future prebuild matching none of the six
+      # patterns. A ceiling is a canary for that class; section 4 is a
+      # regression gate for a named one. There is deliberately no ceiling here
+      # because no acceptance criterion asks for one and the installer's size is
+      # printed above — not because section 4 covers it.
+      #
+      # One limit worth knowing before over-reading its dictation verdict: a
+      # GitHub Windows runner has the MSVC redistributable because Visual Studio
+      # is installed, and onnxruntime.dll load-time imports MSVCP140.dll and
+      # VCRUNTIME140.dll. So section 6 passing here is NOT evidence that
+      # dictation works on a clean machine that lacks the redistributable. Only
+      # the installed-mode UAT can measure that.
+      - name: Verify the packaged app can load what it imports
+        shell: bash
+        run: node scripts/verify-package.mjs "dist/win-unpacked"
+
+      - name: What was produced
+        shell: bash
+        run: ls -la dist/*.exe dist/*.blockmap dist/latest.yml
+
+      - name: Upload artefacts
+        # v6, not v5: upload-artifact@v5 still declares `runs.using: node20`, so
+        # bumping only as far as v5 leaves the deprecation where it was. v6 is
+        # the first release on node24 (KYB-533).
+        uses: actions/upload-artifact@v6
+        with:
+          # Unique per matrix job, as upload-artifact requires.
+          name: kyber-studio-win-${{ matrix.arch }}
+          path: |
+            dist/*.exe
+            dist/*.exe.blockmap
+            dist/latest.yml
+          retention-days: 14
+          # Empty is not success. The preceding step already fails the job if
+          # any of these three paths is missing, so this is belt-and-braces —
+          # but the default is `warn`, and a warning on the step whose whole
+          # purpose is to hand the artefact to a human tester is the wrong
+          # default to inherit.
+          if-no-files-found: error
+          # Set explicitly, which release-linux does NOT do: without it a full
+          # re-run of this job fails on the artefact its own previous attempt
+          # uploaded. Re-running a packaging lane is the ordinary response to an
+          # infrastructure flake, so it should not need a human to delete an
+          # artefact first.
+          overwrite: true
+
+  # NEGATIVE CONTROL — the name assertion must be able to FAIL.
+  #
+  # The step below is a verbatim copy of release-win's assertion step, with two
+  # mechanical changes and no others: `${ matrix.arch }` becomes `x64`
+  # (this job has no matrix), and it gains `id` + `continue-on-error` so its
+  # failure can be asserted rather than ending the job.
+  name-assertion-can-fail:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+
+      - name: Fabricate a dist/ whose installer name is space-free but wrong
+        shell: bash
+        run: |
+          mkdir -p dist
+          head -c 2048 /dev/urandom > dist/totally-wrong-name.exe
+          printf 'version: 0.5.16\npath: totally-wrong-name.exe\nsha512: abc\n' > dist/latest.yml
+          ls -la dist/
+
+      - name: Assert exactly one installer, named as build.win.artifactName says
+        id: control
+        continue-on-error: true
+        shell: bash
+        run: |
+          # dist/*.exe is NON-RECURSIVE on purpose. dist/win-unpacked/ contains
+          # "KYBER Studio.exe", which legitimately has a space in it, so a
+          # recursive find here would both inflate the count and fail the space
+          # check on a perfectly good build. Do not "improve" this to a find.
+          # The trailing `|| true` is load-bearing, not defensive noise: the
+          # runner invokes bash with `-e -o pipefail`, so with no .exe present
+          # ls fails, pipefail propagates its status out of the substitution,
+          # and -e aborts the assignment BEFORE the annotation below can print.
+          # Measured: exit 2 and a raw ls error, instead of "found 0". So the
+          # most likely real failure — the build produced nothing — would give
+          # the least legible message.
+          count="$(ls -1 dist/*.exe 2>/dev/null | wc -l | tr -d ' ' || true)"
+          if [ "${count}" != "1" ]; then
+            echo "::error::expected exactly 1 installer in dist/, found ${count}"
+            ls -la dist/ || true
+            exit 1
+          fi
+          installer="$(ls -1 dist/*.exe)"
+          name="$(basename "${installer}")"
+
+          # The expected name is INTERPOLATED FROM build.win.artifactName, not
+          # restated here, so package.json remains the only place the template
+          # lives. If a macro is ever added to that template, the literal ${...}
+          # survives this substitution and the comparison fails naming both
+          # strings — a loud failure rather than a silent pass.
+          expected="$(node -p '
+            const p = require("./package.json");
+            p.build.win.artifactName
+              .replace("${version}", p.version)
+              .replace("${arch}", process.argv[1])
+              .replace("${ext}", "exe")
+          ' "x64")"
+
+          if [ "${name}" != "${expected}" ]; then
+            echo "::error::installer name does not match build.win.artifactName"
+            echo "  built:    ${name}"
+            echo "  expected: ${expected}"
+            exit 1
+          fi
+
+          # Kept even though the name now has to equal the template, because
+          # this guards the TEMPLATE rather than the output: artifactName could
+          # be edited to contain a space, in which case built and expected would
+          # agree with each other and both be wrong. KYB-607 is what a space in
+          # this name costs — electron-builder, the update feed and the upload
+          # each normalised one filename a different way.
+          case "${name}" in
+            *" "*)
+              echo "::error::installer name contains a space: ${name}"
+              echo "  build.win.artifactName must stay space-free — see KYB-607"
+              exit 1 ;;
+          esac
+
+          bytes="$(stat -c %s "${installer}")"
+          awk -v b="${bytes}" -v f="${name}" \
+            'BEGIN { printf "%s: %d bytes = %.1f MB = %.1f MiB\n", f, b, b/1000000, b/1048576 }'
+
+      # latest.yml is asserted HERE rather than in PR-5, because this is the job
+      # that either produces it or does not. Windows writes an unsuffixed
+      # latest.yml — getUpdateInfoFileName() applies an OS suffix only for
+      # non-Windows platforms — so it does not collide with latest-linux.yml or
+      # latest-mac.yml. It is the file an updater actually polls, and without it
+      # PR-5 would fail for a reason that looks like PR-5's fault.
+
+      - name: The control must have gone red
+        shell: bash
+        run: |
+          echo "control step outcome: ${{ steps.control.outcome }}"
+          if [ "${{ steps.control.outcome }}" != "failure" ]; then
+            echo "::error::the assertion PASSED a wrong-named installer, so it enforces nothing"
+            exit 1
+          fi
+          echo "confirmed on Windows: a space-free wrong name is rejected"
