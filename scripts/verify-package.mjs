@@ -68,6 +68,7 @@ import {
  */
 import { inspectPreload } from "./lib/preload-shape.mjs";
 import { excludedPayloadVerdict } from "./lib/excluded-payload.mjs";
+import { createRequire } from "node:module";
 
 // ── 0. Where is the app, and what shape is it? ─────────────────────────
 /**
@@ -271,15 +272,49 @@ if (!existsSync(binary)) {
  * `npx asar` was the obvious spelling and the wrong one: when the local binary
  * is absent, npx silently falls back to fetching the deprecated legacy `asar`
  * package from the registry. A silent behaviour change, inside the one script
- * whose entire job is catching silent breakage. The local binary is resolved
- * from the repo root — derived from this file's own URL, because the cwd of a
- * CI step is not something we get to assume.
+ * whose entire job is catching silent breakage. It is resolved from the repo
+ * root instead — derived from this file's own URL, because the cwd of a CI step
+ * is not something we get to assume.
+ *
+ * What is NOT used is `node_modules/.bin/asar`, and the reason is measured
+ * rather than theoretical. On Windows npm writes three files into `.bin`: an
+ * extensionless SH script, `asar.cmd` and `asar.ps1`. The extensionless one
+ * exists — so an `existsSync` guard passes — but `CreateProcess` cannot execute
+ * a shell script, so `spawnSync` fails with ENOENT:
+ *
+ * ```
+ * Error: spawnSync D:\a\kyber-studio\kyber-studio\node_modules\.bin\asar ENOENT
+ * ```
+ *
+ * That killed the first Windows run of this script outright, at this line,
+ * before any check ran. Note the shape of it: the guard below tested for
+ * PRESENCE and the file was present. Presence is not runnability.
+ *
+ * Reaching for `asar.cmd` instead would trade one problem for two: since
+ * CVE-2024-27980 Node refuses to spawn a `.cmd` without `shell: true`, and
+ * `shell: true` alongside an argument array is deprecated (DEP0190). So this
+ * runs the package's own JS entry with the Node already running — no shell, no
+ * extension, nothing platform-specific.
  */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const ASAR_BIN = join(REPO_ROOT, "node_modules/.bin/asar");
 
-if (!existsSync(ASAR_BIN)) {
-  console.error(`\nNo asar binary at ${ASAR_BIN}.`);
+/**
+ * Resolution prefers the package's declared entry and falls back to its path
+ * under the repo root. The fallback is not redundancy for its own sake:
+ * `@electron/asar` may restrict subpath access through `exports`, in which case
+ * `require.resolve` throws even though the file is sitting right there.
+ */
+const ASAR_ENTRY = (() => {
+  const direct = join(REPO_ROOT, "node_modules/@electron/asar/bin/asar.js");
+  try {
+    return createRequire(import.meta.url).resolve("@electron/asar/bin/asar.js");
+  } catch {
+    return direct;
+  }
+})();
+
+if (!existsSync(ASAR_ENTRY)) {
+  console.error(`\nNo asar entry point at ${ASAR_ENTRY}.`);
   console.error(`\n@electron/asar reaches us transitively (via @electron/universal) and is hoisted,`);
   console.error(`so a dependency-tree change can remove it without touching this package.json.`);
   console.error(`Reinstall, or declare @electron/asar as a devDependency and re-run.\n`);
@@ -297,7 +332,7 @@ process.on("exit", () => {
   }
 });
 
-execFileSync(ASAR_BIN, ["extract", asar, extracted], { stdio: "ignore" });
+execFileSync(process.execPath, [ASAR_ENTRY, "extract", asar, extracted], { stdio: "ignore" });
 
 /** Node's own resolution: look in node_modules here, then in every parent. */
 function resolvable(fromDir, name) {
