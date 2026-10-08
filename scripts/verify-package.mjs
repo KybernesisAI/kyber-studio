@@ -1018,8 +1018,15 @@ try {
 }
 
 // Same trick as ENTRY_POINTS: the path the packaged runtime will use is the
-// extracted-tree path, re-rooted at the archive it actually ships in.
-const transformersInAsar = resolve(asar, TRANSFORMERS, transformersEntry);
+// extracted-tree path, re-rooted at the archive it actually ships in — and as a
+// file:// URL, for the same reason given there. This is the sibling of that
+// call, and fixing only the other one left this failing on Windows with an
+// identical ERR_UNSUPPORTED_ESM_URL_SCHEME one section later.
+//
+// MODEL_ROOT below stays a PATH: it is handed to transformers.js as
+// `env.localModelPath`, which reads the filesystem and would not understand a
+// URL. Only the import is a URL.
+const transformersUrl = pathToFileURL(resolve(asar, TRANSFORMERS, transformersEntry)).href;
 
 /**
  * Deliberately no `language` or `task`: whisper-base.en is an English-only
@@ -1032,7 +1039,7 @@ const transformersInAsar = resolve(asar, TRANSFORMERS, transformersEntry);
  * depending on version. Both are passes. Do not "fix" this by matching text.
  */
 const probe = `
-const { env, pipeline } = await import(${JSON.stringify(transformersInAsar)});
+const { env, pipeline } = await import(${JSON.stringify(transformersUrl)});
 env.allowRemoteModels = false;
 env.localModelPath = ${JSON.stringify(MODEL_ROOT)};
 const transcribe = await pipeline("automatic-speech-recognition", ${JSON.stringify(CHECKPOINT)}, { dtype: "q8" });
