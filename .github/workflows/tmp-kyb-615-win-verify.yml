@@ -1,0 +1,94 @@
+# TEMPORARY — delete before KYB-615 merges.
+#
+# Why this exists: ci.yml never runs verify-package.mjs. Only release.yml does,
+# and only in its macOS and Linux jobs. So the change on this branch — teaching
+# the verifier the win32 layout and asserting the payload exclusions fired —
+# cannot be exercised end to end by any existing CI arm. Its criterion says "runs
+# to a verdict on Windows", and nothing on a POSIX host can establish that.
+#
+# Two behaviours are Windows-only and unmeasured without this:
+#
+#   1. `path.relative` yields BACKSLASHES on win32. The rule matcher normalises
+#      them, which unit tests cover against literal strings, but never against
+#      paths a real walk produced on a real Windows filesystem.
+#   2. The payload walk collects directories as well as files, deliberately. If a
+#      native electron-builder run leaves an emptied `napi-v6/win32/arm64/`
+#      directory behind where a Linux cross-build did not, the check exits 1 on a
+#      GOOD package — a false release block, which is one of the two ways this
+#      script can be wrong.
+#
+# PR-4 (KYB-617) adds a permanent `release-win` job that will call the verifier
+# on a Windows runner as a matter of course. This is the stand-in for that one
+# measurement and is deleted along with the need for it.
+name: tmp KYB-615 windows verify
+
+on:
+  push:
+    branches: [mikasa/kyb-615-verify-package-win32]
+
+jobs:
+  win-verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # Every `run:` below is a SINGLE command, except the last, which sets its
+      # own exit explicitly. The default shell here is pwsh, which appends
+      # `exit $LASTEXITCODE` — so in a multi-command block only the last command
+      # decides the step's result, and a failure above it is reported as success.
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      # A precondition of the measurement, not an extra. The verifier's last
+      # section runs dictation inside the package; with no model it exits 1 on a
+      # perfectly good build. Idempotent — it skips files it already has.
+      - name: Fetch the speech model
+        run: npm run fetch:speech
+
+      - name: Build
+        run: npx electron-vite build
+
+      - name: Pack a real Windows tree
+        run: npx electron-builder --win dir --publish never
+
+      # THE measurement. Must reach a verdict and exit 0, and must name win32:
+      #   ✓ all bundled win32 .node files are x64 (1 checked)
+      #   ✓ all 6 declared exclusions are absent from the package
+      - name: Verify the packaged app
+        run: node scripts/verify-package.mjs "dist/win-unpacked"
+
+      # And can it FAIL? A check that only ever passes is not evidence. This
+      # plants a WRONG-CASE `DirectML.DLL` — the exact upstream scenario the
+      # builder's case-sensitive globs would miss — and requires a non-zero exit.
+      - name: Negative control — the check must go red
+        shell: pwsh
+        run: |
+          # Actions sets $ErrorActionPreference = 'Stop' for pwsh, and PowerShell
+          # 7.4 makes a native non-zero exit THROW under it. That would abort at
+          # the node call below instead of letting us observe the exit code we
+          # are deliberately provoking, failing this step for the wrong reason.
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $dir = "dist/win-unpacked/resources/app.asar.unpacked/node_modules"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Set-Content -Path "$dir/DirectML.DLL" -Value "not really a dll"
+
+          node scripts/verify-package.mjs "dist/win-unpacked"
+          $code = $LASTEXITCODE
+
+          # Remove the ONE file that was created. Not the directory: it holds
+          # real packaged payload, and deleting a tree you only partly made is
+          # how a cleanup destroys a build.
+          Remove-Item -Path "$dir/DirectML.DLL" -Force
+
+          if ($code -eq 0) {
+            Write-Host "FAIL: the verifier passed a package containing DirectML.DLL"
+            exit 1
+          }
+          Write-Host "PASS: exit $code with a wrong-case DirectML.DLL present"
+          exit 0
