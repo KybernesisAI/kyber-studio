@@ -42,7 +42,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 
 /**
@@ -894,7 +894,20 @@ for (const entry of ENTRY_POINTS) {
   // resolve, not join: the app path may be absolute (a mounted volume), and
   // joining it onto the working directory produces a path that exists nowhere
   // — which reads as a broken build rather than a broken check.
-  const target = resolve(asar, entry);
+  //
+  // Then a file:// URL, not the path. A dynamic `import()` of a bare Windows
+  // path fails, because the drive letter parses as a URL scheme:
+  //
+  //   Error [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in:
+  //   file, data, node, and electron are supported by the default ESM loader.
+  //   On Windows, absolute paths must be valid file:// URLs. Received
+  //   protocol 'd:'
+  //
+  // Measured on a Windows runner once the asar spawn above was fixed; this
+  // section was the next thing in the way. A file:// URL is correct on POSIX
+  // too, so there is no platform branch here — the previous spelling simply
+  // happened to work on the only platform that had ever run it.
+  const target = pathToFileURL(resolve(asar, entry)).href;
   try {
     execFileSync(binary, ["--input-type=module", "-e", `await import(${JSON.stringify(target)});`], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
