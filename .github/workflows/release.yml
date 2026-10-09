@@ -232,10 +232,21 @@ jobs:
 
   # KYB-617 — the Windows packaging lane.
   #
-  # A Windows runner, not a cross-build, for the same reason release-linux uses
-  # a real Ubuntu one: sharp / @img/* are per-platform optional dependencies, so
-  # an `npm install` on any other host never puts the win32 variants on disk and
-  # the packaged app ships a sharp it cannot load.
+  # A Windows runner, not a cross-build. The reason is NOT dependency
+  # resolution: `npm ci --os=win32 --cpu=x64` does install the win32 variants on
+  # a Linux host and nothing else, and onnxruntime-node is a single package
+  # carrying every platform's binaries, so dist/win-unpacked builds correctly
+  # off-platform. Measured 9 Oct 2026 — see KYB-617 and KYB-628.
+  #
+  # The reasons that do hold:
+  #   1. package:win runs `npm run build` first — typecheck plus the full test
+  #      suite. A cross-build calling electron-builder directly skips all of it.
+  #   2. Native Windows resource patching, rather than the same work via Wine.
+  #      electron-builder's signApp path needs Wine on Linux and runs even with
+  #      no signing configured, so a cross-build cannot finish without it.
+  #   3. verify-package.mjs section 6 loads the dictation pipeline and
+  #      transcribes, which needs a win32 host — so a cross-build cannot reach
+  #      this lane's strongest assertion.
   release-win:
     runs-on: windows-latest
     timeout-minutes: 60
@@ -297,8 +308,12 @@ jobs:
       # assertion's failure. An assertion that cannot fail the step is the exact
       # defect class this lane exists to prevent, and it would fail open.
       #
-      # It also keeps these assertions textually identical to release-linux's,
-      # which is what makes the two lanes reviewable side by side.
+      # It also keeps these assertions the same SHAPE as release-linux's — same
+      # shell, same style — which is what makes the two lanes comparable side by
+      # side. They are NOT textually identical, and this comment used to claim
+      # they were: release-linux derives its unpacked path from a case on
+      # matrix.arch, and carries no `shell:` key because bash is already its
+      # runner's default.
       #
       # The subtle one, inherited from release-linux: resources/models/ is
       # gitignored, so a clean checkout never has it — and a missing
@@ -311,7 +326,13 @@ jobs:
         run: |
           unpacked="dist/win-unpacked"
           echo "checking speech model under ${unpacked}"
-          test -s "${unpacked}/resources/models/Xenova/whisper-base.en/onnx/encoder_model_quantized.onnx"
+          model="${unpacked}/resources/models/Xenova/whisper-base.en/onnx/encoder_model_quantized.onnx"
+          test -s "${model}" || {
+            echo "::error::speech model missing or empty in the packaged app: ${model}"
+            echo "  prepackage:win runs scripts/fetch-speech-model.mjs; a missing"
+            echo "  extraResources source is only a WARNING in electron-builder."
+            exit 1
+          }
 
       # Exactly one installer, and its name free of spaces.
       #
@@ -354,9 +375,9 @@ jobs:
           expected="$(node -p '
             const p = require("./package.json");
             p.build.win.artifactName
-              .replace("${version}", p.version)
-              .replace("${arch}", process.argv[1])
-              .replace("${ext}", "exe")
+              .replaceAll("${version}", p.version)
+              .replaceAll("${arch}", process.argv[1])
+              .replaceAll("${ext}", "exe")
           ' "${{ matrix.arch }}")"
 
           if [ "${name}" != "${expected}" ]; then
@@ -392,7 +413,11 @@ jobs:
       - name: Assert the updater feed was produced and names the installer we built
         shell: bash
         run: |
-          test -s dist/latest.yml
+          test -s dist/latest.yml || {
+            echo "::error::dist/latest.yml is missing or empty — the updater feed was not produced"
+            ls -la dist/ || true
+            exit 1
+          }
 
           # The feed and the bytes must agree on the filename, and this is a
           # DIFFERENT property from the artifactName check above rather than a
