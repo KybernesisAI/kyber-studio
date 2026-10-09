@@ -238,6 +238,11 @@ jobs:
   # carrying every platform's binaries, so dist/win-unpacked builds correctly
   # off-platform. Measured 9 Oct 2026 — see KYB-617 and KYB-628.
   #
+  # That is NOT an invitation to cross-build. The same flag also swaps the
+  # BUILD-time native modules, so `electron-vite build` then dies with
+  # MODULE_NOT_FOUND on rollup/dist/native.js: a cross-build needs the tree in
+  # two different states across two phases, and still hits (2) below.
+  #
   # The reasons that do hold:
   #   1. package:win runs `npm run build` first — typecheck plus the full test
   #      suite. A cross-build calling electron-builder directly skips all of it.
@@ -245,8 +250,9 @@ jobs:
   #      electron-builder's signApp path needs Wine on Linux and runs even with
   #      no signing configured, so a cross-build cannot finish without it.
   #   3. verify-package.mjs section 6 loads the dictation pipeline and
-  #      transcribes, which needs a win32 host — so a cross-build cannot reach
-  #      this lane's strongest assertion.
+  #      transcribes. The script itself is shared with the mac and Linux lanes;
+  #      what needs a win32 host is running it AGAINST THE WIN32 PACKAGE — so a
+  #      cross-build cannot reach this lane's strongest assertion.
   release-win:
     runs-on: windows-latest
     timeout-minutes: 60
@@ -308,12 +314,19 @@ jobs:
       # assertion's failure. An assertion that cannot fail the step is the exact
       # defect class this lane exists to prevent, and it would fail open.
       #
-      # It also keeps these assertions the same SHAPE as release-linux's — same
-      # shell, same style — which is what makes the two lanes comparable side by
-      # side. They are NOT textually identical, and this comment used to claim
-      # they were: release-linux derives its unpacked path from a case on
-      # matrix.arch, and carries no `shell:` key because bash is already its
-      # runner's default.
+      # It also puts these assertions in the same SHELL as release-linux's,
+      # which is what makes the two lanes comparable side by side. They are NOT
+      # textually identical, and this comment used to claim they were. The known
+      # divergences, so this stays an honest inventory rather than a
+      # reassurance:
+      #   - release-linux derives its unpacked path from a case on matrix.arch;
+      #     this lane hardcodes dist/win-unpacked.
+      #   - release-linux carries no `shell:` key, because bash is already the
+      #     default on its runner.
+      #   - the two assertions in this lane annotate on failure with ::error::,
+      #     while release-linux's remain bare `test -s`. KYB-628 annotated this
+      #     lane only because that lane was outside its scope — not because the
+      #     two are alike in this respect.
       #
       # The subtle one, inherited from release-linux: resources/models/ is
       # gitignored, so a clean checkout never has it — and a missing
