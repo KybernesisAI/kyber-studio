@@ -8,3 +8,9 @@ dist
 # by scripts/fetch-speech-model.mjs before packaging, and ships inside the app —
 # but 75 MB of weights do not belong in git history.
 resources/models/
+
+# The VC++ redistributable is a build input, not source. build/windows-vc-redist.json
+# pins its URL and SHA-256; scripts/prepare-windows-vc-redist.mjs fetches it into
+# build/vendor/ before packaging and the NSIS installer embeds it from there. 25 MB
+# of Microsoft binary does not belong in git history.
+build/vendor/
