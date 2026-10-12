@@ -36,8 +36,12 @@ jobs:
 
     strategy:
       fail-fast: false
-      matrix:
+        # Three attempts per tree, each on its own fresh runner. The failure is
+        # INTERMITTENT - the branch crashed on three of four silent installs and
+        # passed once - so a single green run would prove nothing. Six jobs, two
+        # silent installs each, twelve observations.
         tree: [main, branch]
+        attempt: [1, 2, 3]
 
     steps:
       - uses: actions/checkout@v5
@@ -93,7 +97,7 @@ jobs:
           "installer: $($exe.Name), $($exe.Length) bytes"
           $p = Start-Process -FilePath $exe.FullName -ArgumentList '/S' -Wait -PassThru
           $code = $p.ExitCode
-          "::notice title=KYB-627 /S control (${{ matrix.tree }})::exit code $code"
+          "::notice title=KYB-627 /S control (${{ matrix.tree }} #${{ matrix.attempt }})::exit code $code"
           "/S exit code: $code"
           if ($code -eq -1073741819) { "0xC0000005 ACCESS VIOLATION — reproduced on this leg" }
           elseif ($code -eq 0)       { "clean silent install on this leg" }
@@ -123,7 +127,7 @@ jobs:
           "files present before this second install: $before"
           $p = Start-Process -FilePath $exe.FullName -ArgumentList '/S' -Wait -PassThru
           $code = $p.ExitCode
-          "::notice title=KYB-627 /S control, second install (${{ matrix.tree }})::exit code $code"
+          "::notice title=KYB-627 /S control, second install (${{ matrix.tree }} #${{ matrix.attempt }})::exit code $code"
           "second /S exit code: $code"
           if ($code -eq -1073741819) { "0xC0000005 ACCESS VIOLATION - reproduced on the UPGRADE path" }
           elseif ($code -eq 0)       { "clean silent upgrade on this leg" }
