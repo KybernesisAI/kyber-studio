@@ -86,7 +86,7 @@ jobs:
       # non-zero one — it reports and exits 0 deliberately. Without the explicit
       # `exit 0`, Actions takes a pwsh step's status from its last command and a
       # crash here would abort the leg before it printed anything useful.
-      - name: Install silently and record the exit code
+      - name: Install silently and record the exit code (FIRST, clean machine)
         shell: pwsh
         run: |
           $exe = Get-ChildItem dist\*.exe | Select-Object -First 1
@@ -107,4 +107,31 @@ jobs:
           $log = "$env:TEMP\KYBER-Studio-vc-redist.log"
           if (Test-Path $log) { "prerequisite log PRESENT — the redistributable ran" }
           else                { "prerequisite log absent — no redistributable executed" }
+          exit 0
+
+      # The rehearsal that produced -1073741819 had already run TWO installers on
+      # that machine before it reached the /S step, so the crashing install was an
+      # upgrade over an existing installation — not a first install on a clean box.
+      # The step above could not have reproduced that, because it IS the first
+      # install. This one repeats /S on top of what the previous step just
+      # installed, which is the condition that actually matched.
+      - name: Install silently a SECOND time, over the existing installation
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist\*.exe | Select-Object -First 1
+          $before = (Get-ChildItem "$env:LOCALAPPDATA\Programs\KYBER Studio" -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
+          "files present before this second install: $before"
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '/S' -Wait -PassThru
+          $code = $p.ExitCode
+          "::notice title=KYB-627 /S control, second install (${{ matrix.tree }})::exit code $code"
+          "second /S exit code: $code"
+          if ($code -eq -1073741819) { "0xC0000005 ACCESS VIOLATION - reproduced on the UPGRADE path" }
+          elseif ($code -eq 0)       { "clean silent upgrade on this leg" }
+          $dir = "$env:LOCALAPPDATA\Programs\KYBER Studio"
+          if (Test-Path $dir) {
+            $n = (Get-ChildItem $dir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
+            "install directory present, $n files"
+          } else {
+            "install directory absent"
+          }
           exit 0
