@@ -161,6 +161,12 @@
         StrCpy $0 "not started - the elevation prompt was declined, or the process could not be launched"
       ${EndIf}
 
+      ; These are STRING comparisons — LogicLib's `==` is StrCmp — and that is
+      ; load-bearing, not incidental. On the error path above $0 holds a
+      ; sentence rather than a number. Changing either of these to `=`, which
+      ; is IntCmp and looks more correct for an exit code, would coerce that
+      ; sentence to 0, match the success branch, and silently reinstate the
+      ; defect the ClearErrors guard above exists to prevent. Leave them `==`.
       ${If} $0 == 0
         DetailPrint "Microsoft VC++ x64 runtime installed"
       ${ElseIf} $0 == 3010
