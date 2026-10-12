@@ -1,0 +1,236 @@
+name: KYB-627 vc-redist rehearsal
+
+# TEMPORARY. Delete before the pull request is opened.
+#
+# release.yml triggers only on a `v*` tag and workflow_dispatch, and its
+# release-mac job runs `--publish always` — so the real lane cannot be fired
+# from a branch without risking a publish. This runs the Windows work that
+# matters for KYB-627 on a branch push instead.
+#
+# What it establishes that a Linux sandbox cannot:
+#   1. the installer compiles with the custom NSIS include, under the NSIS
+#      electron-builder actually uses
+#   2. the runtime CHECK reaches the right decision on a real Windows host
+#   3. the abort path behaves when the prerequisite cannot satisfy the floor
+#   4. the installer still installs, and the app lands where it should
+
+on:
+  push:
+    branches:
+      - mikasa/kyb-627-vc-redist
+
+permissions:
+  contents: read
+
+jobs:
+  vc-redist:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: What runtime does this runner carry
+        shell: pwsh
+        run: |
+          # The probes below are judged against this. windows-latest carries a
+          # current redistributable, so the expected outcome is the SKIP path.
+          foreach ($dll in 'VCRUNTIME140.dll','VCRUNTIME140_1.dll','MSVCP140.dll','MSVCP140_1.dll') {
+            $path = Join-Path $env:WINDIR "System32\$dll"
+            if (Test-Path $path) {
+              $v = (Get-Item $path).VersionInfo.FileVersion
+              Write-Host "$dll = $v"
+            } else {
+              Write-Host "$dll = ABSENT"
+            }
+          }
+
+      - name: Fetch and verify the redistributable
+        shell: bash
+        run: node scripts/prepare-windows-vc-redist.mjs
+
+      - name: Install NSIS for the probes
+        shell: bash
+        run: |
+          choco install nsis -y --no-progress >/dev/null
+          echo "/c/Program Files (x86)/NSIS" >> "$GITHUB_PATH"
+
+      - name: Probe 1 — real floor on a current machine must SKIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p probe
+
+          # The harness reproduces how electron-builder calls the include:
+          # customInit inserted into .onInit, BUILD_RESOURCES_DIR defined by the
+          # caller. The include itself is the shipped file, unmodified.
+          cat > probe/probe.nsi <<'NSI'
+          Name "probe"
+          OutFile "${OUT}"
+          RequestExecutionLevel user
+          SilentInstall silent
+          !include "${NSH}"
+          Function .onInit
+            !insertmacro customInit
+          FunctionEnd
+          Section "payload"
+            DetailPrint "would copy the app here"
+          SectionEnd
+          NSI
+
+          "/c/Program Files (x86)/NSIS/makensis.exe" -V2 \
+            "-DBUILD_RESOURCES_DIR=$(cygpath -w "$PWD/build")" \
+            "-DNSH=$(cygpath -w "$PWD/build/windows-installer.nsh")" \
+            "-DOUT=$(cygpath -w "$PWD/probe/probe.exe")" \
+            probe/probe.nsi
+
+          # Whether the redistributable was EXECUTED is observable without
+          # changing the include: it passes /log, so the log exists if and only
+          # if it ran.
+          log="$TEMP/KYBER-Studio-vc-redist.log"
+          rm -f "$log"
+
+          set +e
+          ./probe/probe.exe
+          status=$?
+          set -e
+
+          echo "probe exit status: ${status}"
+          if [ -f "$log" ]; then
+            echo "::error::probe 1: the redistributable RAN on a machine that already satisfies the floor — the conditional check did not skip"
+            exit 1
+          fi
+          if [ "${status}" != "0" ]; then
+            echo "::error::probe 1: expected exit 0 on the skip path, got ${status}"
+            exit 1
+          fi
+          echo "probe 1 PASS — no redistributable executed, no UAC prompt possible, exit 0"
+
+      - name: Probe 2 — an unsatisfiable floor must run it, then abort
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # This probe compiles a COPY of the include with the floor raised to
+          # 14.99, which no machine satisfies. That is the only way to reach the
+          # install-and-fail path on a runner that already has a current
+          # runtime. What it exercises — exit-code handling, the re-check, and
+          # aborting before any payload is copied — is independent of the floor
+          # value. The shipped include is NOT modified.
+          sed 's/^!define KYBER_VC_MIN_MINOR 44$/!define KYBER_VC_MIN_MINOR 99/' \
+            build/windows-installer.nsh > probe/raised.nsh
+          grep -q '!define KYBER_VC_MIN_MINOR 99' probe/raised.nsh \
+            || { echo "::error::probe 2: the floor substitution did not apply — the define may have been renamed"; exit 1; }
+
+          "/c/Program Files (x86)/NSIS/makensis.exe" -V2 \
+            "-DBUILD_RESOURCES_DIR=$(cygpath -w "$PWD/build")" \
+            "-DNSH=$(cygpath -w "$PWD/probe/raised.nsh")" \
+            "-DOUT=$(cygpath -w "$PWD/probe/probe2.exe")" \
+            probe/probe.nsi
+
+          log="$TEMP/KYBER-Studio-vc-redist.log"
+          rm -f "$log"
+
+          set +e
+          ./probe/probe2.exe
+          status=$?
+          set -e
+
+          echo "probe 2 exit status: ${status}"
+
+          # THE assertion: a machine that cannot satisfy the floor must not get
+          # a completed install. Everything else here is corroboration.
+          if [ "${status}" = "0" ]; then
+            echo "::error::probe 2: an installer whose prerequisite could not be satisfied exited 0 — it should have aborted"
+            exit 1
+          fi
+
+          # Corroboration, deliberately NOT a gate. The log exists only if the
+          # redistributable actually executed, which depends on how this runner
+          # handles elevation; a refused elevation reaches the same abort by a
+          # different route, and that is still the correct behaviour.
+          if [ -f "$log" ]; then
+            echo "the prerequisite executed (log present) and the floor was still unmet"
+            echo "--- redistributable log, last 15 lines ---"
+            tail -15 "$log" || true
+          else
+            echo "note: no prerequisite log — it was not executed, or elevation was refused."
+            echo "      The abort happened either way, which is the property under test."
+          fi
+          echo "probe 2 PASS — no install completed on a machine below the floor (status ${status})"
+
+      - name: Package
+        shell: bash
+        run: |
+          npm ci --no-audit --no-fund
+          npm run package:win
+
+      - name: Assert the installer was produced and carries the prerequisite
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          installer="dist/KYBER-Studio-${version}-win-x64.exe"
+
+          test -s "${installer}" || {
+            echo "::error::${installer} is missing or empty"
+            ls -la dist/ || true
+            exit 1
+          }
+          test -s dist/latest.yml || {
+            echo "::error::dist/latest.yml is missing or empty — the updater feed was not produced"
+            exit 1
+          }
+
+          redist_bytes="$(stat -c%s build/vendor/vc_redist.x64.exe)"
+          installer_bytes="$(stat -c%s "${installer}")"
+          echo "redistributable: ${redist_bytes} bytes"
+          echo "installer:       ${installer_bytes} bytes"
+
+          # The prerequisite is embedded, so the installer must be larger than
+          # it. Weak as a bound, but it is a fact about this build rather than a
+          # comparison against a number someone has to keep up to date.
+          [ "${installer_bytes}" -gt "${redist_bytes}" ] || {
+            echo "::error::the installer is no larger than the prerequisite it should embed"
+            exit 1
+          }
+
+      - name: Install silently, then check the app landed
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $installer = "dist\KYBER-Studio-$version-win-x64.exe"
+          $log = Join-Path $env:TEMP 'KYBER-Studio-vc-redist.log'
+          Remove-Item $log -ErrorAction SilentlyContinue
+
+          # /S is electron-builder's silent switch. This runner already has a
+          # current runtime, so this exercises the skip path end to end through
+          # the real installer rather than a probe.
+          $p = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
+          Write-Host "installer exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) {
+            Write-Host "::error::the installer exited $($p.ExitCode)"
+            exit 1
+          }
+
+          $installed = Join-Path $env:LOCALAPPDATA 'Programs\KYBER Studio\KYBER Studio.exe'
+          if (-not (Test-Path $installed)) {
+            Write-Host "::error::the app is not at $installed after a silent install"
+            exit 1
+          }
+          Write-Host "installed: $installed"
+
+          if (Test-Path $log) {
+            Write-Host "::error::the real installer executed the redistributable on a machine that did not need it"
+            exit 1
+          }
+          Write-Host "no prerequisite log — the real installer skipped it, as it should on this runner"
+
+      - name: What was produced
+        shell: bash
+        run: ls -la dist/ build/vendor/
