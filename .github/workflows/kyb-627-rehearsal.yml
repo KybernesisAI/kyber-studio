@@ -60,6 +60,42 @@ jobs:
           choco install nsis -y --no-progress >/dev/null
           echo "/c/Program Files (x86)/NSIS" >> "$GITHUB_PATH"
 
+      - name: Both NSIS passes must compile with warnings as errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p probe
+
+          # electron-builder runs makensis TWICE: once for the installer, once
+          # for the uninstaller with BUILD_UNINSTALLER defined and customInit
+          # never inserted. It also escalates NSIS warnings to errors. A first
+          # attempt at this change declared two top-level `Var`s, which are
+          # unused in the uninstaller pass — "warning 6001: Variable not
+          # referenced or never set" — and packaging failed two minutes in,
+          # after the app had been built and compressed. This catches that in
+          # seconds instead.
+          cat > probe/uninst.nsi <<'NSI'
+          !define BUILD_UNINSTALLER
+          Name "uninstaller-pass"
+          OutFile "${OUT}"
+          RequestExecutionLevel user
+          SilentInstall silent
+          !include "${NSH}"
+          ; customInit deliberately NOT inserted — that is the pass under test.
+          Section "payload"
+            DetailPrint "would copy the app here"
+          SectionEnd
+          NSI
+
+          "/c/Program Files (x86)/NSIS/makensis.exe" -WX -V2 \
+            "-DBUILD_RESOURCES_DIR=$(cygpath -w "$PWD/build")" \
+            "-DNSH=$(cygpath -w "$PWD/build/windows-installer.nsh")" \
+            "-DOUT=$(cygpath -w "$PWD/probe/uninst.exe")" \
+            probe/uninst.nsi \
+            || { echo "::error::the include does not survive the uninstaller pass under warnings-as-errors — electron-builder will fail at the NSIS step"; exit 1; }
+
+          echo "uninstaller pass compiles clean under -WX"
+
       - name: Probe 1 — real floor on a current machine must SKIP
         shell: bash
         run: |
@@ -83,7 +119,7 @@ jobs:
           SectionEnd
           NSI
 
-          "/c/Program Files (x86)/NSIS/makensis.exe" -V2 \
+          "/c/Program Files (x86)/NSIS/makensis.exe" -WX -V2 \
             "-DBUILD_RESOURCES_DIR=$(cygpath -w "$PWD/build")" \
             "-DNSH=$(cygpath -w "$PWD/build/windows-installer.nsh")" \
             "-DOUT=$(cygpath -w "$PWD/probe/probe.exe")" \
@@ -127,7 +163,7 @@ jobs:
           grep -q '!define KYBER_VC_MIN_MINOR 99' probe/raised.nsh \
             || { echo "::error::probe 2: the floor substitution did not apply — the define may have been renamed"; exit 1; }
 
-          "/c/Program Files (x86)/NSIS/makensis.exe" -V2 \
+          "/c/Program Files (x86)/NSIS/makensis.exe" -WX -V2 \
             "-DBUILD_RESOURCES_DIR=$(cygpath -w "$PWD/build")" \
             "-DNSH=$(cygpath -w "$PWD/probe/raised.nsh")" \
             "-DOUT=$(cygpath -w "$PWD/probe/probe2.exe")" \

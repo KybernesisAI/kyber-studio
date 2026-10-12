@@ -27,8 +27,20 @@
 !define KYBER_VC_MIN_MAJOR 14
 !define KYBER_VC_MIN_MINOR 44
 
-Var kyberVcOk
-Var kyberVcWhy
+; Registers, not `Var`, and this is not a style preference. electron-builder
+; runs makensis TWICE — once for the installer and once for the uninstaller,
+; with BUILD_UNINSTALLER defined — and only the installer pass inserts
+; customInit. A `Var` declared here would therefore be unused in the uninstaller
+; pass, raising "warning 6001: Variable not referenced or never set", which
+; electron-builder escalates to an error. Registers are not declared, so they
+; cannot be unused.
+;
+;   $R4  the verdict: "1" when every DLL meets the floor
+;   $R5  why it does not, for the operator-facing message
+;   $R0 $R1 $R2 $R3  GetDLLVersion output and the major/minor it unpacks to
+;   $0   the redistributable's exit code
+;
+; customInit pushes and pops all of them.
 
 ; Check one runtime DLL's own file version. Clears kyberVcOk if the file is
 ; missing or older than the floor above.
@@ -47,28 +59,28 @@ Var kyberVcWhy
   ClearErrors
   GetDLLVersion "$WINDIR\System32\${name}" $R0 $R1
   ${If} ${Errors}
-    StrCpy $kyberVcOk "0"
-    StrCpy $kyberVcWhy "${name} is not installed"
+    StrCpy $R4 "0"
+    StrCpy $R5 "${name} is not installed"
   ${Else}
     ; GetDLLVersion packs major<<16|minor into the high dword.
     IntOp $R2 $R0 / 0x00010000
     IntOp $R3 $R0 & 0x0000FFFF
     ${If} $R2 < ${KYBER_VC_MIN_MAJOR}
-      StrCpy $kyberVcOk "0"
-      StrCpy $kyberVcWhy "${name} is $R2.$R3"
+      StrCpy $R4 "0"
+      StrCpy $R5 "${name} is $R2.$R3"
     ${ElseIf} $R2 == ${KYBER_VC_MIN_MAJOR}
       ${If} $R3 < ${KYBER_VC_MIN_MINOR}
-        StrCpy $kyberVcOk "0"
-        StrCpy $kyberVcWhy "${name} is $R2.$R3"
+        StrCpy $R4 "0"
+        StrCpy $R5 "${name} is $R2.$R3"
       ${EndIf}
     ${EndIf}
   ${EndIf}
 !macroend
 
-; Sets $kyberVcOk to 1 when all four DLLs are present and >= the floor.
+; Sets $R4 to 1 when all four DLLs are present and >= the floor.
 !macro KyberCheckVcRuntime
-  StrCpy $kyberVcOk "1"
-  StrCpy $kyberVcWhy ""
+  StrCpy $R4 "1"
+  StrCpy $R5 ""
   ${DisableX64FSRedirection}
   !insertmacro KyberCheckVcDll "VCRUNTIME140.dll"
   !insertmacro KyberCheckVcDll "VCRUNTIME140_1.dll"
@@ -87,18 +99,20 @@ Var kyberVcWhy
     Push $R1
     Push $R2
     Push $R3
+    Push $R4
+    Push $R5
     Push $0
 
     !insertmacro KyberCheckVcRuntime
 
-    ${If} $kyberVcOk == "1"
+    ${If} $R4 == "1"
       ; The common case, and the reason for checking at all: this installer is
       ; per-user and raises no UAC prompt of its own. Running the
       ; redistributable unconditionally would add one on every machine to
       ; benefit the few that need it.
       DetailPrint "Microsoft VC++ x64 runtime >= ${KYBER_VC_MIN_MAJOR}.${KYBER_VC_MIN_MINOR} already present; skipping prerequisite"
     ${Else}
-      DetailPrint "Installing the Microsoft VC++ x64 runtime ($kyberVcWhy)"
+      DetailPrint "Installing the Microsoft VC++ x64 runtime ($R5)"
 
       ; Embedded at compile time whether or not it is executed, so the 25 MB is
       ; unconditional — it is the UAC prompt that is conditional, not the size.
@@ -125,13 +139,13 @@ Var kyberVcWhy
         ; trust that claim — or the registry key that under-reports, see TRAP 1
         ; — re-read the DLLs and let the measurement decide.
         !insertmacro KyberCheckVcRuntime
-        ${If} $kyberVcOk == "1"
+        ${If} $R4 == "1"
           DetailPrint "Microsoft VC++ x64 runtime already satisfied (installer returned $0)"
         ${Else}
           ${IfNot} ${Silent}
-            MessageBox MB_ICONSTOP|MB_OK "KYBER Studio needs the Microsoft Visual C++ 2015-2022 x64 Redistributable, version ${KYBER_VC_MIN_MAJOR}.${KYBER_VC_MIN_MINOR} or newer, and could not install it.$\n$\nDetected: $kyberVcWhy$\nInstaller exit code: $0$\nLog: $TEMP\KYBER-Studio-vc-redist.log$\n$\nInstall it from Microsoft's 'Latest supported Visual C++ Redistributable downloads' page, then run this installer again.$\n$\nNothing has been installed."
+            MessageBox MB_ICONSTOP|MB_OK "KYBER Studio needs the Microsoft Visual C++ 2015-2022 x64 Redistributable, version ${KYBER_VC_MIN_MAJOR}.${KYBER_VC_MIN_MINOR} or newer, and could not install it.$\n$\nDetected: $R5$\nInstaller exit code: $0$\nLog: $TEMP\KYBER-Studio-vc-redist.log$\n$\nInstall it from Microsoft's 'Latest supported Visual C++ Redistributable downloads' page, then run this installer again.$\n$\nNothing has been installed."
           ${EndIf}
-          DetailPrint "Microsoft VC++ x64 runtime could not be installed (exit $0, $kyberVcWhy)"
+          DetailPrint "Microsoft VC++ x64 runtime could not be installed (exit $0, $R5)"
           SetErrorLevel 1
           ; Nothing has been copied yet, so quitting here leaves the machine
           ; exactly as it was rather than half-installed.
@@ -141,6 +155,8 @@ Var kyberVcWhy
     ${EndIf}
 
     Pop $0
+    Pop $R5
+    Pop $R4
     Pop $R3
     Pop $R2
     Pop $R1
