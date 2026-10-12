@@ -21,10 +21,11 @@
 # same path the crashing rehearsal took, which is what makes the comparison fair.
 name: KYB-627 silent-install control
 
+# Push trigger removed: this has reported, and leaving it on would re-run six
+# Windows jobs on every unrelated push to the branch. Run it by hand when the
+# /S behaviour needs re-measuring.
 on:
   workflow_dispatch:
-  push:
-    branches: [mikasa/kyb-627-vc-redist]
 
 permissions:
   contents: read

@@ -20,29 +20,6 @@
 !include "x64.nsh"
 !include "LogicLib.nsh"
 
-; MEASURED, and the reason this line exists: without it the built installer dies
-; with 0xC0000005 under /S, BEFORE any page or payload copy, on a machine that
-; needs no prerequisite at all. Two windows-latest legs per run, one building
-; main and one building this branch: main returned 0 on three silent installs,
-; this branch returned -1073741819 on three of four. Runs 38250952739 and
-; 38251804965.
-;
-; The cause is that customInit is spliced into .onInit, and the File directive
-; below therefore extracts a 25 MB payload during init. Under the solid
-; compression electron-builder uses, data that far into the stream cannot be
-; reached that early. ReserveFile is NSIS's remedy: it stores the file at the
-; FRONT of the data block, where .onInit can get at it. The failure was
-; intermittent and flipped on a one-byte change in installer size, which is
-; exactly the data-layout sensitivity that diagnosis predicts.
-;
-; Guarded against the uninstaller pass, which does not insert customInit and so
-; would be carrying 25 MB it can never use.
-!ifndef BUILD_UNINSTALLER
-  !if /FileExists "${BUILD_RESOURCES_DIR}\vendor\vc_redist.x64.exe"
-    ReserveFile "${BUILD_RESOURCES_DIR}\vendor\vc_redist.x64.exe"
-  !endif
-!endif
-
 ; 14.44 is the toolset the shipped binaries are linked with, so it is the floor
 ; Microsoft's forward-compatibility rule actually requires. NOT 14.51 — that is
 ; merely the version that happened to be installed when the fix was confirmed,
@@ -155,9 +132,6 @@
       ; fetched, rather than with NSIS's bare "file not found". package:win runs
       ; the fetch through its prepackage:win hook; a bare `electron-builder
       ; --win` does not.
-      ; Reserved at the top of this file so it sits at the front of the data
-      ; block. Extracting it here without that reservation is what produced the
-      ; access violation; do not remove one without the other.
       !if /FileExists "${BUILD_RESOURCES_DIR}\vendor\vc_redist.x64.exe"
         File /oname=$PLUGINSDIR\vc_redist.x64.exe "${BUILD_RESOURCES_DIR}\vendor\vc_redist.x64.exe"
       !else

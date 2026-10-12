@@ -1,0 +1,120 @@
+# TEMPORARY — KYB-627 isolation experiment. Delete with build/experiments/.
+#
+# The access violation under /S is attributable to the KYB-627 include, but the
+# mechanism is unknown and the first hypothesis (File in .onInit unreachable
+# under solid compression, remedied by ReserveFile) is refuted twice over:
+# ReserveFile changed nothing, and app-builder-lib sets SetCompressor zlib with
+# /SOLID appearing only in a source comment saying not to use it.
+#
+# Two things differ between a main installer and a branch installer when the
+# runtime check takes its skip path:
+#
+#   (a) ~25 MB of extra incompressible data in the data block
+#   (b) the code the include runs in .onInit — RunningX64, the x64 redirection
+#       pair (which call the System plugin), four GetDLLVersion reads
+#
+# This separates them. All three legs build MAIN's tree; only the include
+# differs. Two attempts each because the failure is intermittent.
+#
+#   plain       main as it is, the established baseline
+#   data-only   main + 25 MB embedded, never extracted  -> tests (a) alone
+#   logic-only  main + the checks, nothing embedded     -> tests (b) alone
+name: KYB-627 isolation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [mikasa/kyb-627-vc-redist]
+
+permissions:
+  contents: read
+
+jobs:
+  isolate:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [plain, data-only, logic-only]
+        attempt: [1, 2]
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # The experiment files and this workflow come from the branch; the SOURCE
+      # under test is main in every leg.
+      - name: Keep the experiment files, then check out main
+        shell: bash
+        run: |
+          mkdir -p /tmp/exp
+          cp build/experiments/*.nsh /tmp/exp/
+          git checkout --detach origin/main
+          git log --oneline -1
+          test ! -f build/windows-installer.nsh && echo "KYB-627 include absent: correct, this is main"
+
+      - name: Apply the variant
+        shell: bash
+        run: |
+          if [ "${{ matrix.variant }}" = "plain" ]; then
+            echo "no include; main unmodified"
+            exit 0
+          fi
+          mkdir -p build
+          cp "/tmp/exp/${{ matrix.variant }}.nsh" build/experiment.nsh
+          node -e '
+            const fs = require("fs");
+            const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            p.build.nsis.include = "build/experiment.nsh";
+            fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");
+            console.log("nsis.include =", p.build.nsis.include);
+          '
+
+      # Exactly the size of the real redistributable, and random so it is as
+      # incompressible as a signed Microsoft binary.
+      - name: Create the dummy payload
+        if: matrix.variant == 'data-only'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build\vendor | Out-Null
+          $bytes = New-Object byte[] 25635768
+          (New-Object Random 1234).NextBytes($bytes)
+          [IO.File]::WriteAllBytes("build\vendor\dummy.bin", $bytes)
+          "dummy.bin: $((Get-Item build\vendor\dummy.bin).Length) bytes"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Package
+        run: npm run package:win -- --x64 --publish never
+
+      # Fails the step on a crash, so the job list alone shows the outcome and
+      # nobody has to read six logs to find out.
+      - name: Install silently, and FAIL the step if it crashes
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist\*.exe | Select-Object -First 1
+          "variant: ${{ matrix.variant }} attempt ${{ matrix.attempt }}"
+          "installer: $($exe.Name), $($exe.Length) bytes"
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '/S' -Wait -PassThru
+          $code = $p.ExitCode
+          "::notice title=KYB-627 isolation (${{ matrix.variant }} #${{ matrix.attempt }})::exit code $code"
+          "/S exit code: $code"
+          $dir = "$env:LOCALAPPDATA\Programs\KYBER Studio"
+          if (Test-Path $dir) {
+            "install directory present, $((Get-ChildItem $dir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count) files"
+          } else {
+            "install directory absent"
+          }
+          if ($code -ne 0) {
+            if ($code -eq -1073741819) { "0xC0000005 ACCESS VIOLATION" }
+            exit 1
+          }
+          exit 0
