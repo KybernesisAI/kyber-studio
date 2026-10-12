@@ -64,7 +64,12 @@ jobs:
           # that ships the product rather than whatever a package manager
           # happens to install today.
           npm ci --no-audit --no-fund
-          npm run package:win
+          # --publish never, exactly as release-win does. Without it
+          # electron-builder detects CI, decides artifacts should be published
+          # if a draft release exists, and fails in cleanup with "GitHub
+          # Personal Access Token is not set" — AFTER building everything
+          # successfully. The build is not what fails; the publish attempt is.
+          npm run package:win -- --publish never
 
       - name: Locate the NSIS electron-builder just used
         shell: bash
