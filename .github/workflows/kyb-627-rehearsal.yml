@@ -54,11 +54,32 @@ jobs:
         shell: bash
         run: node scripts/prepare-windows-vc-redist.mjs
 
-      - name: Install NSIS for the probes
+      - name: Package
         shell: bash
         run: |
-          choco install nsis -y --no-progress >/dev/null
-          echo "/c/Program Files (x86)/NSIS" >> "$GITHUB_PATH"
+          # FIRST, deliberately. Packaging is the authoritative NSIS check: it
+          # compiles both passes with the exact NSIS electron-builder pins and
+          # with warnings escalated to errors. It also downloads that NSIS,
+          # which the probes below then reuse — so they measure the compiler
+          # that ships the product rather than whatever a package manager
+          # happens to install today.
+          npm ci --no-audit --no-fund
+          npm run package:win
+
+      - name: Locate the NSIS electron-builder just used
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache="$(cygpath -u "$LOCALAPPDATA")/electron-builder/Cache/nsis"
+          makensis="$(find "${cache}" -name makensis.exe -type f | head -1)"
+          test -n "${makensis}" || {
+            echo "::error::no makensis.exe under ${cache} — electron-builder's NSIS layout has changed"
+            find "${cache}" -maxdepth 2 -type d || true
+            exit 1
+          }
+          echo "makensis: ${makensis}"
+          "${makensis}" /VERSION || true
+          echo "MAKENSIS=${makensis}" >> "$GITHUB_ENV"
 
       - name: Both NSIS passes must compile with warnings as errors
         shell: bash
@@ -87,7 +108,7 @@ jobs:
           SectionEnd
           NSI
 
-          "/c/Program Files (x86)/NSIS/makensis.exe" -WX -V2 \
+          "$MAKENSIS" -WX -V2 \
             "-DBUILD_RESOURCES_DIR=$(cygpath -w "$PWD/build")" \
             "-DNSH=$(cygpath -w "$PWD/build/windows-installer.nsh")" \
             "-DOUT=$(cygpath -w "$PWD/probe/uninst.exe")" \
@@ -119,7 +140,7 @@ jobs:
           SectionEnd
           NSI
 
-          "/c/Program Files (x86)/NSIS/makensis.exe" -WX -V2 \
+          "$MAKENSIS" -WX -V2 \
             "-DBUILD_RESOURCES_DIR=$(cygpath -w "$PWD/build")" \
             "-DNSH=$(cygpath -w "$PWD/build/windows-installer.nsh")" \
             "-DOUT=$(cygpath -w "$PWD/probe/probe.exe")" \
@@ -163,7 +184,7 @@ jobs:
           grep -q '!define KYBER_VC_MIN_MINOR 99' probe/raised.nsh \
             || { echo "::error::probe 2: the floor substitution did not apply — the define may have been renamed"; exit 1; }
 
-          "/c/Program Files (x86)/NSIS/makensis.exe" -WX -V2 \
+          "$MAKENSIS" -WX -V2 \
             "-DBUILD_RESOURCES_DIR=$(cygpath -w "$PWD/build")" \
             "-DNSH=$(cygpath -w "$PWD/probe/raised.nsh")" \
             "-DOUT=$(cygpath -w "$PWD/probe/probe2.exe")" \
@@ -199,12 +220,6 @@ jobs:
             echo "      The abort happened either way, which is the property under test."
           fi
           echo "probe 2 PASS — no install completed on a machine below the floor (status ${status})"
-
-      - name: Package
-        shell: bash
-        run: |
-          npm ci --no-audit --no-fund
-          npm run package:win
 
       - name: Assert the installer was produced and carries the prerequisite
         shell: bash
