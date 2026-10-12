@@ -1,0 +1,110 @@
+# TEMPORARY — KYB-627 review round 1, blocking finding 2. Delete after it reports.
+#
+# A `release-win` rehearsal saw the built installer crash under /S with
+# -1073741819 (0xC0000005, an access violation). It is unexplained. The reviewer
+# declined to clear it on reasoning alone and named the control that settles it:
+# build an installer from a tree that contains NONE of the KYB-627 change and run
+# it with /S on the same kind of runner.
+#
+# This runs that control, and the branch alongside it, as two matrix legs so each
+# gets its OWN FRESH runner. That matters: a second install on a machine that
+# already has the app takes the upgrade path, which is not the condition the
+# crash was first seen under. Two legs, two clean machines, one variable.
+#
+# Expected reading of the result:
+#   both legs crash      -> pre-existing and environmental, the include is cleared
+#   only the branch      -> attributable to the include, needs root-causing
+#   neither crashes      -> not reproducible here; report that honestly
+#
+# Both legs run on a runner whose MSVC runtime is current, so the branch leg takes
+# the SKIP path — no File extraction, no ExecWait, no MessageBox. That is the
+# same path the crashing rehearsal took, which is what makes the comparison fair.
+name: KYB-627 silent-install control
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [mikasa/kyb-627-vc-redist]
+
+permissions:
+  contents: read
+
+jobs:
+  silent-install:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        tree: [main, branch]
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # The workflow file itself comes from the branch; only the SOURCE under
+      # test changes. Detaching rather than switching keeps this explicit.
+      - name: Select the tree under test
+        if: matrix.tree == 'main'
+        shell: bash
+        run: git checkout --detach origin/main
+
+      - name: Confirm which tree is actually checked out
+        shell: bash
+        run: |
+          git log --oneline -1
+          if [ -f build/windows-installer.nsh ]; then
+            echo "KYB-627 include: PRESENT"
+          else
+            echo "KYB-627 include: ABSENT"
+          fi
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      # Recorded so the result can be read later without guessing which path the
+      # branch leg took. Above 14.44 means the skip path.
+      - name: The runner's own MSVC x64 runtime
+        shell: pwsh
+        run: |
+          foreach ($dll in 'VCRUNTIME140.dll','VCRUNTIME140_1.dll','MSVCP140.dll','MSVCP140_1.dll') {
+            $p = Join-Path $env:WINDIR "System32\$dll"
+            if (Test-Path $p) { "{0,-22} {1}" -f $dll, (Get-Item $p).VersionInfo.FileVersion }
+            else              { "{0,-22} ABSENT" -f $dll }
+          }
+
+      - name: Package
+        run: npm run package:win -- --x64 --publish never
+
+      # The exit code IS the measurement, so this step must not fail on a
+      # non-zero one — it reports and exits 0 deliberately. Without the explicit
+      # `exit 0`, Actions takes a pwsh step's status from its last command and a
+      # crash here would abort the leg before it printed anything useful.
+      - name: Install silently and record the exit code
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist\*.exe | Select-Object -First 1
+          "installer: $($exe.Name), $($exe.Length) bytes"
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '/S' -Wait -PassThru
+          $code = $p.ExitCode
+          "::notice title=KYB-627 /S control (${{ matrix.tree }})::exit code $code"
+          "/S exit code: $code"
+          if ($code -eq -1073741819) { "0xC0000005 ACCESS VIOLATION — reproduced on this leg" }
+          elseif ($code -eq 0)       { "clean silent install on this leg" }
+          $dir = "$env:LOCALAPPDATA\Programs\KYBER Studio"
+          if (Test-Path $dir) {
+            $n = (Get-ChildItem $dir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
+            "install directory present, $n files"
+          } else {
+            "install directory absent"
+          }
+          $log = "$env:TEMP\KYBER-Studio-vc-redist.log"
+          if (Test-Path $log) { "prerequisite log PRESENT — the redistributable ran" }
+          else                { "prerequisite log absent — no redistributable executed" }
+          exit 0
