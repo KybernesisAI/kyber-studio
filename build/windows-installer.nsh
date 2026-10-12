@@ -42,8 +42,8 @@
 ;
 ; customInit pushes and pops all of them.
 
-; Check one runtime DLL's own file version. Clears kyberVcOk if the file is
-; missing or older than the floor above.
+; Check one runtime DLL's own file version. Clears the verdict in $R4 if the
+; file is missing or older than the floor above.
 ;
 ; TRAP 1 — do not read the registry instead. KYB-627 measured
 ; HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64

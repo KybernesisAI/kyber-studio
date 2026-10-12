@@ -32,7 +32,7 @@
  */
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
@@ -121,7 +121,6 @@ if (actual !== manifest.sha256) {
   process.exit(1);
 }
 
-const { rename } = await import("node:fs/promises");
 await rename(partial, destination);
 
 const bytes = await sizeOf(destination);
