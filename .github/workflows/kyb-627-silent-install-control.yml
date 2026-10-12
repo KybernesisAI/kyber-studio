@@ -36,10 +36,11 @@ jobs:
 
     strategy:
       fail-fast: false
-        # Three attempts per tree, each on its own fresh runner. The failure is
-        # INTERMITTENT - the branch crashed on three of four silent installs and
-        # passed once - so a single green run would prove nothing. Six jobs, two
-        # silent installs each, twelve observations.
+      # Three attempts per tree, each on its own fresh runner. The failure is
+      # INTERMITTENT - the branch crashed on three of four silent installs and
+      # passed once - so a single green run would prove nothing. Six jobs, two
+      # silent installs each, twelve observations.
+      matrix:
         tree: [main, branch]
         attempt: [1, 2, 3]
 
