@@ -24,6 +24,9 @@
 ; Microsoft's forward-compatibility rule actually requires. NOT 14.51 — that is
 ; merely the version that happened to be installed when the fix was confirmed,
 ; and demanding it would over-demand by seven minors.
+; THESE TWO DEFINES ARE THE AUTHORITY. build/windows-vc-redist.json carries a
+; minimumToolset field saying the same thing, but it is only ever interpolated
+; into an error message — nothing enforces agreement between them. Bump both.
 !define KYBER_VC_MIN_MAJOR 14
 !define KYBER_VC_MIN_MINOR 44
 
@@ -93,6 +96,14 @@
   ; The app ships x64 only (build.win.target arch: x64), so on a 32-bit Windows
   ; there is nothing this prerequisite could usefully do. Skip rather than
   ; abort: whatever else is wrong, it is not this.
+  ;
+  ; UNMEASURED — ARM64 Windows. ${RunningX64} is IsWow64-based in the NSIS
+  ; electron-builder pins (3.0.4.1), so an ARM64 machine takes the branch below,
+  ; and with redirection disabled $WINDIR\System32 is the ARM64 system
+  ; directory — the check would measure the ARM64 runtime while the x64 app
+  ; running under emulation needs the x64 one. Nobody has tested this. It is
+  ; recorded rather than assumed; the app is x64-only, so such a user is under
+  ; emulation in any case.
   ${If} ${RunningX64}
 
     Push $R0
@@ -126,7 +137,29 @@
       !else
         !error "build/vendor/vc_redist.x64.exe is missing. Run `node scripts/prepare-windows-vc-redist.mjs` (package:win does this for you), then package again. KYB-627."
       !endif
+      ; NSIS documents ExecWait's output variable as UNDEFINED when the process
+      ; cannot be started: it "only sets the error flag if an error occurs; if
+      ; an error occurs the contents of the user variable are undefined"
+      ; (NSIS 4.9.1.5). Declining the elevation prompt is exactly that error —
+      ; this installer is RequestExecutionLevel user and the redistributable
+      ; requires administrator, so a refusal fails the LAUNCH rather than
+      ; returning an exit code.
+      ;
+      ; So $0 is initialised and the error flag is tested. Without both,
+      ; electron-builder's own .onInit can leave the literal string "0" in $0 —
+      ; it does exactly that when an existing per-user install is being upgraded
+      ; — which compares equal to success and would install the app with
+      ; dictation still broken. That is the bug this file exists to fix, so
+      ; reinstating it by trusting an undefined variable would be the worst
+      ; possible failure here.
+      ClearErrors
+      StrCpy $0 ""
       ExecWait '"$PLUGINSDIR\vc_redist.x64.exe" /install /quiet /norestart /log "$TEMP\KYBER-Studio-vc-redist.log"' $0
+      ${If} ${Errors}
+        ; Fall into the branch below, which re-measures the DLLs and aborts if
+        ; they still do not meet the floor. Nothing is assumed about why.
+        StrCpy $0 "not started - the elevation prompt was declined, or the process could not be launched"
+      ${EndIf}
 
       ${If} $0 == 0
         DetailPrint "Microsoft VC++ x64 runtime installed"
@@ -140,15 +173,22 @@
         ; — re-read the DLLs and let the measurement decide.
         !insertmacro KyberCheckVcRuntime
         ${If} $R4 == "1"
-          DetailPrint "Microsoft VC++ x64 runtime already satisfied (installer returned $0)"
+          DetailPrint "Microsoft VC++ x64 runtime already satisfied (prerequisite result: $0)"
         ${Else}
           ${IfNot} ${Silent}
-            MessageBox MB_ICONSTOP|MB_OK "KYBER Studio needs the Microsoft Visual C++ 2015-2022 x64 Redistributable, version ${KYBER_VC_MIN_MAJOR}.${KYBER_VC_MIN_MINOR} or newer, and could not install it.$\n$\nDetected: $R5$\nInstaller exit code: $0$\nLog: $TEMP\KYBER-Studio-vc-redist.log$\n$\nInstall it from Microsoft's 'Latest supported Visual C++ Redistributable downloads' page, then run this installer again.$\n$\nNothing has been installed."
+            MessageBox MB_ICONSTOP|MB_OK "KYBER Studio needs the Microsoft Visual C++ 2015-2022 x64 Redistributable, version ${KYBER_VC_MIN_MAJOR}.${KYBER_VC_MIN_MINOR} or newer, and could not install it.$\n$\nDetected: $R5$\nPrerequisite result: $0$\nLog: $TEMP\KYBER-Studio-vc-redist.log$\n$\nInstall it from Microsoft's 'Latest supported Visual C++ Redistributable downloads' page, then run this installer again.$\n$\nKYBER Studio has not been installed."
           ${EndIf}
-          DetailPrint "Microsoft VC++ x64 runtime could not be installed (exit $0, $R5)"
-          SetErrorLevel 1
-          ; Nothing has been copied yet, so quitting here leaves the machine
-          ; exactly as it was rather than half-installed.
+          DetailPrint "Microsoft VC++ x64 runtime could not be installed (result: $0, $R5)"
+          ; 2, not 1: NSIS's convention is 1 = the user aborted, 2 = the
+          ; script aborted the install. This is the latter, and a genuine
+          ; user cancellation elsewhere already produces 1.
+          SetErrorLevel 2
+          ; No app payload has been copied, so there is no half-installed
+          ; KYBER Studio. Note electron-builder's .onInit runs SetOutPath
+          ; $INSTDIR before customInit and SetOutPath CREATES the directory, so
+          ; an empty install directory is left behind either way — which is why
+          ; the message above says the app was not installed rather than that
+          ; nothing was.
           Abort
         ${EndIf}
       ${EndIf}

@@ -89,7 +89,29 @@ await rm(partial, { force: true });
 
 process.stdout.write(`  fetching ${label} … `);
 
-const response = await fetch(manifest.url);
+/**
+ * Wrapped, because an unwrapped `fetch` rejection reaches the operator as a bare
+ * `TypeError: fetch failed` with no cause and no guidance — and a DNS or
+ * connection failure is by far the commonest way this script fails, so the
+ * careful message below would otherwise be unreachable in exactly the case it
+ * was written for.
+ */
+let response;
+try {
+  response = await fetch(manifest.url);
+} catch (cause) {
+  process.stdout.write("failed\n");
+  process.stderr.write(
+    `\nprepare-windows-vc-redist: could not reach ${manifest.url}\n` +
+      `  ${cause instanceof Error ? cause.message : String(cause)}\n` +
+      `${cause?.cause ? `  cause: ${cause.cause}\n` : ""}` +
+      `  Nothing was downloaded and nothing was embedded in the installer.\n` +
+      `  This is almost always no network or a proxy in the way; the pinned\n` +
+      `  Microsoft URL itself is immutable.\n`,
+  );
+  process.exit(1);
+}
+
 if (!response.ok || !response.body) {
   process.stdout.write("failed\n");
   process.stderr.write(
@@ -103,7 +125,18 @@ if (!response.ok || !response.body) {
   process.exit(1);
 }
 
-await pipeline(Readable.fromWeb(response.body), createWriteStream(partial));
+try {
+  await pipeline(Readable.fromWeb(response.body), createWriteStream(partial));
+} catch (cause) {
+  await rm(partial, { force: true });
+  process.stdout.write("failed\n");
+  process.stderr.write(
+    `\nprepare-windows-vc-redist: the download did not complete.\n` +
+      `  ${cause instanceof Error ? cause.message : String(cause)}\n` +
+      `  The partial file has been deleted, so the next run starts clean.\n`,
+  );
+  process.exit(1);
+}
 
 const actual = await sha256(partial);
 if (actual !== manifest.sha256) {
