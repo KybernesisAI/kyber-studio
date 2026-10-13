@@ -729,70 +729,71 @@ jobs:
           path: dist
 
       - name: What will be published
+        shell: bash
         run: ls -la dist
 
-      # Fail rather than publish a partial set. latest.yml is the file an
-      # updater actually polls, so a release carrying only the installer would
-      # look complete on the releases page and update nobody.
+      # EVERYTHING that can be checked without the release is checked HERE,
+      # before the upload, because a bad feed cannot be withdrawn once it is
+      # published: the step after the upload turns the job red, and a red job
+      # does not un-publish an asset. An updater polling in that window reads
+      # whatever landed.
       #
-      # The blockmap is asserted too, and it is the one that would go unnoticed:
-      # it is NOT named anywhere in the feed, because electron-updater derives
-      # its URL by appending .blockmap to the installer's. Nothing downstream
-      # reports its absence — a differential download just silently becomes a
-      # full one — so the only place it can be caught is here.
-      - name: Assert all three artefacts arrived
+      # What this adds on top of release-win, which already compares the feed's
+      # top-level `path:` against the installer it built: release-win reads ONLY
+      # that legacy key, while electron-updater resolves `files[].url` FIRST.
+      # This step reads both, so a feed whose two copies of the installer name
+      # disagree is caught before anything is published rather than after.
+      #
+      # The blockmap is checked by a name DERIVED from the installer, not by
+      # extension. It is named nowhere in the feed — electron-updater appends
+      # .blockmap to the installer's URL — so an extension test would accept a
+      # stale blockmap from a previous version, and nothing downstream would
+      # report it: a differential download would silently become a full one.
+      #
+      # The expected ASSET list is written to dist/.expected-assets for the
+      # post-upload step, so the feed is parsed exactly once. Two independent
+      # extractions would be free to drift apart, and the one that mattered
+      # would be whichever ran second.
+      - name: Assert the artefacts arrived and the feed names exactly them
+        shell: bash
         run: |
-          ls -1 dist/*.exe >/dev/null
-          ls -1 dist/*.exe.blockmap >/dev/null
-          test -s dist/latest.yml
+          # Exactly one installer: with two, "the installer" is ambiguous and
+          # the blockmap name derived below would pick an arbitrary one. The
+          # trailing `|| true` is load-bearing for the same reason it is in
+          # release-win's count — with no .exe present `ls` fails, and under
+          # `-e -o pipefail` that aborts the assignment before the annotation
+          # below can print, turning "found 0" into a raw ls error.
+          count="$(ls -1 dist/*.exe 2>/dev/null | wc -l | tr -d ' ' || true)"
+          if [ "${count}" != "1" ]; then
+            echo "::error::expected exactly 1 installer in dist/, found ${count}"
+            ls -la dist/ || true
+            exit 1
+          fi
+          installer="$(basename "$(ls -1 dist/*.exe)")"
 
-      # GH_REPO, because this job has no checkout: gh resolves the target
-      # repository from GH_REPO or from the working directory's git remotes and
-      # does NOT read Actions' GITHUB_REPOSITORY, so without it every invocation
-      # dies with "failed to run git: fatal: not a git repository".
-      #
-      # --clobber, so a re-run replaces assets instead of failing on "asset
-      # already exists". Note what re-running does: "re-run failed jobs" re-runs
-      # this job alone, so the bytes come from the original attempt's artefact
-      # and are NOT rebuilt. The safety property still holds, because that
-      # artefact only exists if release-win's assertions passed — but it holds
-      # for that reason, not because anything was rebuilt.
-      - name: Upload the Windows artefacts to the release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          gh release upload "${TAG}" \
-            dist/*.exe \
-            dist/*.exe.blockmap \
-            dist/latest.yml \
-            --clobber
+          test -s dist/latest.yml || {
+            echo "::error::dist/latest.yml is missing or empty"
+            ls -la dist/ || true
+            exit 1
+          }
 
-      # The check whose absence let the KYB-607 name mismatch survive four tags:
-      # compare the FEED's own names against the published asset list, verbatim.
-      # An extension grep would go green over a release whose feed resolved to
-      # nothing, and a check that a bad release passes is worse than no check.
-      #
-      # Both `- url:` and `path:` are read. A Windows latest.yml carries the
-      # installer twice — once in files[].url, which electron-updater reads
-      # first, and once in the legacy top-level path: — so checking either one
-      # alone would leave the other free to name an asset that does not exist.
-      #
-      # tr -d '\r' because this feed was written on a Windows runner. The same
-      # strip is already applied in release-win's own assertion for the same
-      # reason; a trailing CR would make every comparison here fail.
-      - name: Assert every name the feed declares exists on the release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          assets="$(gh release view "${TAG}" --json assets --jq '.assets[].name')"
-          echo "release ${TAG} carries:"
-          printf '%s\n' "${assets}" | sed 's/^/  /'
+          test -s "dist/${installer}.blockmap" || {
+            echo "::error::no blockmap for the installer we are about to publish"
+            echo "  expected: dist/${installer}.blockmap"
+            ls -la dist/ || true
+            exit 1
+          }
 
-          want="$(sed -n 's/^[[:space:]]*-[[:space:]]*url:[[:space:]]*//p; s/^path:[[:space:]]*//p' dist/latest.yml | tr -d '\r' | sort -u)"
+          # tr -d '\r' because this feed was written on a Windows runner; the
+          # same strip is applied in release-win's assertion for the same
+          # reason, and a trailing CR would make every comparison below fail.
+          #
+          # Values are compared as they appear. A quoted or space-padded entry
+          # therefore fails rather than being silently normalised — fail-closed
+          # is the right direction for a check whose job is to distrust this
+          # file.
+          raw="$(sed -n 's/^[[:space:]]*-[[:space:]]*url:[[:space:]]*//p; s/^path:[[:space:]]*//p' dist/latest.yml | tr -d '\r')"
+          want="$(printf '%s\n' "${raw}" | grep '[^[:space:]]' | sort -u || true)"
 
           # An empty `want` would make the loop below vacuous and this step
           # green over a feed that names nothing at all — the precise shape of
@@ -805,23 +806,114 @@ jobs:
             exit 1
           fi
 
+          # A key that is PRESENT but names nothing — `path:` with an empty
+          # value — is a third state, and skipping blank lines in the loop below
+          # would tolerate it: the feed would declare a file and name none, and
+          # the step would go green. Counting declarations against names is what
+          # separates "no keys" from "a key with no value".
+          # Counted from the FILE, not from ${raw}: command substitution strips
+          # trailing newlines, so a blank declaration at the end of the feed
+          # disappears before it can be counted. Measured — `path:` with an
+          # empty value was invisible to a count taken from the variable.
+          declared="$(grep -c '^[[:space:]]*-[[:space:]]*url:\|^path:' dist/latest.yml || true)"
+          named="$(sed -n 's/^[[:space:]]*-[[:space:]]*url:[[:space:]]*//p; s/^path:[[:space:]]*//p' dist/latest.yml | tr -d '\r' | grep -c '[^[:space:]]' || true)"
+          if [ "${declared}" != "${named}" ]; then
+            echo "::error::dist/latest.yml has a url: or path: key with an empty value"
+            echo "  ${declared} declaration(s), ${named} name(s)"
+            cat dist/latest.yml
+            exit 1
+          fi
+
           missing=0
           while IFS= read -r n; do
             [ -n "$n" ] || continue
-            if ! printf '%s\n' "${assets}" | grep -qxF -- "$n"; then
-              echo "::error::the update feed names '$n' but the release has no such asset"
+            if [ ! -f "dist/${n}" ]; then
+              echo "::error::the update feed names '$n' but dist/ has no such file"
               missing=1
             fi
           done <<WANT
           $want
           WANT
 
-          # Neither latest.yml nor the blockmap is named inside latest.yml, so
-          # both are checked separately — the same way publish-linux checks its
-          # .deb, which its feed also never mentions.
-          printf '%s\n' "${assets}" | grep -qxF 'latest.yml' || {
-            echo "::error::no latest.yml asset on the release"; missing=1; }
-          printf '%s\n' "${assets}" | grep -q '\.exe\.blockmap$' || {
-            echo "::error::no .exe.blockmap asset on the release"; missing=1; }
+          [ "$missing" -eq 0 ]
+
+          # The feed's own names, plus the two files it never mentions.
+          {
+            printf '%s\n' "${want}"
+            printf '%s\n' 'latest.yml'
+            printf '%s\n' "${installer}.blockmap"
+          } | sort -u > dist/.expected-assets
+
+          echo "expected on the release:"
+          sed 's/^/  /' dist/.expected-assets
+
+      # GH_REPO, because this job has no checkout: gh resolves the target
+      # repository from GH_REPO or from the working directory's git remotes and
+      # does NOT read Actions' GITHUB_REPOSITORY, so without it every invocation
+      # dies with "failed to run git: fatal: not a git repository".
+      #
+      # --clobber, so a re-run replaces assets instead of failing on "asset
+      # already exists". Note what re-running does: "re-run failed jobs" re-runs
+      # this job alone, so the bytes come from the original attempt's artefact
+      # and are NOT rebuilt. The safety property still holds, because that
+      # artefact only exists if release-win's assertions passed — but it holds
+      # for that reason, not because anything was rebuilt.
+      #
+      # dist/.expected-assets is not uploaded: every path here is an explicit
+      # glob, and none of them matches a dotfile.
+      - name: Upload the Windows artefacts to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release upload "${TAG}" \
+            dist/*.exe \
+            dist/*.exe.blockmap \
+            dist/latest.yml \
+            --clobber
+
+      # The end-to-end confirmation: what the release actually carries, against
+      # the list computed before the upload. This is the check whose absence let
+      # the KYB-607 name mismatch survive four tags.
+      #
+      # It compares against dist/.expected-assets rather than re-reading the
+      # feed, so the names asserted here are the names that were validated
+      # against dist/ above. Its absence is a hard failure: it can only mean the
+      # step that writes it did not run, and a check that quietly passes when
+      # its input is missing is worse than no check.
+      #
+      # Every comparison is `grep -qxF`: whole-line, fixed-string, `--`-guarded.
+      # An extension match would accept a stale blockmap or a differently
+      # versioned installer, and a substring match would accept a name that
+      # merely contains the one the feed declares.
+      - name: Assert every expected asset is on the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+
+          test -s dist/.expected-assets || {
+            echo "::error::dist/.expected-assets is missing or empty"
+            echo "  it is written by the pre-upload assertion step; if that step"
+            echo "  did not run, nothing has validated what was just published."
+            exit 1
+          }
+
+          assets="$(gh release view "${TAG}" --json assets --jq '.assets[].name')"
+          echo "release ${TAG} carries:"
+          printf '%s\n' "${assets}" | sed 's/^/  /'
+
+          missing=0
+          while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            if ! printf '%s\n' "${assets}" | grep -qxF -- "$n"; then
+              echo "::error::expected asset '$n' is not on the release"
+              missing=1
+            fi
+          done < dist/.expected-assets
 
           [ "$missing" -eq 0 ]
