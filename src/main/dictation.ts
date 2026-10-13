@@ -71,6 +71,76 @@ export interface TranscriptionResult {
 }
 
 /**
+ * What to tell a Windows user when the native speech binding will not load.
+ *
+ * MEASURED in KYB-627: the shipped `onnxruntime.dll` and
+ * `onnxruntime_binding.node` are linked with MSVC toolset 14.44 and load-time
+ * import `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll`, `MSVCP140.dll` and
+ * `MSVCP140_1.dll`. The MSVC runtime is forward compatible but not backward, so
+ * an older runtime fails at INITIALISATION rather than at load.
+ *
+ * The installer closes the common case (KYB-627) but not every case: an imaged
+ * machine, a copied `win-unpacked` folder, a runtime rolled back after
+ * installation, or a future `onnxruntime-node` bump that raises the floor all
+ * reach here with the prerequisite having done nothing wrong.
+ */
+const VC_REDIST_GUIDANCE =
+  "Dictation needs the Microsoft Visual C++ 2015-2022 x64 Redistributable " +
+  '(version 14.44 or newer). Install it from Microsoft\'s "Latest supported ' +
+  'Visual C++ Redistributable downloads" page and try again.';
+
+/**
+ * Did this failure come from the native binding failing to load?
+ *
+ * @remarks
+ * **The detection deliberately does not read the message text.** Node reports
+ * this as the Win32 string for `ERROR_DLL_INIT_FAILED` (1114), which is
+ * LOCALISED — matching "initialization routine failed" would work on an English
+ * machine and silently stop working on a German one, which is the worst
+ * possible failure mode for a diagnostic.
+ *
+ * So the primary signal is `error.code === "ERR_DLOPEN_FAILED"`, which node
+ * sets for every native-module load failure on every platform and in every
+ * locale. MEASURED that it survives the route this actually takes: the dynamic
+ * `import("@huggingface/transformers")` in `load()` reaches `onnxruntime-node`
+ * through a static ESM import, which `require`s the `.node` file — and the
+ * error arrives with `code` intact and no `cause` wrapper.
+ *
+ * The binding's own filename is the fallback, for the day a library does wrap
+ * it. That is not localised either. The `cause` chain is walked, with a hop
+ * limit so a cyclic chain cannot hang the handler.
+ *
+ * Deliberately NOT distinguished: a MISSING DLL (Win32 126) from a FAILED
+ * INITIALISATION (1114). Telling those apart means parsing the localised text,
+ * and the remedy is the same sentence either way.
+ */
+function isNativeBindingFailure(error: unknown): boolean {
+  let link: unknown = error;
+  for (let hops = 0; link instanceof Error && hops < 8; hops += 1) {
+    if ((link as { code?: unknown }).code === "ERR_DLOPEN_FAILED") return true;
+    if (/onnxruntime_binding\.node/i.test(link.message)) return true;
+    link = (link as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * The message a person should see for a failed transcription.
+ *
+ * Exported for the tests, which is the only way to demonstrate the
+ * discrimination the ticket asks for rather than assert it.
+ *
+ * @param platform - Defaults to the running platform; a parameter so the
+ * non-Windows behaviour can be measured on a Linux CI runner.
+ */
+export function dictationErrorMessage(error: unknown, platform: string = process.platform): string {
+  // Windows only. On macOS and Linux a native load failure means something
+  // else entirely, and the redistributable does not exist to install.
+  if (platform === "win32" && isNativeBindingFailure(error)) return VC_REDIST_GUIDANCE;
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
  * Turn recorded audio into text.
  *
  * @param samples - Mono PCM at 16 kHz, which is what the model expects. The
@@ -99,7 +169,12 @@ export async function transcribe(samples: Float32Array): Promise<TranscriptionRe
     const cleaned = text.replace(/\[[A-Z_ ]+\]/g, "").trim();
     return cleaned ? { text: cleaned } : { error: "Nothing was said." };
   } catch (error) {
-    return { error: (error as Error).message };
+    // Logged in full, deliberately: the raw text names the binding and carries
+    // the absolute path, which is what somebody debugging this needs and
+    // exactly what should not reach the UI. `error` rather than `warn` — this
+    // one ends with dictation not working at all.
+    console.error("[dictation] transcription failed:", error);
+    return { error: dictationErrorMessage(error) };
   }
 }
 
