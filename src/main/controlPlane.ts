@@ -1146,8 +1146,13 @@ export async function sendTurn(input: {
       // A 401 here is not a conversation to have with the user. Refresh and try
       // once more: sessions are meant to renew silently, and "sign out and back
       // in" is not an instruction any product should give.
-      if (error instanceof ClientError && error.status === 401) {
-        console.log("[auth] agent refused the token; refreshing and retrying once");
+      //
+      // A 403 gets the same treatment. The bundle lists the agents granted when
+      // it was minted, and it lives an hour: an agent built and granted inside
+      // that hour is refused until the next refresh, while a phone that signed
+      // in later works. A refresh re-mints the bundle from live grants.
+      if (error instanceof ClientError && (error.status === 401 || error.status === 403)) {
+        console.log(`[auth] agent refused the credential (${error.status}); refreshing and retrying once`);
         const renewed = await forceRefresh();
         if (!renewed) throw error;
         response = await dispatch();
