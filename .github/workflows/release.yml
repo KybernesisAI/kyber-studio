@@ -808,13 +808,15 @@ jobs:
 
           # A key that is PRESENT but names nothing — `path:` with an empty
           # value — is a third state, and skipping blank lines in the loop below
-          # would tolerate it: the feed would declare a file and name none, and
-          # the step would go green. Counting declarations against names is what
+          # would tolerate it: the feed would declare a file, name none, and the
+          # step would go green. Counting declarations against names is what
           # separates "no keys" from "a key with no value".
-          # Counted from the FILE, not from ${raw}: command substitution strips
-          # trailing newlines, so a blank declaration at the end of the feed
-          # disappears before it can be counted. Measured — `path:` with an
-          # empty value was invisible to a count taken from the variable.
+          #
+          # Both counts come from the FILE rather than from ${raw}, and that is
+          # measured rather than stylistic: command substitution strips trailing
+          # newlines, so a blank declaration at the END of the feed disappears
+          # before it can be counted. Taken from the variable, an empty trailing
+          # `path:` passed.
           declared="$(grep -c '^[[:space:]]*-[[:space:]]*url:\|^path:' dist/latest.yml || true)"
           named="$(sed -n 's/^[[:space:]]*-[[:space:]]*url:[[:space:]]*//p; s/^path:[[:space:]]*//p' dist/latest.yml | tr -d '\r' | grep -c '[^[:space:]]' || true)"
           if [ "${declared}" != "${named}" ]; then
