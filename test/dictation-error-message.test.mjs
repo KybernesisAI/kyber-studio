@@ -26,8 +26,22 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "kyb-dictation-"));
 
-// No models under this root, which is what makes `dictationAvailable()` false
-// for the discrimination test at the bottom.
+// BOTH model locations have to be aimed at an empty directory, not merely left
+// alone, which is what makes `dictationAvailable()` false for the
+// discrimination test at the bottom.
+//
+// `modelRoot()` checks `process.resourcesPath` before falling back to
+// `app.getAppPath()`, and outside Electron that property is undefined — so the
+// `?? ""` in it yields the RELATIVE path `resources/models`, resolved against
+// whatever directory the suite was run from. In this checkout that is where
+// `npm run fetch:speech` puts a real model, so the pre-check passed,
+// `transcribe()` loaded the real pipeline, and the test at the bottom failed
+// with a transcription of silence. It passed here only because this sandbox had
+// never fetched the model. Measured 13 Oct 2026: with
+// `resources/models/Xenova/whisper-base.en` present it fails; with
+// `process.resourcesPath` set below it passes either way.
+process.resourcesPath = dir;
+
 mock.module("electron", {
   exports: {
     app: {
