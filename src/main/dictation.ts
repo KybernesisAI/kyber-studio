@@ -61,7 +61,16 @@ async function load(): Promise<unknown> {
       dtype: "q8",
     });
     return transcriber;
-  })();
+  })().catch((error: unknown) => {
+    // A FAILED load must not be cached. `loading` is checked before anything
+    // else, so a retained rejected promise would hand every later attempt the
+    // first failure for the lifetime of the process — which would make the
+    // guidance below a lie: the user installs the redistributable, presses the
+    // button again, and gets the identical error without the new runtime ever
+    // being tried. Measured while testing KYB-631, which is how it was found.
+    loading = null;
+    throw error;
+  });
   return loading;
 }
 
@@ -87,7 +96,8 @@ export interface TranscriptionResult {
 const VC_REDIST_GUIDANCE =
   "Dictation needs the Microsoft Visual C++ 2015-2022 x64 Redistributable " +
   '(version 14.44 or newer). Install it from Microsoft\'s "Latest supported ' +
-  'Visual C++ Redistributable downloads" page and try again.';
+  'Visual C++ Redistributable downloads" page, then restart KYBER Studio and ' +
+  "try again.";
 
 /**
  * Did this failure come from the native binding failing to load?
@@ -99,16 +109,30 @@ const VC_REDIST_GUIDANCE =
  * machine and silently stop working on a German one, which is the worst
  * possible failure mode for a diagnostic.
  *
- * So the primary signal is `error.code === "ERR_DLOPEN_FAILED"`, which node
- * sets for every native-module load failure on every platform and in every
- * locale. MEASURED that it survives the route this actually takes: the dynamic
+ * So the primary signal is `error.code === "ERR_DLOPEN_FAILED"`. MEASURED on
+ * Linux, for two LOAD failures — a missing file and a file that is not a shared
+ * object — and node sets it from the one `uv_dlopen` path that also produces
+ * the Win32 initialisation failure, so covering 1114 is REASONED from that
+ * shared path rather than measured. Also MEASURED that it survives the dynamic
  * `import("@huggingface/transformers")` in `load()` reaches `onnxruntime-node`
  * through a static ESM import, which `require`s the `.node` file — and the
  * error arrives with `code` intact and no `cause` wrapper.
  *
  * The binding's own filename is the fallback, for the day a library does wrap
- * it. That is not localised either. The `cause` chain is walked, with a hop
- * limit so a cyclic chain cannot hang the handler.
+ * it. That is not localised either, and it is deliberately looser than the
+ * code: it also fires for a MODULE_NOT_FOUND naming the binding (a broken
+ * build) or an EACCES on it (anti-virus quarantine), neither of which the
+ * redistributable fixes. Accepted rather than narrowed — the cost is one
+ * unhelpful message on a path that has no helpful one today.
+ *
+ * NOT caught, and known: `sharp` is statically imported in the same module
+ * graph as the pipeline and wraps its own load failure in a bare `Error` with
+ * no `code` and no `cause`, so neither signal sees it. Pinned by a test rather
+ * than fixed, because answering a sharp failure with "install the MSVC
+ * runtime" would send somebody after the wrong thing.
+ *
+ * The `cause` chain is walked, with a hop limit so a cyclic chain cannot hang
+ * the handler.
  *
  * Deliberately NOT distinguished: a MISSING DLL (Win32 126) from a FAILED
  * INITIALISATION (1114). Telling those apart means parsing the localised text,

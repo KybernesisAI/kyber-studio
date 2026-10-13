@@ -45,7 +45,15 @@ const WIN32_DLL_INIT =
   "\\\\?\\C:\\Users\\pholder\\AppData\\Local\\Programs\\KYBER Studio\\resources\\" +
   "app.asar.unpacked\\node_modules\\onnxruntime-node\\bin\\napi-v6\\win32\\x64\\onnxruntime_binding.node";
 
-/** The same failure on a German machine. The code is identical; the prose is not. */
+/**
+ * The same failure on a German machine. The code is identical; the prose is not.
+ *
+ * **The path deliberately does NOT end in `onnxruntime_binding.node`.** That is
+ * what makes this fixture sensitive: with the real filename present the
+ * filename fallback would recognise it regardless of the prose, and the
+ * English-prose mutation this fixture exists to catch would survive. Do not
+ * "correct" the path to match the English one — it disarms the detector.
+ */
 const WIN32_DLL_INIT_DE =
   "Eine Initialisierungsroutine der Dynamic Link Library (DLL) ist fehlgeschlagen. " +
   "\\\\?\\C:\\Users\\pholder\\AppData\\Local\\Programs\\KYBER Studio\\resources\\app.asar.unpacked\\x64\\binding.node";
