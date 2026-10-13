@@ -1,9 +1,15 @@
 name: release
 
 # Builds, signs, notarizes and publishes the macOS app, and publishes the Linux
-# AppImage and .deb, to a GitHub Release on this repo. electron-updater in the
-# shipped app polls that release's latest-mac.yml on macOS and latest-linux.yml
-# on Linux, so apps on a lower version show the in-app update control.
+# AppImage and .deb and the Windows NSIS installer, to a GitHub Release on this
+# repo. electron-updater in the shipped app polls that release's latest-mac.yml
+# on macOS, latest-linux.yml on Linux and latest.yml on Windows, so apps on a
+# lower version show the in-app update control.
+#
+# On Windows that control cannot work yet. electron-updater verifies a
+# downloaded installer's signature against the running application's, and the
+# artefacts this workflow produces are unsigned — so the Windows lane publishes
+# a CORRECT feed, not a working update path.
 #
 # Linux publishing was turned on in KYB-607, the last PR of the KYB-500 epic.
 # The Linux lane still PACKAGES with `--publish never` and still asserts before
@@ -353,10 +359,10 @@ jobs:
       # (KYBER-Studio-${version}-win-${arch}.${ext}) precisely so the three-way
       # filename split measured in KYB-607 cannot arise: NSIS's default name
       # interpolates ${productName}, and ours is "KYBER Studio". That makes this
-      # a regression gate on the artifactName, not decoration — PR-5 publishes
-      # these bytes under the names the feed declares, and a space here is what
-      # made electron-builder, the feed and `gh release upload` disagree three
-      # ways last time.
+      # a regression gate on the artifactName, not decoration — publish-win at
+      # the bottom of this file publishes these bytes under the names the feed
+      # declares, and a space here is what made electron-builder, the feed and
+      # `gh release upload` disagree three ways last time.
       - name: Assert exactly one installer, named as build.win.artifactName says
         shell: bash
         run: |
@@ -417,8 +423,8 @@ jobs:
           awk -v b="${bytes}" -v f="${name}" \
             'BEGIN { printf "%s: %d bytes = %.1f MB = %.1f MiB\n", f, b, b/1000000, b/1048576 }'
 
-      # latest.yml is asserted HERE rather than in PR-5, because this is the job
-      # that either produces it or does not. Windows writes an unsuffixed
+      # latest.yml is asserted HERE rather than in publish-win, because this is
+      # the job that either produces it or does not. Windows writes an unsuffixed
       # latest.yml — getUpdateInfoFileName() applies an OS suffix only for
       # non-Windows platforms — so it does not collide with latest-linux.yml or
       # latest-mac.yml. It is the file an updater actually polls, and without it
@@ -657,5 +663,259 @@ jobs:
             echo "::error::no .deb asset on the release"; missing=1; }
           printf '%s\n' "${assets}" | grep -qxF 'latest-linux.yml' || {
             echo "::error::no latest-linux.yml asset on the release"; missing=1; }
+
+          [ "$missing" -eq 0 ]
+
+  # KYB-618 — the Windows upload to the release.
+  #
+  # Deliberately the same shape as publish-linux above, down to the needs edge
+  # and the feed assertion, rather than a second way of doing the same thing.
+  # Every reason that makes it a separate job there holds identically here:
+  #
+  #   - The RACE. release-mac's `--publish always` is what CREATES the release,
+  #     so a `gh release upload` inside release-win would find nothing to upload
+  #     to on any tag where the Windows lane finishes first. `needs` is a
+  #     happens-before edge; a retry loop would only lose the same race slower.
+  #   - `needs: release-win` is what makes "a failing assertion publishes
+  #     nothing" structural rather than a matter of step order. If the speech
+  #     model assert, the installer-name assert, the feed assert or
+  #     verify-package.mjs fails, that job fails and this one never starts.
+  #   - The bytes published are the bytes that were verified: they come down
+  #     from release-win's own artefact. Re-invoking electron-builder here would
+  #     rebuild first and publish objects nothing had checked.
+  #
+  # If the mac lane fails there is no release and Windows publishes nothing,
+  # exactly as Linux accepts today. The real decoupling is KYB-536's restructure
+  # — one publish job gated on every lane's assertions — and this job is
+  # deliberately NOT a down payment on it, because pre-empting it here would
+  # mean editing the Linux lane inside a Windows change.
+  #
+  # What this job does NOT claim: that Windows auto-update works. The feed it
+  # publishes is correct; the installer it names is unsigned, and
+  # electron-updater checks a downloaded installer's signature against the
+  # running application's before applying it.
+  publish-win:
+    needs: [release-win, release-mac]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Publish only from a pushed tag, and the event check is load-bearing —
+    # startsWith alone is NOT enough. Under workflow_dispatch github.ref is the
+    # ref the run was dispatched against, which may be a tag, while this
+    # workflow's separate `ref` input is what the lanes actually check out. So
+    # without the event check a dispatch against tag vX.Y.Z carrying
+    # `ref: some-branch` would build branch bytes, assert them, and then clobber
+    # that tag's assets with code the tag never contained.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      # v8, for the reason publish-linux pins it: v6 runs on node20 and treats a
+      # digest mismatch as a log warning, while v8 runs on node24 and defaults
+      # `digest-mismatch: error`. That default is what actually enforces this
+      # job's central claim — that these are the bytes release-win verified.
+      #
+      # By exact name rather than a pattern, deliberately, and the reason is
+      # sharper on Windows than on Linux. getArchPrefixForUpdateFile() returns
+      # an empty string for every platform except Linux, so an explicit ${arch}
+      # in build.win.artifactName keeps two INSTALLERS apart but does nothing
+      # for the feed: two Windows arches both want to be called latest.yml.
+      # Adding arm64 to release-win's matrix therefore needs a decision here
+      # first. Downloading one known name publishes one known arch instead of
+      # letting two feeds land on one filename.
+      - name: Download the artefacts release-win verified
+        uses: actions/download-artifact@v8
+        with:
+          name: kyber-studio-win-x64
+          path: dist
+
+      - name: What will be published
+        shell: bash
+        run: ls -la dist
+
+      # EVERYTHING that can be checked without the release is checked HERE,
+      # before the upload, because a bad feed cannot be withdrawn once it is
+      # published: the step after the upload turns the job red, and a red job
+      # does not un-publish an asset. An updater polling in that window reads
+      # whatever landed.
+      #
+      # What this adds on top of release-win, which already compares the feed's
+      # top-level `path:` against the installer it built: release-win reads ONLY
+      # that legacy key, while electron-updater resolves `files[].url` FIRST.
+      # This step reads both, so a feed whose two copies of the installer name
+      # disagree is caught before anything is published rather than after.
+      #
+      # The blockmap is checked by a name DERIVED from the installer, not by
+      # extension. It is named nowhere in the feed — electron-updater appends
+      # .blockmap to the installer's URL — so an extension test would accept a
+      # stale blockmap from a previous version, and nothing downstream would
+      # report it: a differential download would silently become a full one.
+      #
+      # The expected ASSET list is written to dist/.expected-assets for the
+      # post-upload step, so the feed is parsed exactly once. Two independent
+      # extractions would be free to drift apart, and the one that mattered
+      # would be whichever ran second.
+      - name: Assert the artefacts arrived and the feed names exactly them
+        shell: bash
+        run: |
+          # Exactly one installer: with two, "the installer" is ambiguous and
+          # the blockmap name derived below would pick an arbitrary one. The
+          # trailing `|| true` is load-bearing for the same reason it is in
+          # release-win's count — with no .exe present `ls` fails, and under
+          # `-e -o pipefail` that aborts the assignment before the annotation
+          # below can print, turning "found 0" into a raw ls error.
+          count="$(ls -1 dist/*.exe 2>/dev/null | wc -l | tr -d ' ' || true)"
+          if [ "${count}" != "1" ]; then
+            echo "::error::expected exactly 1 installer in dist/, found ${count}"
+            ls -la dist/ || true
+            exit 1
+          fi
+          installer="$(basename "$(ls -1 dist/*.exe)")"
+
+          test -s dist/latest.yml || {
+            echo "::error::dist/latest.yml is missing or empty"
+            ls -la dist/ || true
+            exit 1
+          }
+
+          test -s "dist/${installer}.blockmap" || {
+            echo "::error::no blockmap for the installer we are about to publish"
+            echo "  expected: dist/${installer}.blockmap"
+            ls -la dist/ || true
+            exit 1
+          }
+
+          # tr -d '\r' because this feed was written on a Windows runner; the
+          # same strip is applied in release-win's assertion for the same
+          # reason, and a trailing CR would make every comparison below fail.
+          #
+          # Values are compared as they appear. A quoted or space-padded entry
+          # therefore fails rather than being silently normalised — fail-closed
+          # is the right direction for a check whose job is to distrust this
+          # file.
+          raw="$(sed -n 's/^[[:space:]]*-[[:space:]]*url:[[:space:]]*//p; s/^path:[[:space:]]*//p' dist/latest.yml | tr -d '\r')"
+          want="$(printf '%s\n' "${raw}" | grep '[^[:space:]]' | sort -u || true)"
+
+          # An empty `want` would make the loop below vacuous and this step
+          # green over a feed that names nothing at all — the precise shape of
+          # failure this check exists to catch. publish-linux does not guard
+          # this; it should, and that is noted on KYB-618 rather than fixed here
+          # in a Windows change.
+          if [ -z "${want}" ]; then
+            echo "::error::dist/latest.yml names no files at all"
+            cat dist/latest.yml
+            exit 1
+          fi
+
+          # A key that is PRESENT but names nothing — `path:` with an empty
+          # value — is a third state, and skipping blank lines in the loop below
+          # would tolerate it: the feed would declare a file, name none, and the
+          # step would go green. Counting declarations against names is what
+          # separates "no keys" from "a key with no value".
+          #
+          # Both counts come from the FILE rather than from ${raw}, and that is
+          # measured rather than stylistic: command substitution strips trailing
+          # newlines, so a blank declaration at the END of the feed disappears
+          # before it can be counted. Taken from the variable, an empty trailing
+          # `path:` passed.
+          declared="$(grep -c '^[[:space:]]*-[[:space:]]*url:\|^path:' dist/latest.yml || true)"
+          named="$(sed -n 's/^[[:space:]]*-[[:space:]]*url:[[:space:]]*//p; s/^path:[[:space:]]*//p' dist/latest.yml | tr -d '\r' | grep -c '[^[:space:]]' || true)"
+          if [ "${declared}" != "${named}" ]; then
+            echo "::error::dist/latest.yml has a url: or path: key with an empty value"
+            echo "  ${declared} declaration(s), ${named} name(s)"
+            cat dist/latest.yml
+            exit 1
+          fi
+
+          missing=0
+          while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            if [ ! -f "dist/${n}" ]; then
+              echo "::error::the update feed names '$n' but dist/ has no such file"
+              missing=1
+            fi
+          done <<WANT
+          $want
+          WANT
+
+          [ "$missing" -eq 0 ]
+
+          # The feed's own names, plus the two files it never mentions.
+          {
+            printf '%s\n' "${want}"
+            printf '%s\n' 'latest.yml'
+            printf '%s\n' "${installer}.blockmap"
+          } | sort -u > dist/.expected-assets
+
+          echo "expected on the release:"
+          sed 's/^/  /' dist/.expected-assets
+
+      # GH_REPO, because this job has no checkout: gh resolves the target
+      # repository from GH_REPO or from the working directory's git remotes and
+      # does NOT read Actions' GITHUB_REPOSITORY, so without it every invocation
+      # dies with "failed to run git: fatal: not a git repository".
+      #
+      # --clobber, so a re-run replaces assets instead of failing on "asset
+      # already exists". Note what re-running does: "re-run failed jobs" re-runs
+      # this job alone, so the bytes come from the original attempt's artefact
+      # and are NOT rebuilt. The safety property still holds, because that
+      # artefact only exists if release-win's assertions passed — but it holds
+      # for that reason, not because anything was rebuilt.
+      #
+      # dist/.expected-assets is not uploaded: every path here is an explicit
+      # glob, and none of them matches a dotfile.
+      - name: Upload the Windows artefacts to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release upload "${TAG}" \
+            dist/*.exe \
+            dist/*.exe.blockmap \
+            dist/latest.yml \
+            --clobber
+
+      # The end-to-end confirmation: what the release actually carries, against
+      # the list computed before the upload. This is the check whose absence let
+      # the KYB-607 name mismatch survive four tags.
+      #
+      # It compares against dist/.expected-assets rather than re-reading the
+      # feed, so the names asserted here are the names that were validated
+      # against dist/ above. Its absence is a hard failure: it can only mean the
+      # step that writes it did not run, and a check that quietly passes when
+      # its input is missing is worse than no check.
+      #
+      # Every comparison is `grep -qxF`: whole-line, fixed-string, `--`-guarded.
+      # An extension match would accept a stale blockmap or a differently
+      # versioned installer, and a substring match would accept a name that
+      # merely contains the one the feed declares.
+      - name: Assert every expected asset is on the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+
+          test -s dist/.expected-assets || {
+            echo "::error::dist/.expected-assets is missing or empty"
+            echo "  it is written by the pre-upload assertion step; if that step"
+            echo "  did not run, nothing has validated what was just published."
+            exit 1
+          }
+
+          assets="$(gh release view "${TAG}" --json assets --jq '.assets[].name')"
+          echo "release ${TAG} carries:"
+          printf '%s\n' "${assets}" | sed 's/^/  /'
+
+          missing=0
+          while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            if ! printf '%s\n' "${assets}" | grep -qxF -- "$n"; then
+              echo "::error::expected asset '$n' is not on the release"
+              missing=1
+            fi
+          done < dist/.expected-assets
 
           [ "$missing" -eq 0 ]
