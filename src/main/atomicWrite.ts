@@ -121,7 +121,7 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  * `Authenticated Users`, no `Everyone`. From that ACL it follows that a second
  * ordinary account on the machine should be able neither to open the file nor
  * to list the directory. That is inferred, not observed: KYB-616's two-account
- * UAT is the check that confirms it.
+ * UAT is the check that settles it.
  *
  * Relying on that was a decision rather than a default, and it has a limit
  * that must be stated alongside the reassurance: **a local administrator can
@@ -140,8 +140,9 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  * on the Windows CI arm and is shown failing against a directory that grants
  * read to each of the three broad groups. It observes only the profile of
  * the machine running it — a CI runner, or a developer's own — so it guards
- * against the reliance being broken by our code, not against a permissive
- * `%APPDATA%` on a user's machine.
+ * against `writeAtomic` breaking the inheritance, not against a permissive
+ * `%APPDATA%` on a user's machine, nor against our code moving `userData`
+ * out of `%APPDATA%` altogether.
  */
 export function writeAtomic(target: string, data: string, options: { mode?: number } = {}): void {
   const tmp = `${target}.tmp`;
