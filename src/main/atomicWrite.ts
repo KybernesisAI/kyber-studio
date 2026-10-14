@@ -119,9 +119,10 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  * every file in it carry exactly three entries, all inherited — the user,
  * `NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators`. No `Users`, no
  * `Authenticated Users`, no `Everyone`. Observed on the same machine on 14
- * October 2026, KYB-616's two-account check: a second local account, unelevated,
- * was refused reading the container from both PowerShell and `cmd`, and was
- * refused listing the first user's `%APPDATA%` and profile directories.
+ * October 2026, KYB-616's two-account check: a second, non-administrator local
+ * account was refused reading the container from both PowerShell and `cmd`,
+ * and was refused listing the first user's `%APPDATA%` and profile
+ * directories.
  *
  * Relying on that was a decision rather than a default, and it has a limit
  * that must be stated alongside the reassurance: **a local administrator can
