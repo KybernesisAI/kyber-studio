@@ -138,9 +138,10 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  *
  * The reliance is pinned by `test/windows-userdata-acl.test.mjs`, which runs
  * on the Windows CI arm and is shown failing against a directory that grants
- * read to each of the three broad groups. It observes only the profile of the machine running it — a
- * CI runner, or a developer's own — so it guards against the reliance being
- * broken by our code, not against a permissive `%APPDATA%` on a user's machine.
+ * read to each of the three broad groups. It observes only the profile of
+ * the machine running it — a CI runner, or a developer's own — so it guards
+ * against the reliance being broken by our code, not against a permissive
+ * `%APPDATA%` on a user's machine.
  */
 export function writeAtomic(target: string, data: string, options: { mode?: number } = {}): void {
   const tmp = `${target}.tmp`;
