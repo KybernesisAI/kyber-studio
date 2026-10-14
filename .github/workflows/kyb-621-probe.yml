@@ -1,0 +1,22 @@
+name: kyb-621 probe (temporary, delete before PR)
+
+on:
+  push:
+    branches: [mikasa/kyb-621-rename-open-handles]
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+      - name: Context
+        shell: pwsh
+        run: |
+          [System.Environment]::OSVersion.VersionString
+          node --version
+          try { Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled, OnAccessProtectionEnabled | Format-List } catch { "Get-MpComputerStatus unavailable: $_" }
+      - name: Probe
+        run: node --experimental-strip-types .github/kyb-621/probe.mjs
