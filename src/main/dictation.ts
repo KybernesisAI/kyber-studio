@@ -64,10 +64,22 @@ async function load(): Promise<unknown> {
   })().catch((error: unknown) => {
     // A FAILED load must not be cached. `loading` is checked before anything
     // else, so a retained rejected promise would hand every later attempt the
-    // first failure for the lifetime of the process — which would make the
-    // guidance below a lie: the user installs the redistributable, presses the
-    // button again, and gets the identical error without the new runtime ever
-    // being tried. Measured while testing KYB-631, which is how it was found.
+    // first failure for the lifetime of the process.
+    //
+    // Be precise about what this buys, because the obvious claim is wrong.
+    // MEASURED on Windows, 14 Oct 2026: it does NOT make the redistributable
+    // case retryable in place. That failure happens while the module graph
+    // above is evaluating, and an ESM module that throws during evaluation
+    // stays errored in the registry for the life of the process, so the import
+    // on line 53 returns the same failure however often it is re-entered. That
+    // is why the guidance tells the user to restart, and why that sentence is
+    // load-bearing.
+    //
+    // What it does buy: every failure raised AFTER evaluation — the model
+    // files missing or locked, transient I/O, a pipeline that threw once — is
+    // genuinely retryable, and used to poison dictation for the whole session.
+    // Re-entry is safe: the two `env` assignments above are the only setup and
+    // are idempotent.
     loading = null;
     throw error;
   });
