@@ -44,15 +44,15 @@ async function attempt(label, makeHolder, { holdMs = 3000, retryUntil = 0, mode 
       try { writeAtomic(target, "NEW", { mode }); okAfterMs = Date.now() - t0; break; } catch {}
     }
   }
-  const content = readFileSync(target, "utf8");
   const tmpLeft = existsSync(`${target}.tmp`);
   await exited(child);
+  const content = readFileSync(target, "utf8"); // after the holder exits: FileShare.None blocks even reads
   console.log(JSON.stringify({ case: label, holdMs, firstAttempt: first, tries, succeededAfterMs: okAfterMs, targetNow: content, tmpLeftBehind: tmpLeft }));
 }
 
 // FileShare flags: None=0 Read=1 Write=2 Delete=4
 await attempt("node fs.openSync(target,'r') [libuv shares R|W|D]", (t, h) => nodeHolder(t, h));
-for (const [name, share] of [["Read", 1], ["ReadWrite", 3], ["Read|Delete", 5], ["ReadWrite|Delete", 7], ["None", 0]]) {
+for (const [name, share] of [["ReadWrite|Delete", 7], ["None", 0]]) {
   await attempt(`.NET File.Open Read, FileShare.${name}`, (t, h) => psHolder(t, share, h));
 }
 // Transient hold, as an indexer or scanner would: does a bounded retry recover, and how fast?
