@@ -110,15 +110,18 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  * ordinary writable file. None of them restricts who can read it.
  *
  * **What keeps a secrets container owner-only there is the directory's ACL,
- * inherited.** Every file this function publishes is a new file (the rename
- * replaces the old one rather than writing into it), and a new file takes its
+ * inherited.** Every file this function publishes is a new file when a mode is
+ * passed, as every secrets caller does: the stale temp is removed first and the
+ * rename replaces the target rather than writing into it. A new file takes its
  * ACL from the directory it is created in. The containers live in Electron's
  * `userData`, under `%APPDATA%`, which belongs to the user's profile. Measured
  * on Windows 11 on 13 October 2026, as an unelevated user: the directory and
  * every file in it carry exactly three entries, all inherited — the user,
  * `NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators`. No `Users`, no
- * `Authenticated Users`, no `Everyone`. A second ordinary account on the
- * machine cannot open the file, nor list the directory.
+ * `Authenticated Users`, no `Everyone`. From that ACL it follows that a second
+ * ordinary account on the machine should be able neither to open the file nor
+ * to list the directory. That is inferred, not observed: KYB-616's two-account
+ * UAT is the check that confirms it.
  *
  * Relying on that was a decision rather than a default, and it has a limit
  * that must be stated alongside the reassurance: **a local administrator can
@@ -135,8 +138,9 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  *
  * The reliance is pinned by `test/windows-userdata-acl.test.mjs`, which runs
  * on the Windows CI arm and is shown failing against a directory that grants
- * `Everyone` read. If a profile is ever found with a permissive `%APPDATA%`,
- * that test is where it should show up first.
+ * `Everyone` read. It observes only the profile of the machine running it — a
+ * CI runner, or a developer's own — so it guards against the reliance being
+ * broken by our code, not against a permissive `%APPDATA%` on a user's machine.
  */
 export function writeAtomic(target: string, data: string, options: { mode?: number } = {}): void {
   const tmp = `${target}.tmp`;

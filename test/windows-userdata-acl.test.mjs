@@ -54,8 +54,10 @@ const POWERSHELL = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "Wi
  * empty record, and the main test then PASSED against an ACL it had never read.
  * The negative control below caught it. So:
  *
- * - no cmdlet at all: `GetAccessControl()` is a .NET method on the file object
- *   and needs no module, so there is no module load to fail;
+ * - no Security-module cmdlet: `GetAccessControl()` is a .NET method on the
+ *   file object, so `Get-Acl`'s module is never needed. `Get-Item` and
+ *   `ConvertTo-Json` still autoload their own modules, which is why the next
+ *   three bullets matter;
  * - `$ErrorActionPreference = 'Stop'`, so any error ends the process non-zero
  *   and `execFileSync` throws, instead of a half-run script printing JSON;
  * - `PSModulePath` is removed from the child's environment. When node itself
@@ -138,18 +140,24 @@ test("the check can fail: a deliberately permissive directory is caught", { skip
   const dir = mkdtempSync(join(tmpdir(), "kyb-616-permissive-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
 
-  // Grant Everyone read, inherited by anything created inside. `*S-1-1-0` is
-  // icacls's SID syntax, so this works on a machine in any language.
-  execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"), [dir, "/grant", "*S-1-1-0:(OI)(CI)R"]);
+  // Grant read to EACH broad group, inherited by anything created inside, so
+  // every SID the checker relies on is shown to be caught — not just one.
+  // `*S-1-…` is icacls's SID syntax, so this works on a machine in any language.
+  const grants = Object.keys(BROAD).map((sid) => `*${sid}:(OI)(CI)R`);
+  execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"), [dir, "/grant", ...grants]);
 
   const file = writeContainer(dir);
 
-  assert.ok(
-    broadGrants(dir).some((grant) => grant.startsWith("Everyone")),
-    `the checker missed an explicit Everyone grant on the directory: ${JSON.stringify(accessRules(dir))}`
-  );
-  assert.ok(
-    broadGrants(file).some((grant) => grant.startsWith("Everyone")),
-    `the checker missed Everyone inherited onto the published file: ${JSON.stringify(accessRules(file))}`
-  );
+  const onDir = broadGrants(dir);
+  const onFile = broadGrants(file);
+  for (const [sid, name] of Object.entries(BROAD)) {
+    assert.ok(
+      onDir.some((grant) => grant.includes(`(${sid})`)),
+      `the checker missed an explicit ${name} grant on the directory: ${JSON.stringify(accessRules(dir))}`
+    );
+    assert.ok(
+      onFile.some((grant) => grant.includes(`(${sid})`)),
+      `the checker missed ${name} inherited onto the published file: ${JSON.stringify(accessRules(file))}`
+    );
+  }
 });
