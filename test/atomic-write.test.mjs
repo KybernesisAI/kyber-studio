@@ -215,9 +215,13 @@ test("the temp file is the one derived from the target, not a name of its own ch
  * NOT COVERED, deliberately and recorded so it is not mistaken for coverage:
  * Windows. `statSync().mode & 0o777` reports 0666 or 0444 there regardless of
  * what was asked for, so every mode assertion in this section is skipped on
- * win32. CI runs Linux only, so those guards are themselves unexercised — they
- * are there to stop a future Windows lane going red for a reason nobody can
- * find, not because they have been seen to work.
+ * win32. The Windows CI arm runs these skips, so they are exercised now — they
+ * report as skipped, which is the point.
+ *
+ * What protects these files on Windows is not the mode at all but the ACL
+ * inherited from `userData`, and that is asserted separately, in
+ * `test/windows-userdata-acl.test.mjs` (KYB-616). The rationale is in the
+ * comment on `writeAtomic`.
  */
 
 test("the published file carries the mode the caller asked for", (t) => {
