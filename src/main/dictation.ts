@@ -113,10 +113,10 @@ const VC_REDIST_GUIDANCE =
  * Linux, for two LOAD failures — a missing file and a file that is not a shared
  * object — and node sets it from the one `uv_dlopen` path that also produces
  * the Win32 initialisation failure, so covering 1114 is REASONED from that
- * shared path rather than measured. Also MEASURED that it survives the dynamic
- * `import("@huggingface/transformers")` in `load()` reaches `onnxruntime-node`
- * through a static ESM import, which `require`s the `.node` file — and the
- * error arrives with `code` intact and no `cause` wrapper.
+ * shared path rather than measured. Also MEASURED that the code survives the
+ * journey: the dynamic `import("@huggingface/transformers")` in `load()` reaches
+ * `onnxruntime-node` through a static ESM import, which `require`s the `.node`
+ * file, and the error arrives here with `code` intact and no `cause` wrapper.
  *
  * The binding's own filename is the fallback, for the day a library does wrap
  * it. That is not localised either, and it is deliberately looser than the
