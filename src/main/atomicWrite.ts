@@ -118,10 +118,10 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  * on Windows 11 on 13 October 2026, as an unelevated user: the directory and
  * every file in it carry exactly three entries, all inherited — the user,
  * `NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators`. No `Users`, no
- * `Authenticated Users`, no `Everyone`. From that ACL it follows that a second
- * ordinary account on the machine should be able neither to open the file nor
- * to list the directory. That is inferred, not observed: KYB-616's two-account
- * UAT is the check that settles it.
+ * `Authenticated Users`, no `Everyone`. Observed on the same machine on 14
+ * October 2026, KYB-616's two-account check: a second local account, unelevated,
+ * was refused reading the container from both PowerShell and `cmd`, and was
+ * refused listing the first user's `%APPDATA%` and profile directories.
  *
  * Relying on that was a decision rather than a default, and it has a limit
  * that must be stated alongside the reassurance: **a local administrator can
