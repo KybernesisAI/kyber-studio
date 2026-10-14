@@ -101,6 +101,42 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  * future caller that wants atomicity without `0600` would silently get the
  * symlink-following variant. Nothing at such a call site would say so. If one
  * ever appears, separate the two rather than passing a mode nobody wants.
+ *
+ * ## On Windows the mode does almost nothing — KYB-616
+ *
+ * Node documents that on Windows only the write permission can be changed: a
+ * mode sets or clears the read-only attribute and that is all. `0o600` keeps
+ * the owner's write bit, so on Windows all three steps above leave the file an
+ * ordinary writable file. None of them restricts who can read it.
+ *
+ * **What keeps a secrets container owner-only there is the directory's ACL,
+ * inherited.** Every file this function publishes is a new file (the rename
+ * replaces the old one rather than writing into it), and a new file takes its
+ * ACL from the directory it is created in. The containers live in Electron's
+ * `userData`, under `%APPDATA%`, which belongs to the user's profile. Measured
+ * on Windows 11 on 13 October 2026, as an unelevated user: the directory and
+ * every file in it carry exactly three entries, all inherited — the user,
+ * `NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators`. No `Users`, no
+ * `Authenticated Users`, no `Everyone`. A second ordinary account on the
+ * machine cannot open the file, nor list the directory.
+ *
+ * Relying on that was a decision rather than a default, and it has a limit
+ * that must be stated alongside the reassurance: **a local administrator can
+ * read these files.** That is the same position as `root` against a POSIX
+ * `0600` file. Neither mode bits nor this ACL were ever going to stop it.
+ *
+ * Two things follow for anyone changing this.
+ *
+ * - **Keep passing the mode.** It is correct on Linux and macOS and inert on
+ *   Windows, so removing it to tidy one platform would regress two.
+ * - **An ACL of our own would belong on the DIRECTORY, not the files.**
+ *   Because every publish is a fresh file, a per-file ACL would be thrown away
+ *   by the next write and would have to be reapplied every time.
+ *
+ * The reliance is pinned by `test/windows-userdata-acl.test.mjs`, which runs
+ * on the Windows CI arm and is shown failing against a directory that grants
+ * `Everyone` read. If a profile is ever found with a permissive `%APPDATA%`,
+ * that test is where it should show up first.
  */
 export function writeAtomic(target: string, data: string, options: { mode?: number } = {}): void {
   const tmp = `${target}.tmp`;
