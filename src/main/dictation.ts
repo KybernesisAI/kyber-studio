@@ -61,13 +61,119 @@ async function load(): Promise<unknown> {
       dtype: "q8",
     });
     return transcriber;
-  })();
+  })().catch((error: unknown) => {
+    // A FAILED load must not be cached. `loading` is checked before anything
+    // else, so a retained rejected promise would hand every later attempt the
+    // first failure for the lifetime of the process.
+    //
+    // Be precise about what this buys, because the obvious claim is wrong.
+    // MEASURED on Windows, 14 Oct 2026: it does NOT make the redistributable
+    // case retryable in place. That failure happens while the module graph
+    // above is evaluating, and an ESM module that throws during evaluation
+    // stays errored in the registry for the life of the process, so the import
+    // on line 53 returns the same failure however often it is re-entered. That
+    // is why the guidance tells the user to restart, and why that sentence is
+    // load-bearing.
+    //
+    // What it does buy: every failure raised AFTER evaluation — the model
+    // files missing or locked, transient I/O, a pipeline that threw once — is
+    // genuinely retryable, and used to poison dictation for the whole session.
+    // Re-entry is safe: the two `env` assignments above are the only setup and
+    // are idempotent.
+    loading = null;
+    throw error;
+  });
   return loading;
 }
 
 export interface TranscriptionResult {
   text?: string;
   error?: string;
+}
+
+/**
+ * What to tell a Windows user when the native speech binding will not load.
+ *
+ * MEASURED in KYB-627: the shipped `onnxruntime.dll` and
+ * `onnxruntime_binding.node` are linked with MSVC toolset 14.44 and load-time
+ * import `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll`, `MSVCP140.dll` and
+ * `MSVCP140_1.dll`. The MSVC runtime is forward compatible but not backward, so
+ * an older runtime fails at INITIALISATION rather than at load.
+ *
+ * The installer closes the common case (KYB-627) but not every case: an imaged
+ * machine, a copied `win-unpacked` folder, a runtime rolled back after
+ * installation, or a future `onnxruntime-node` bump that raises the floor all
+ * reach here with the prerequisite having done nothing wrong.
+ */
+const VC_REDIST_GUIDANCE =
+  "Dictation needs the Microsoft Visual C++ 2015-2022 x64 Redistributable " +
+  '(version 14.44 or newer). Install it from Microsoft\'s "Latest supported ' +
+  'Visual C++ Redistributable downloads" page, then restart KYBER Studio and ' +
+  "try again.";
+
+/**
+ * Did this failure come from the native binding failing to load?
+ *
+ * @remarks
+ * **The detection deliberately does not read the message text.** Node reports
+ * this as the Win32 string for `ERROR_DLL_INIT_FAILED` (1114), which is
+ * LOCALISED — matching "initialization routine failed" would work on an English
+ * machine and silently stop working on a German one, which is the worst
+ * possible failure mode for a diagnostic.
+ *
+ * So the primary signal is `error.code === "ERR_DLOPEN_FAILED"`. MEASURED on
+ * Linux, for two LOAD failures — a missing file and a file that is not a shared
+ * object — and node sets it from the one `uv_dlopen` path that also produces
+ * the Win32 initialisation failure, so covering 1114 is REASONED from that
+ * shared path rather than measured. Also MEASURED that the code survives the
+ * journey: the dynamic `import("@huggingface/transformers")` in `load()` reaches
+ * `onnxruntime-node` through a static ESM import, which `require`s the `.node`
+ * file, and the error arrives here with `code` intact and no `cause` wrapper.
+ *
+ * The binding's own filename is the fallback, for the day a library does wrap
+ * it. That is not localised either, and it is deliberately looser than the
+ * code: it also fires for a MODULE_NOT_FOUND naming the binding (a broken
+ * build) or an EACCES on it (anti-virus quarantine), neither of which the
+ * redistributable fixes. Accepted rather than narrowed — the cost is one
+ * unhelpful message on a path that has no helpful one today.
+ *
+ * NOT caught, and known: `sharp` is statically imported in the same module
+ * graph as the pipeline and wraps its own load failure in a bare `Error` with
+ * no `code` and no `cause`, so neither signal sees it. Pinned by a test rather
+ * than fixed, because answering a sharp failure with "install the MSVC
+ * runtime" would send somebody after the wrong thing.
+ *
+ * The `cause` chain is walked, with a hop limit so a cyclic chain cannot hang
+ * the handler.
+ *
+ * Deliberately NOT distinguished: a MISSING DLL (Win32 126) from a FAILED
+ * INITIALISATION (1114). Telling those apart means parsing the localised text,
+ * and the remedy is the same sentence either way.
+ */
+function isNativeBindingFailure(error: unknown): boolean {
+  let link: unknown = error;
+  for (let hops = 0; link instanceof Error && hops < 8; hops += 1) {
+    if ((link as { code?: unknown }).code === "ERR_DLOPEN_FAILED") return true;
+    if (/onnxruntime_binding\.node/i.test(link.message)) return true;
+    link = (link as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * The message a person should see for a failed transcription.
+ *
+ * Exported for the tests, which is the only way to demonstrate the
+ * discrimination the ticket asks for rather than assert it.
+ *
+ * @param platform - Defaults to the running platform; a parameter so the
+ * non-Windows behaviour can be measured on a Linux CI runner.
+ */
+export function dictationErrorMessage(error: unknown, platform: string = process.platform): string {
+  // Windows only. On macOS and Linux a native load failure means something
+  // else entirely, and the redistributable does not exist to install.
+  if (platform === "win32" && isNativeBindingFailure(error)) return VC_REDIST_GUIDANCE;
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -99,7 +205,12 @@ export async function transcribe(samples: Float32Array): Promise<TranscriptionRe
     const cleaned = text.replace(/\[[A-Z_ ]+\]/g, "").trim();
     return cleaned ? { text: cleaned } : { error: "Nothing was said." };
   } catch (error) {
-    return { error: (error as Error).message };
+    // Logged in full, deliberately: the raw text names the binding and carries
+    // the absolute path, which is what somebody debugging this needs and
+    // exactly what should not reach the UI. `error` rather than `warn` — this
+    // one ends with dictation not working at all.
+    console.error("[dictation] transcription failed:", error);
+    return { error: dictationErrorMessage(error) };
   }
 }
 
