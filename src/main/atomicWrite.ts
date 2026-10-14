@@ -138,7 +138,7 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  *
  * The reliance is pinned by `test/windows-userdata-acl.test.mjs`, which runs
  * on the Windows CI arm and is shown failing against a directory that grants
- * `Everyone` read. It observes only the profile of the machine running it — a
+ * read to each of the three broad groups. It observes only the profile of the machine running it — a
  * CI runner, or a developer's own — so it guards against the reliance being
  * broken by our code, not against a permissive `%APPDATA%` on a user's machine.
  */
