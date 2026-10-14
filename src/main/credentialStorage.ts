@@ -262,12 +262,13 @@ const PLATFORM_BACKENDS: Readonly<Record<string, string>> = {
  *
  * @remarks
  * Off Linux the backend is named but marked `(platform default, not queried)`,
- * because nothing was read from the machine to produce it — every other value
- * on the line was. Until KYB-619 Windows and macOS printed
- * `n/a (Linux-only API)`, which is true of the API and was read, measured on
- * Windows 11, as "secrets are not protected here" — while DPAPI was sealing
- * them. The Linux rendering is unchanged, byte for byte: five distributions
- * were measured against it.
+ * because nothing was read from the machine to produce it. Every other value
+ * on the line is either read or, like `encryptionAvailable=deferred`, says it
+ * was not asked. Until KYB-619 Windows and macOS printed
+ * `n/a (Linux-only API)` — measured on Windows 11 on 8 October 2026 — which is
+ * true of the API but invites the reading "secrets are not protected here" on
+ * a machine where DPAPI was sealing them. The Linux rendering is unchanged,
+ * byte for byte: five distributions were measured against it.
  */
 export function describeStorageDiagnostic(report: StorageDiagnostic): string {
   const platformBackend = PLATFORM_BACKENDS[report.platform];
