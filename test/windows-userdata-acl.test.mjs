@@ -48,6 +48,22 @@ const POWERSHELL = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "Wi
 /**
  * Every access rule on `path`, explicit and inherited, keyed by SID.
  *
+ * **Built so that it cannot quietly read nothing**, because the first version
+ * did. On the CI runner, Windows PowerShell 5.1 could not load the module that
+ * provides `Get-Acl`. It printed an error, carried on, and handed back one
+ * empty record, and the main test then PASSED against an ACL it had never read.
+ * The negative control below caught it. So:
+ *
+ * - no cmdlet at all: `GetAccessControl()` is a .NET method on the file object
+ *   and needs no module, so there is no module load to fail;
+ * - `$ErrorActionPreference = 'Stop'`, so any error ends the process non-zero
+ *   and `execFileSync` throws, instead of a half-run script printing JSON;
+ * - `PSModulePath` is removed from the child's environment. When node itself
+ *   runs under PowerShell 7, as on the runner, that variable carries 7's module
+ *   paths into 5.1, which is the usual cause of exactly this failure;
+ * - and whatever comes back is validated: an empty ACL, or any rule without a
+ *   real SID, is an error and not an answer.
+ *
  * Asks for the rules AS SecurityIdentifier rather than translating names
  * afterwards, so an orphaned SID cannot make the translation throw. The path
  * travels in an environment variable rather than on the command line, so no
@@ -55,16 +71,26 @@ const POWERSHELL = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "Wi
  */
 function accessRules(path) {
   const script = [
-    "$acl = Get-Acl -LiteralPath $env:KYB_ACL_TARGET",
+    "$ErrorActionPreference = 'Stop'",
+    "$acl = (Get-Item -LiteralPath $env:KYB_ACL_TARGET -Force).GetAccessControl('Access')",
     "$rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])",
     "$out = @($rules | ForEach-Object { [pscustomobject]@{ sid = $_.IdentityReference.Value; type = \"$($_.AccessControlType)\"; rights = \"$($_.FileSystemRights)\"; inherited = $_.IsInherited } })",
     "ConvertTo-Json -InputObject $out -Compress",
   ].join("; ");
-  const json = execFileSync(POWERSHELL, ["-NoProfile", "-NonInteractive", "-Command", script], {
-    env: { ...process.env, KYB_ACL_TARGET: path },
-    encoding: "utf8",
-  });
-  return JSON.parse(json);
+  const env = { ...process.env, KYB_ACL_TARGET: path };
+  // Case-insensitively: Windows treats env names that way, a spread copy does not.
+  for (const key of Object.keys(env)) if (key.toLowerCase() === "psmodulepath") delete env[key];
+  const json = execFileSync(POWERSHELL, ["-NoProfile", "-NonInteractive", "-Command", script], { env, encoding: "utf8" });
+
+  const rules = JSON.parse(json);
+  if (!Array.isArray(rules) || rules.length === 0) {
+    throw new Error(`read no access rules at all for ${path}, which no real file has: ${json}`);
+  }
+  const unreadable = rules.filter((rule) => typeof rule.sid !== "string" || !rule.sid.startsWith("S-1-"));
+  if (unreadable.length > 0) {
+    throw new Error(`read rules without a SID for ${path}, so the ACL was not actually read: ${json}`);
+  }
+  return rules;
 }
 
 /** The Allow entries `path` grants to any of the broad groups. Empty is the pass. */
