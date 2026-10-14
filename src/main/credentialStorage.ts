@@ -246,12 +246,37 @@ export function collectStorageDiagnostic(
 }
 
 /**
+ * What `safeStorage` uses where the backend cannot be asked. Electron documents
+ * one mechanism per platform here, with no alternative and no switch to choose
+ * another, so naming it is stating the platform rather than guessing at the
+ * machine. KYB-619.
+ */
+const PLATFORM_BACKENDS: Readonly<Record<string, string>> = {
+  win32: "dpapi",
+  darwin: "keychain",
+};
+
+/**
  * The startup line. Says plainly that availability was not asked, so nobody
  * reads its absence as a `false`.
+ *
+ * @remarks
+ * Off Linux the backend is named but marked `(platform default, not queried)`,
+ * because nothing was read from the machine to produce it — every other value
+ * on the line was. Until KYB-619 Windows and macOS printed
+ * `n/a (Linux-only API)`, which is true of the API and was read, measured on
+ * Windows 11, as "secrets are not protected here" — while DPAPI was sealing
+ * them. The Linux rendering is unchanged, byte for byte: five distributions
+ * were measured against it.
  */
 export function describeStorageDiagnostic(report: StorageDiagnostic): string {
+  const platformBackend = PLATFORM_BACKENDS[report.platform];
   const backend =
-    report.platform === "linux" ? (report.backend ?? "unknown") : "n/a (Linux-only API)";
+    report.platform === "linux"
+      ? (report.backend ?? "unknown")
+      : platformBackend !== undefined
+        ? `${platformBackend} (platform default, not queried)`
+        : "n/a (Linux-only API)";
   return (
     `[storage] platform=${report.platform} backend=${backend} ` +
     `passwordStore=${report.override ?? "auto"} encryptionAvailable=deferred`
