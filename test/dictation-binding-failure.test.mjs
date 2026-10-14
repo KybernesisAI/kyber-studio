@@ -140,12 +140,25 @@ test("a sharp-shaped load failure is NOT recognised — known limitation, pinned
   assert.match(result.error, /Could not load the sharp module/);
 });
 
-test("a failed load is not cached, so a retry can work once the runtime is there", async (t) => {
+test("our own load latch does not block a second attempt", async (t) => {
   // Found by this file rather than by review: `load()` latches `loading` before
   // anything else, so a retained rejected promise handed every later attempt
   // the FIRST failure for the life of the process. The guidance tells somebody
   // to install the redistributable and try again, and that instruction was
   // impossible to satisfy — the second attempt never reached the loader.
+  //
+  // **READ THIS BEFORE TRUSTING THE NAME.** What is asserted here is narrow: OUR
+  // latch is cleared. It is not evidence that a user can retry without
+  // restarting, and the Windows UAT on 14 Oct 2026 measured that they cannot —
+  // restoring the binding and pressing the button again produced the same
+  // guidance message. The reason is above this test's reach: `load()` goes
+  // through `await import("@huggingface/transformers")`, and a module graph that
+  // throws while evaluating stays errored in the ESM registry for the life of
+  // the process. This file mocks that module, so a second import gets a fresh
+  // mock instead of the registry's cached failure — which is exactly why the
+  // test passes where the product does not. The "restart KYBER Studio" in the
+  // guidance is therefore load-bearing, not politeness. Do not delete it on the
+  // strength of this test.
   t.mock.method(console, "error", () => {});
 
   failure = dlopenError(WIN32_DLL_INIT);
