@@ -133,7 +133,7 @@ function expectDirectory(set: (partial: Partial<State>) => void): void {
  */
 export const DIRECTORY_WAIT_MS = 15_000;
 let directoryWaitMs = DIRECTORY_WAIT_MS;
-/** Tests only: shorten the bound so its exit can be driven without a 5 s wait. */
+/** Tests only: shorten the bound so its exit can be driven without a 15 s wait. */
 export function setDirectoryWaitForTests(ms: number): void {
   directoryWaitMs = ms;
 }
