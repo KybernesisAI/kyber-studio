@@ -1,6 +1,6 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -207,15 +207,13 @@ test("a remembered card answer that cannot be saved is logged, not thrown", () =
 /**
  * The same, through the real card flow rather than the helper on its own:
  * reverting `authorize` to call setPermission directly must fail here. The
- * permissions file is made PERMANENTLY unwritable by making its directory
- * read-only (on POSIX a read-only directory refuses both the temp write and the
- * rename; a read-only file would not). The person answers "always" and asks for
+ * permissions file is made PERMANENTLY unwritable: on POSIX its directory is
+ * made read-only (a read-only file would not stop the rename); on Windows the
+ * file itself is (which does). The person answers "always" and asks for
  * it to be remembered; the request must still be answered with their decision.
  */
 test("a card answered 'always, remember' whose save fails still answers the request, and logs the loss", {
-  skip:
-    (process.platform === "win32" && "a read-only directory does not refuse writes on Windows") ||
-    (process.getuid?.() === 0 && "root ignores directory permissions"),
+  skip: process.platform !== "win32" && process.getuid?.() === 0 && "root ignores directory permissions",
 }, async (t) => {
   const logged = t.mock.method(console, "error", () => {});
   const sender = {
@@ -223,8 +221,17 @@ test("a card answered 'always, remember' whose save fails still answers the requ
     // The card is answered as soon as it is shown, the way a click would.
     send: (_channel, card) => setImmediate(() => answerAsk(card.id, true, true)),
   };
-  chmodSync(dir, 0o555);
-  t.after(() => chmodSync(dir, 0o755));
+  // POSIX: a read-only directory. Windows: the read-only attribute on the file,
+  // which refuses the rename with EPERM even after the retry.
+  const perms = join(dir, "local-permissions.json");
+  if (!existsSync(perms)) writeFileSync(perms, "{}", "utf8");
+  if (process.platform === "win32") {
+    chmodSync(perms, 0o444);
+    t.after(() => chmodSync(perms, 0o666));
+  } else {
+    chmodSync(dir, 0o555);
+    t.after(() => chmodSync(dir, 0o755));
+  }
 
   const allowed = await authorize(sender, { id: "card-1", agent: "a", action: "run-command", payload: { command: "ls" } });
 

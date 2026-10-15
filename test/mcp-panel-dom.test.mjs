@@ -1253,6 +1253,33 @@ test("DOM: a rejecting saveMcpServers() reports it and keeps the way out pressab
   }
 });
 
+/**
+ * KYB-621: the ORDINARY path, not the recovery button. A healthy config, the
+ * user presses Remove, and the write is refused — on Windows, whenever another
+ * process held the file for longer than the retry. The panel must say so and
+ * keep the server on screen, because it is still in the file.
+ */
+test("DOM: a refused Remove on a healthy config says so, and the server stays", async () => {
+  const b = bridge({ servers: [plaud, arcana], rejects: ["saveMcpServers"] });
+  const panel = await mount(b.api);
+  try {
+    const more = [...panel.host.querySelectorAll('button[title="More"]')][0];
+    assert.ok(more, "no row menu to open");
+    await click(more);
+    await click(button(panel.host, "Remove"));
+    await settle();
+
+    assert.ok(b.calls.includes("saveMcpServers"), "Remove never reached the bridge");
+    assert.match(panel.text(), /That didn’t save/, "a refused Remove is not reported to the user");
+    assert.ok(panel.text().includes(BRIDGE_FAILURE), "the panel does not say what the failure was");
+    assert.match(panel.text(), /Plaud/, "the refused Remove took the server off screen");
+    assert.deepEqual(takeEscaped(), [], "the refused write escaped the component");
+  } finally {
+    await panel.unmount();
+    takeEscaped();
+  }
+});
+
 test("DOM: nothing else in this file left a rejection unhandled", async () => {
   // The price of the `unhandledRejection` listener above is that it silences
   // the default abort for the WHOLE file. This is the receipt: anything that
