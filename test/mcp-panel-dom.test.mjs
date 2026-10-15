@@ -443,6 +443,15 @@ const BRIDGE_METHODS = ["connectors", "mcpServers", "saveMcpServers"];
 const BRIDGE_FAILURE = "the bridge refused";
 
 /**
+ * What a refused save looked like on Windows (OBSERVED, KYB-621 UAT, 15 Oct
+ * 2026). The save tests reject with THIS, so the leak checks below have
+ * something real to catch: an errno, the IPC prefix, a path.
+ */
+const WINDOWS_SAVE_REFUSAL =
+  `Error invoking remote method 'studio:saveMcpServers': Error: EPERM: operation not permitted, ` +
+  `rename 'C:\\Users\\someone\\AppData\\Roaming\\kyber-studio\\local-mcp.json.tmp' -> '…' (${BRIDGE_FAILURE})`;
+
+/**
  * KYB-621/KYB-641: the "That didn’t save" line, and what was logged meanwhile.
  * The line must carry the plain message and nothing of the error — not the
  * errno, not the IPC prefix, not a path — while the error itself reaches the log.
@@ -456,17 +465,15 @@ function assertSaveFailureShown(host, logged) {
     assert.ok(!text.includes(leak), `the user-facing line leaks ${leak}: ${text}`);
   }
   assert.ok(
-    logged.some((l) => l.includes(BRIDGE_FAILURE)),
+    logged.some((l) => l.startsWith("[plugins] ") && l.includes(WINDOWS_SAVE_REFUSAL)),
     `the failure was not logged: ${JSON.stringify(logged)}`,
   );
 }
 
-/** Capture console.error for the length of one test. */
-function captureErrors() {
-  const lines = [];
-  const original = console.error;
-  console.error = (...args) => lines.push(args.map(String).join(" "));
-  return { lines, restore: () => (console.error = original) };
+/** Capture console.error for one test; the test runner restores it. */
+function captureErrors(t) {
+  const mock = t.mock.method(console, "error", () => {});
+  return { get lines() { return mock.mock.calls.map((c) => c.arguments.map(String).join(" ")); } };
 }
 
 /**
@@ -490,12 +497,14 @@ function captureErrors() {
  * without anyone remembering to give it one.
  *
  *   rejects  — these methods throw instead of answering
+ *   rejectWith — per method, the message a rejecting method throws instead of
+ *              the default (the save tests use the real Windows refusal)
  *   pending  — these methods return a promise that never settles, which is how
  *              the panel is held in its `loading` state long enough to take a
  *              census of it, and how a dependency that hangs rather than fails
  *              is driven
  */
-function bridge({ servers = [], damaged = false, onSave, rejects = [], pending = [] } = {}) {
+function bridge({ servers = [], damaged = false, onSave, rejects = [], rejectWith = {}, pending = [] } = {}) {
   const saves = [];
   const loads = [];
   const connectorCalls = [];
@@ -526,7 +535,7 @@ function bridge({ servers = [], damaged = false, onSave, rejects = [], pending =
     api[name] = async (...args) => {
       calls.push(name);
       if (pending.includes(name)) return new Promise(() => {});
-      if (rejects.includes(name)) throw new Error(`${name}: ${BRIDGE_FAILURE}`);
+      if (rejects.includes(name)) throw new Error(rejectWith[name] ?? `${name}: ${BRIDGE_FAILURE}`);
       return answer(...args);
     };
   }
@@ -1256,9 +1265,9 @@ test("DOM: a rejecting mcpServers() states the reason and leaves the panel usabl
   }
 });
 
-test("DOM: a rejecting saveMcpServers() reports it and keeps the way out pressable", async () => {
-  const b = bridge({ damaged: true, rejects: ["saveMcpServers"] });
-  const errors = captureErrors();
+test("DOM: a rejecting saveMcpServers() reports it and keeps the way out pressable", async (t) => {
+  const b = bridge({ damaged: true, rejects: ["saveMcpServers"], rejectWith: { saveMcpServers: WINDOWS_SAVE_REFUSAL } });
+  const errors = captureErrors(t);
   const panel = await mount(b.api);
   try {
     await click(button(panel.host, RECOVER));
@@ -1272,7 +1281,6 @@ test("DOM: a rejecting saveMcpServers() reports it and keeps the way out pressab
     assert.equal(recover.disabled, false, "a write that threw left the way out unpressable");
     assert.deepEqual(takeEscaped(), [], "a failing write escaped the component instead of being folded");
   } finally {
-    errors.restore();
     await panel.unmount();
     takeEscaped();
   }
@@ -1284,9 +1292,9 @@ test("DOM: a rejecting saveMcpServers() reports it and keeps the way out pressab
  * process held the file for longer than the retry. The panel must say so and
  * keep the server on screen, because it is still in the file.
  */
-test("DOM: a refused Remove on a healthy config says so, and the server stays", async () => {
-  const b = bridge({ servers: [plaud, arcana], rejects: ["saveMcpServers"] });
-  const errors = captureErrors();
+test("DOM: a refused Remove on a healthy config says so, and the server stays", async (t) => {
+  const b = bridge({ servers: [plaud, arcana], rejects: ["saveMcpServers"], rejectWith: { saveMcpServers: WINDOWS_SAVE_REFUSAL } });
+  const errors = captureErrors(t);
   const panel = await mount(b.api);
   try {
     const rows = () => panel.host.querySelectorAll('button[title="More"]').length;
@@ -1301,7 +1309,6 @@ test("DOM: a refused Remove on a healthy config says so, and the server stays", 
     assert.equal(rows(), 2, "the refused Remove took a server off screen");
     assert.deepEqual(takeEscaped(), [], "the refused write escaped the component");
   } finally {
-    errors.restore();
     await panel.unmount();
     takeEscaped();
   }

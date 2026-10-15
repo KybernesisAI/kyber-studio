@@ -236,9 +236,9 @@ export function panelAfterSave(
 
 /** Fold a REJECTED `saveMcpServers()` — a disk fault, a permission error. */
 export function panelAfterSaveFailure(previous: McpPanelState, error: unknown): McpPanelState {
-  // The detail goes to the log (the renderer's "[…]" lines reach main's), the
-  // plain sentence to the screen. KYB-641.
-  console.error(`[plugins] could not save the servers: ${message(error)}`);
+  // The plain sentence, not the error (KYB-641). The error is logged by the
+  // caller, `saveMcpPanel`, so this fold stays pure: React may run an updater
+  // twice (StrictMode in development), which would log every failure twice.
   return { ...previous, saveError: SAVE_FAILED_MESSAGE };
 }
 
@@ -311,6 +311,10 @@ export async function saveMcpPanel(
     // Every caller in the panel is `void save(...)`, so without this a rejected
     // write vanished into an unhandled promise and the row simply did not
     // change — the user pressed Remove and nothing said no.
+    //
+    // The detail goes to the log here, once (the renderer's "[…]" lines reach
+    // main's); the screen gets the plain sentence. KYB-641.
+    console.error(`[plugins] could not save the servers: ${message(error)}`);
     apply((previous) => panelAfterSaveFailure(previous, error));
   }
 }
