@@ -221,7 +221,9 @@ test("the preload forwards the options argument rather than dropping it", () => 
  * file would not stop the rename.
  */
 test("a permission save that cannot be written rejects through the handler, and changes nothing", {
-  skip: process.platform === "win32" && "a read-only directory does not refuse writes on Windows",
+  skip:
+    (process.platform === "win32" && "a read-only directory does not refuse writes on Windows") ||
+    (process.getuid?.() === 0 && "root ignores directory permissions"),
 }, (t) => {
   const before = invoke("studio:localPermissions");
   chmodSync(dir, 0o555);

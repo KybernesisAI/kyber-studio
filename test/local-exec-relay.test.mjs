@@ -213,7 +213,9 @@ test("a remembered card answer that cannot be saved is logged, not thrown", () =
  * it to be remembered; the request must still be answered with their decision.
  */
 test("a card answered 'always, remember' whose save fails still answers the request, and logs the loss", {
-  skip: process.platform === "win32" && "a read-only directory does not refuse writes on Windows",
+  skip:
+    (process.platform === "win32" && "a read-only directory does not refuse writes on Windows") ||
+    (process.getuid?.() === 0 && "root ignores directory permissions"),
 }, async (t) => {
   const logged = t.mock.method(console, "error", () => {});
   const sender = {
