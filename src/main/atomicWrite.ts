@@ -145,6 +145,65 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  * `%APPDATA%` on a user's machine, nor against our code moving `userData`
  * out of `%APPDATA%` altogether.
  */
+/**
+ * The pause before each retry of a refused rename, in milliseconds. Five
+ * retries, about 0.8 s in all.
+ *
+ * @remarks
+ * KYB-621, measured on windows-latest on 14 October 2026: while ANY other
+ * process holds the target open — whatever share mode it used, including
+ * `FILE_SHARE_DELETE` — `renameSync` onto it fails with `EPERM`. An indexer,
+ * a virus scanner or a backup agent glancing at the file is enough. A 300 ms
+ * hold cleared after about 335 ms of retrying. POSIX has no such failure:
+ * rename replaces the name and an open handle keeps the old inode, measured on
+ * Linux the same day.
+ *
+ * The budget is short because `writeAtomic` is synchronous on Electron's main
+ * process, so every millisecond here freezes the window. That is the accepted
+ * cost, decided by the repository owner: a target that can NEVER be written
+ * (read-only, which also reports `EPERM`) costs about 0.8 s per save before
+ * the error surfaces as it always did. Making the write asynchronous would
+ * remove the freeze at the price of changing every caller.
+ */
+export const RENAME_RETRY_DELAYS_MS: readonly number[] = [25, 50, 100, 200, 400];
+
+/** What Windows reports for a rename refused because the target is in use. */
+const TRANSIENT_RENAME_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+
+/** Block this thread for `ms` without spinning. Allowed on Node's main thread. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * `renameSync`, retried on Windows while the target is held open. Off Windows,
+ * and for any other error, it is exactly `renameSync`. When the budget runs out
+ * the last error is thrown unchanged.
+ *
+ * The three seams exist so the retry can be tested on any platform with a fake
+ * rename; production passes none of them.
+ */
+export function renameWithRetry(
+  from: string,
+  to: string,
+  rename: (from: string, to: string) => void = renameSync,
+  sleep: (ms: number) => void = sleepSync,
+  platform: string = process.platform,
+): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rename(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code ?? "";
+      if (platform !== "win32" || !TRANSIENT_RENAME_CODES.has(code) || attempt >= RENAME_RETRY_DELAYS_MS.length) {
+        throw error;
+      }
+      sleep(RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
 export function writeAtomic(target: string, data: string, options: { mode?: number } = {}): void {
   const tmp = `${target}.tmp`;
   try {
@@ -155,7 +214,7 @@ export function writeAtomic(target: string, data: string, options: { mode?: numb
       writeFileSync(tmp, data, { encoding: "utf8", mode: options.mode });
       chmodSync(tmp, options.mode);
     }
-    renameSync(tmp, target);
+    renameWithRetry(tmp, target);
   } catch (error) {
     try {
       rmSync(tmp, { force: true });

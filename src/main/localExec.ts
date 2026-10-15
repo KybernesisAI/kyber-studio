@@ -180,10 +180,32 @@ async function authorize(
   // Remembered against whatever was actually asked about.
   if (decision.remember) {
     const value = decision.allow ? "always" : "never";
-    if (server) setServerPermission(server, value);
-    else setPermission(request.action, value);
+    rememberDecision(() => {
+      if (server) setServerPermission(server, value);
+      else setPermission(request.action, value);
+    });
   }
   return decision.allow;
+}
+
+/**
+ * Persist a remembered card answer without letting a failed write cost the
+ * answer itself.
+ *
+ * @remarks
+ * KYB-621. The remember runs AFTER the user has decided, and outside the
+ * relay's `try`, so a throw here used to leave the agent's request with no
+ * reply at all — neither allowed, denied nor errored. On Windows the write
+ * can fail whenever another process holds the permissions file. The decision
+ * still stands for this request; only "remember it" is lost, and the log
+ * says so. Exported so that can be tested without driving the relay.
+ */
+export function rememberDecision(remember: () => void, log: (line: string) => void = console.error): void {
+  try {
+    remember();
+  } catch (error) {
+    log(`[local] could not remember the decision: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** One line describing exactly what was asked for, shown on the card. */

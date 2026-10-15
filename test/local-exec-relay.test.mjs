@@ -43,7 +43,7 @@ mock.module("electron", {
   },
 });
 
-const { executeLocalAction, relayErrorPayload } = await import("../src/main/localExec.ts");
+const { executeLocalAction, relayErrorPayload, rememberDecision } = await import("../src/main/localExec.ts");
 
 const sealed = (plain) => `kyb:v1:${Buffer.from(`ENC(${plain})`, "utf8").toString("base64")}`;
 
@@ -180,3 +180,24 @@ for (const [label, damaged] of damagedFixtures) {
     assert.match(payload.error, /could not be read/i, "the relay was told nothing at all");
   });
 }
+
+/**
+ * KYB-621: remembering a card answer can fail (on Windows, whenever another
+ * process holds the permissions file). Before this, the throw escaped
+ * `authorize` after the user had decided, and the agent's request was never
+ * answered. Now it is logged and the decision is unaffected.
+ */
+test("a remembered card answer that cannot be saved is logged, not thrown", () => {
+  const lines = [];
+  const failing = () => {
+    throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+  };
+  assert.doesNotThrow(() => rememberDecision(failing, (line) => lines.push(line)));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /could not remember the decision: EPERM/);
+
+  let ran = false;
+  rememberDecision(() => { ran = true; }, (line) => lines.push(line));
+  assert.equal(ran, true);
+  assert.equal(lines.length, 1, "a successful remember logged something");
+});

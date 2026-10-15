@@ -663,6 +663,7 @@ const LOCAL_ACTIONS: { action: LocalAction; label: string; detail: string }[] = 
 
 function LocalPermissions(): ReactNode {
   const [perms, setPerms] = useState<Record<LocalAction, LocalPermission> | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -673,8 +674,15 @@ function LocalPermissions(): ReactNode {
   }, []);
 
   const set = async (action: LocalAction, value: LocalPermission): Promise<void> => {
-    const next = await window.studio?.setLocalPermission({ action, value });
-    if (next) setPerms(next);
+    // A save can fail (KYB-621: on Windows, whenever another process holds the
+    // file). Unhandled, the select silently snapped back; say so instead.
+    try {
+      const next = await window.studio?.setLocalPermission({ action, value });
+      setSaveError(null);
+      if (next) setPerms(next);
+    } catch (error) {
+      setSaveError(`Could not save that setting: ${error instanceof Error ? error.message : String(error)}`);
+    }
   };
 
   if (!perms) return null;
@@ -690,6 +698,7 @@ function LocalPermissions(): ReactNode {
               ? "Every one of these asks first. Answering “always” or “never” on a card is remembered here."
               : `${standing} of these no longer ask. Set one back to “Ask” to be prompted again.`}
           </div>
+          {saveError ? <div className="muted" role="alert">{saveError}</div> : null}
         </div>
       </div>
       {LOCAL_ACTIONS.map((a) => (
