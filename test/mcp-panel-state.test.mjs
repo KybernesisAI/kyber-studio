@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 
 import {
   NO_ANSWER_MESSAGE,
+  SAVE_FAILED_MESSAGE,
   SAVE_REFUSED_MESSAGE,
   initialMcpPanelState,
   loadMcpPanel,
@@ -250,7 +251,8 @@ test("SAVE: NO answer at all is a stated error, and changes nothing else", () =>
   assert.equal(state.unreadable, null, "an absent answer invented a damaged config");
 });
 
-test("SAVE: a refused write does not clear a failure already on screen", () => {
+test("SAVE: a refused write does not clear a failure already on screen", (t) => {
+  t.mock.method(console, "error", () => {});
   const already = panelAfterSaveFailure(settled, new Error("ENOSPC: no space left on device"));
   const state = panelAfterSave(already, DAMAGED);
 
@@ -279,17 +281,31 @@ test("SAVE: a write that went through also clears a stale READ error", () => {
   assert.equal(state.loadError, null, "a read error outlived the write that disproved it");
 });
 
-test("SAVE: a rejected write is reported rather than discarded", () => {
+test("SAVE: a rejected write is reported rather than discarded, in plain words, with the detail logged", (t) => {
   // Every write in the panel is `void save(...)`, which discards a rejection
   // entirely: the row simply does not change and nothing says why.
-  const state = panelAfterSaveFailure(settled, new Error("EROFS: read-only file system"));
+  //
+  // KYB-641: what is SHOWN is a sentence a person can act on, never the error,
+  // which names their profile path and an IPC channel. The error goes to the log.
+  const logged = t.mock.method(console, "error", () => {});
+  const raw =
+    "Error invoking remote method 'studio:saveMcpServers': Error: EPERM: operation not permitted, " +
+    "rename 'C:\\Users\\someone\\AppData\\Roaming\\kyber-studio\\local-mcp.json.tmp' -> '…'";
+  const state = panelAfterSaveFailure(settled, new Error(raw));
 
-  assert.match(state.saveError ?? "", /EROFS/);
+  assert.equal(state.saveError, SAVE_FAILED_MESSAGE);
+  for (const leak of ["EPERM", "invoking remote method", "studio:", "\\", "/", "AppData"]) {
+    assert.ok(!SAVE_FAILED_MESSAGE.includes(leak), `the user-facing message contains ${leak}`);
+  }
   assert.deepEqual(state.servers, [server], "a failed write emptied the list");
+  const lines = logged.mock.calls.map((c) => String(c.arguments[0]));
+  assert.ok(lines.some((l) => l.includes(raw)), `the detail was not logged: ${JSON.stringify(lines)}`);
 });
 
-test("SAVE: a non-Error rejection is still reported", () => {
-  assert.equal(panelAfterSaveFailure(settled, "something odd").saveError, "something odd");
+test("SAVE: a non-Error rejection is still reported, and logged", (t) => {
+  const logged = t.mock.method(console, "error", () => {});
+  assert.equal(panelAfterSaveFailure(settled, "something odd").saveError, SAVE_FAILED_MESSAGE);
+  assert.ok(String(logged.mock.calls[0]?.arguments[0]).includes("something odd"));
 });
 
 // ── the way in (mcpPanel `loadMcpPanel` / `saveMcpPanel`) ───────────────────
@@ -385,7 +401,8 @@ test("IN: no bridge for a write is a stated error", async () => {
   assert.deepEqual(panel.state.servers, [server], "a write that never happened emptied the list");
 });
 
-test("IN: a rejected write is caught and stated", async () => {
+test("IN: a rejected write is caught and stated", async (t) => {
+  t.mock.method(console, "error", () => {});
   const panel = panelUnderTest(settled);
 
   await saveMcpPanel(
@@ -398,7 +415,7 @@ test("IN: a rejected write is caught and stated", async () => {
     [],
   );
 
-  assert.match(panel.state.saveError ?? "", /EROFS/);
+  assert.equal(panel.state.saveError, SAVE_FAILED_MESSAGE);
 });
 
 test("IN: the servers and the quarantine option both reach the bridge", async () => {

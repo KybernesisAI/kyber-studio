@@ -130,6 +130,20 @@ export const SAVE_REFUSED_MESSAGE =
 export const NO_ANSWER_MESSAGE =
   "the app didn’t answer — try closing this window and opening it again";
 
+/**
+ * What the panel says when a write failed for any reason it does not have a
+ * message of its own for: a file held open by another program (on Windows,
+ * whenever an indexer or scanner outlasts the retry — KYB-621), a read-only
+ * file, a full disk.
+ *
+ * Deliberately NOT the error itself. What crosses the bridge is Electron's
+ * "Error invoking remote method 'studio:saveMcpServers': Error: EPERM: …,
+ * rename 'C:\\Users\\…\\local-mcp.json.tmp' -> …", which names the user's
+ * profile path and an internal channel and tells them nothing they can do
+ * (KYB-641). The full error is logged instead: see `panelAfterSaveFailure`.
+ */
+export const SAVE_FAILED_MESSAGE = "something stopped the file being written. Please try again.";
+
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -222,7 +236,10 @@ export function panelAfterSave(
 
 /** Fold a REJECTED `saveMcpServers()` — a disk fault, a permission error. */
 export function panelAfterSaveFailure(previous: McpPanelState, error: unknown): McpPanelState {
-  return { ...previous, saveError: message(error) };
+  // The detail goes to the log (the renderer's "[…]" lines reach main's), the
+  // plain sentence to the screen. KYB-641.
+  console.error(`[plugins] could not save the servers: ${message(error)}`);
+  return { ...previous, saveError: SAVE_FAILED_MESSAGE };
 }
 
 /**

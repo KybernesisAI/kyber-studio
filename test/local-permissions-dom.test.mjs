@@ -28,7 +28,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const { act, createElement } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { LocalPermissions } = await import("../src/renderer/src/components/Panel.tsx");
+const { LocalPermissions, PERMISSION_SAVE_FAILED_MESSAGE } = await import("../src/renderer/src/components/Panel.tsx");
 
 after(() => dom.window.close());
 
@@ -66,7 +66,8 @@ async function choose(select, value) {
 
 const alertText = (host) => host.querySelector('[role="alert"]')?.textContent ?? null;
 
-test("a refused save is shown on the card, and the select keeps the value that was actually saved", async () => {
+test("a refused save is shown on the card in plain words, the detail is logged, and the select keeps the saved value", async (t) => {
+  const logged = t.mock.method(console, "error", () => {});
   const refused = new Error(
     "Error invoking remote method 'studio:setLocalPermission': Error: EPERM: operation not permitted, rename",
   );
@@ -79,12 +80,21 @@ test("a refused save is shown on the card, and the select keeps the value that w
 
   await choose(select, "always");
 
-  assert.match(alertText(host) ?? "", /Could not save that setting: .*EPERM/);
+  // KYB-641: the sentence, not the error. The error names the user's profile
+  // path and an IPC channel; it belongs in the log.
+  const shown = alertText(host) ?? "";
+  assert.equal(shown, PERMISSION_SAVE_FAILED_MESSAGE);
+  for (const leak of ["EPERM", "invoking remote method", "studio:", "\\", "/"]) {
+    assert.ok(!shown.includes(leak), `the card leaks ${leak}: ${shown}`);
+  }
+  const lines = logged.mock.calls.map((c) => String(c.arguments[0]));
+  assert.ok(lines.some((l) => l.includes("EPERM") && l.includes("run-command")), `not logged: ${JSON.stringify(lines)}`);
   assert.equal(select.value, "ask", "the select claims a value that was never saved");
   await unmount();
 });
 
-test("a save that then succeeds clears the message and shows the saved value", async () => {
+test("a save that then succeeds clears the message and shows the saved value", async (t) => {
+  t.mock.method(console, "error", () => {});
   let refuse = true;
   const { host, unmount } = await mount(async ({ action, value }) => {
     if (refuse) throw new Error("EPERM: operation not permitted, rename");

@@ -212,7 +212,7 @@ const { Plugins } = await import("../src/renderer/src/components/Plugins.tsx");
 const { useStore } = await import("@/lib/store");
 // Imported rather than retyped: a test that spells the message out itself stops
 // describing what the panel says the moment someone edits the constant.
-const { NO_ANSWER_MESSAGE } = await import("@/lib/mcpPanel");
+const { NO_ANSWER_MESSAGE, SAVE_FAILED_MESSAGE } = await import("@/lib/mcpPanel");
 
 after(() => dom.window.close());
 
@@ -441,6 +441,33 @@ const BRIDGE_METHODS = ["connectors", "mcpServers", "saveMcpServers"];
 
 /** What a rejecting bridge method throws. Asserted on, so it is a constant. */
 const BRIDGE_FAILURE = "the bridge refused";
+
+/**
+ * KYB-621/KYB-641: the "That didn’t save" line, and what was logged meanwhile.
+ * The line must carry the plain message and nothing of the error — not the
+ * errno, not the IPC prefix, not a path — while the error itself reaches the log.
+ */
+function assertSaveFailureShown(host, logged) {
+  const line = [...host.querySelectorAll("div")].find((d) => (d.textContent ?? "").startsWith("That didn’t save"));
+  assert.ok(line, "a write that threw is not reported to the user");
+  const text = line.textContent ?? "";
+  assert.ok(text.includes(SAVE_FAILED_MESSAGE), `the line is not the plain message: ${text}`);
+  for (const leak of [BRIDGE_FAILURE, "saveMcpServers", "EPERM", "invoking remote method", "\\", "/"]) {
+    assert.ok(!text.includes(leak), `the user-facing line leaks ${leak}: ${text}`);
+  }
+  assert.ok(
+    logged.some((l) => l.includes(BRIDGE_FAILURE)),
+    `the failure was not logged: ${JSON.stringify(logged)}`,
+  );
+}
+
+/** Capture console.error for the length of one test. */
+function captureErrors() {
+  const lines = [];
+  const original = console.error;
+  console.error = (...args) => lines.push(args.map(String).join(" "));
+  return { lines, restore: () => (console.error = original) };
+}
 
 /**
  * A bridge that records what the panel asked it to do, and can FAIL AT ANY OF
@@ -1231,23 +1258,21 @@ test("DOM: a rejecting mcpServers() states the reason and leaves the panel usabl
 
 test("DOM: a rejecting saveMcpServers() reports it and keeps the way out pressable", async () => {
   const b = bridge({ damaged: true, rejects: ["saveMcpServers"] });
+  const errors = captureErrors();
   const panel = await mount(b.api);
   try {
     await click(button(panel.host, RECOVER));
     await settle();
 
     assert.ok(b.calls.includes("saveMcpServers"), "the recovery never reached the bridge");
-    assert.match(panel.text(), /That didn’t save/, "a write that threw is not reported to the user");
-    assert.ok(
-      panel.text().includes(BRIDGE_FAILURE),
-      "the panel says a write failed without saying what the failure was",
-    );
+    assertSaveFailureShown(panel.host, errors.lines);
 
     const recover = button(panel.host, RECOVER);
     assert.ok(recover, "a write that threw took the way out off screen");
     assert.equal(recover.disabled, false, "a write that threw left the way out unpressable");
     assert.deepEqual(takeEscaped(), [], "a failing write escaped the component instead of being folded");
   } finally {
+    errors.restore();
     await panel.unmount();
     takeEscaped();
   }
@@ -1261,20 +1286,22 @@ test("DOM: a rejecting saveMcpServers() reports it and keeps the way out pressab
  */
 test("DOM: a refused Remove on a healthy config says so, and the server stays", async () => {
   const b = bridge({ servers: [plaud, arcana], rejects: ["saveMcpServers"] });
+  const errors = captureErrors();
   const panel = await mount(b.api);
   try {
-    const more = [...panel.host.querySelectorAll('button[title="More"]')][0];
-    assert.ok(more, "no row menu to open");
-    await click(more);
+    const rows = () => panel.host.querySelectorAll('button[title="More"]').length;
+    assert.equal(rows(), 2, "the fixture did not render both servers");
+    await click(panel.host.querySelectorAll('button[title="More"]')[0]);
     await click(button(panel.host, "Remove"));
     await settle();
 
     assert.ok(b.calls.includes("saveMcpServers"), "Remove never reached the bridge");
-    assert.match(panel.text(), /That didn’t save/, "a refused Remove is not reported to the user");
-    assert.ok(panel.text().includes(BRIDGE_FAILURE), "the panel does not say what the failure was");
-    assert.match(panel.text(), /Plaud/, "the refused Remove took the server off screen");
+    assertSaveFailureShown(panel.host, errors.lines);
+    // Counted rather than named, so it holds whichever row is first.
+    assert.equal(rows(), 2, "the refused Remove took a server off screen");
     assert.deepEqual(takeEscaped(), [], "the refused write escaped the component");
   } finally {
+    errors.restore();
     await panel.unmount();
     takeEscaped();
   }
