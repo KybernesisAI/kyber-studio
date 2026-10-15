@@ -96,6 +96,13 @@ let directorySettled = true;
  * the next one's gate.
  */
 let signInGeneration = 0;
+/**
+ * Which sign-in the agent list in the store was loaded under. Sign-out keeps
+ * the previous account's agents on screen, so "the list is not empty" does not
+ * mean "this account's agents have loaded": a directory pass resolved against
+ * the previous account's list matches nothing and would settle the new gate.
+ */
+let agentsGeneration = 0;
 let settleDirectory: () => void = () => {};
 let directoryReady: Promise<void> = Promise.resolve();
 
@@ -1073,14 +1080,23 @@ export const useStore = create<State>((set, get) => ({
    */
   syncSessions: async () => {
     if (!window.studio) return;
-    // KYB-643: a row resolved against an agent list that has not loaded matches
-    // nothing and is skipped. That is not an answer, so it is not treated as
-    // one: no rows are judged, and the directory is not marked as read.
-    if (get().agents.length === 0) {
+    // KYB-643: a row resolved against an agent list that has not loaded, for
+    // THIS sign-in, matches nothing and is skipped. That is not an answer, so it
+    // is not treated as one: no rows are judged, and the directory is not
+    // marked as read. The list being non-empty is not enough, because sign-out
+    // leaves the previous account's agents in place.
+    if (agentsGeneration !== signInGeneration) {
       console.log("[index] sync skipped — agents not loaded yet");
       return;
     }
     const generation = signInGeneration;
+    // Loaded, and empty: there is no agent a thread could be adopted for, so
+    // the directory has nothing to say and the gate opens without a read.
+    if (get().agents.length === 0) {
+      console.log("[index] sync skipped — no agents granted to this account");
+      settleDirectory();
+      return;
+    }
     try {
       const indexed = await window.studio.listSessions();
       // Signed out (or in again) while the directory was read: these rows are
@@ -2189,6 +2205,12 @@ export const useStore = create<State>((set, get) => ({
     // Which control plane this actually is. Held as a constant, the account menu
     // went on naming ours after the app had been pointed somewhere else.
     void window.studio.controlPlane().then((cp) => set({ issuer: cp.url.replace(/^https?:\/\//, "") }));
+    // KYB-643: which sign-in this list belongs to, recorded only if that
+    // sign-in is still current when it lands.
+    const generation = signInGeneration;
+    const loadedFor = (): void => {
+      if (generation === signInGeneration) agentsGeneration = generation;
+    };
     try {
       const remote = await window.studio.listAgents();
       if (remote.length === 0) {
@@ -2199,6 +2221,7 @@ export const useStore = create<State>((set, get) => ({
           authError:
             "No agents are granted to your account yet. Register one in the control plane, or ask an admin for a grant.",
         });
+        loadedFor();
         return;
       }
       // Keep local presentation (accent, pin) but let the control plane own the
@@ -2285,6 +2308,8 @@ export const useStore = create<State>((set, get) => ({
 
         if (send) void window.studio.saveAgentProfile(carry);
       }
+
+      loadedFor();
 
       // Rooms need the agent list to map names to ids, so they come after it.
       void get().refreshRooms();

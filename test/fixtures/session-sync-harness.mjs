@@ -48,18 +48,24 @@ export const OLD_THREAD = {
 };
 
 /**
- * Install a bridge. `delays` (ms) per method; `hang` methods never answer; `rows` is what the directory
- * holds; `agents` what the control plane grants; `stored` whether a session
- * is already on disk (bootstrap) or a sign-in is needed.
+ * Install a bridge. `delays` (ms) per method; `hang` methods never answer;
+ * `fail` methods reject; `rows` is what the directory holds; `agents` what the
+ * control plane grants; `stored` whether a session is already on disk
+ * (bootstrap) or a sign-in is needed.
+ *
+ * `delays`, `rows` and `agents` are read on every call, so a test can change
+ * them between sign-ins: `bridge.live.agents = [...]` is another account.
  */
-export function installBridge({ delays = {}, hang = [], rows = [OLD_THREAD], agents = [REMOTE_AGENT], stored = false } = {}) {
+export function installBridge({ delays = {}, hang = [], fail = [], rows = [OLD_THREAD], agents = [REMOTE_AGENT], stored = false } = {}) {
   const calls = [];
   const sends = [];
+  const live = { rows, agents };
   const after = async (name) => {
     calls.push(name);
     // `hang`: never answers, like a control plane that has stopped responding.
     if (hang.includes(name)) await new Promise(() => {});
     if (delays[name]) await sleep(delays[name]);
+    if (fail.includes(name)) throw new Error(`${name} failed (test)`);
   };
   const known = {
     session: async () => (stored ? { email: "p@example.com", orgName: "o" } : null),
@@ -71,11 +77,11 @@ export function installBridge({ delays = {}, hang = [], rows = [OLD_THREAD], age
     listRooms: async () => [],
     listSessions: async () => {
       await after("listSessions");
-      return rows;
+      return live.rows;
     },
     listAgents: async () => {
       await after("listAgents");
-      return agents;
+      return live.agents;
     },
     replaySession: async ({ sessionId }) => {
       await after("replaySession");
@@ -97,7 +103,7 @@ export function installBridge({ delays = {}, hang = [], rows = [OLD_THREAD], age
   window.studio = new Proxy(known, {
     get: (target, key) => (key in target ? target[key] : async () => undefined),
   });
-  return { calls, sends };
+  return { calls, sends, live };
 }
 
 /** Collect `console.log` lines for the life of one test. */
