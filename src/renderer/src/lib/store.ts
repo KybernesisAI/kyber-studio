@@ -90,15 +90,31 @@ function startCrossDeviceRefresh(get: () => State): void {
  * (tests, a missing bridge) ever waits on it.
  */
 let directorySettled = true;
+/**
+ * Which sign-in the directory gate belongs to. A message that was waiting when
+ * its sign-in ended, or a directory pass that started under it, must not act on
+ * the next one's gate.
+ */
+let signInGeneration = 0;
 let settleDirectory: () => void = () => {};
 let directoryReady: Promise<void> = Promise.resolve();
 
-function expectDirectory(): void {
+/**
+ * Also published as `directoryLoading`, so the conversation can say "Loading
+ * messages…" instead of "No messages yet" while a thread may be about to
+ * arrive. Without it a wiped config showed the empty state, then the history
+ * popped in a moment later.
+ */
+function expectDirectory(set: (partial: Partial<State>) => void): void {
+  // A new generation first, so anyone released below sees they are stale.
+  signInGeneration += 1;
   settleDirectory(); // release anyone still waiting on a previous sign-in
   directorySettled = false;
+  set({ directoryLoading: true });
   directoryReady = new Promise<void>((resolve) => {
     settleDirectory = () => {
       directorySettled = true;
+      set({ directoryLoading: false });
       resolve();
     };
   });
@@ -110,9 +126,18 @@ function expectDirectory(): void {
  * agent; the directory read itself gives up after 15 s.
  */
 export const DIRECTORY_WAIT_MS = 5_000;
+let directoryWaitMs = DIRECTORY_WAIT_MS;
+/** Tests only: shorten the bound so its exit can be driven without a 5 s wait. */
+export function setDirectoryWaitForTests(ms: number): void {
+  directoryWaitMs = ms;
+}
 
-function waitForDirectory(): Promise<void> {
-  return Promise.race([directoryReady, new Promise<void>((r) => setTimeout(r, DIRECTORY_WAIT_MS))]);
+/** Which way the wait ended; the timeout is logged, because it starts a new thread. */
+function waitForDirectory(): Promise<"settled" | "timeout"> {
+  return Promise.race([
+    directoryReady.then(() => "settled" as const),
+    new Promise<"timeout">((r) => setTimeout(() => r("timeout"), directoryWaitMs)),
+  ]);
 }
 
 /** Set for the one synchronous re-entry of `send` after it has waited. */
@@ -127,8 +152,8 @@ let directoryWaited = false;
  * the agents had loaded, and never again until a relaunch, so the account's
  * threads were not picked up and the first message started a new one.
  */
-async function signedIn(get: () => State): Promise<void> {
-  expectDirectory();
+async function signedIn(get: () => State, set: (partial: Partial<State>) => void): Promise<void> {
+  expectDirectory(set);
   // Local state first, so reopening shows the conversation immediately.
   await get().restore();
   await get().refreshAgents();
@@ -878,6 +903,12 @@ interface State {
   hydrate(agentId: string, mode?: "fill" | "merge"): Promise<void>;
   /** Learn which threads this account has, from the control-plane directory. */
   syncSessions(): Promise<void>;
+  /**
+   * True from sign-in until the account's thread directory has been read
+   * against a loaded agent list (KYB-643). While it is, a chat with no thread
+   * may be about to receive one, so it shows "Loading messages…".
+   */
+  directoryLoading: boolean;
   /** Ask the agent for every conversation it has had. */
   loadSessions(agentId: string): Promise<AgentSession[]>;
   /** Switch the chat to one of the agent's conversations and read it. */
@@ -980,6 +1011,7 @@ function refreshAgentInfoAcrossRestart(get: () => State, agentId: string): void 
 
 export const useStore = create<State>((set, get) => ({
   agents: [],
+  directoryLoading: false,
   conversations: {},
 
   activeAgentId: "",
@@ -1042,138 +1074,154 @@ export const useStore = create<State>((set, get) => ({
       console.log("[index] sync skipped — agents not loaded yet");
       return;
     }
-    const indexed = await window.studio.listSessions();
-    /** One summary line per pass; counts only, never message text (KYB-637). */
-    const count = { room: 0, noAgent: 0, resolved: 0, same: 0, chosen: 0, published: 0, adopted: 0 };
-
-    // Directory rows name the agent by its registered name; older rows from
-    // this app carry its id. Resolve either to the local agent, and skip what
-    // is not one of ours (a room, an agent no longer granted).
-    const resolve = (name: string): Agent | undefined =>
-      get().agents.find((a) => a.registeredName === name || a.id === name || a.name === name);
-    const localLastAt = (agentId: string): number => {
-      const local = get().conversations[agentId] ?? [];
-      return local.length ? Math.max(...local.map((b) => b.at)) : 0;
-    };
-
-    // Only the NEWEST row per agent is a candidate. The directory keeps every
-    // thread a person has had with an agent; walking all of them adopted one,
-    // then the next, on every tick — a conversation that emptied and refilled
-    // itself every thirty seconds.
-    /**
-     * A member's session in a room is filed under the room id as its label.
-     * It is adopted only where this machine has none — a room's transcript is
-     * assembled here from what each member said, so replacing a member's
-     * session would orphan the part of the transcript that came from it.
-     */
-    for (const entry of indexed) {
-      if (!entry.label || !isRoomId(entry.label)) continue;
-      count.room += 1;
-      const roomHere = get().rooms.find((r) => r.id === entry.label);
-      const agent = resolve(entry.agent);
-      if (!roomHere || !agent) continue;
-      const key = `${roomHere.id}::${agent.id}`;
-      if (!get().sessions[key]) set((s) => ({ sessions: { ...s.sessions, [key]: entry.sessionId } }));
-    }
-
-    const newest = new Map<string, (typeof indexed)[number]>();
-    for (const entry of indexed) {
-      if (entry.label && isRoomId(entry.label)) continue;
-      const agent = resolve(entry.agent);
-      if (!agent) {
-        count.noAgent += 1;
-        continue;
+    const generation = signInGeneration;
+    try {
+      const indexed = await window.studio.listSessions();
+      // Signed out (or in again) while the directory was read: these rows are
+      // the previous sign-in's, and acting on them would adopt threads into an
+      // account they may not belong to.
+      if (generation !== signInGeneration) {
+        console.log("[index] sync dropped — the sign-in changed while it read");
+        return;
       }
-      count.resolved += 1;
-      const at = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
-      const held = newest.get(agent.id);
-      const heldAt = held?.lastMessageAt ? Date.parse(held.lastMessageAt) : 0;
-      if (!held || at > heldAt) newest.set(agent.id, entry);
-    }
+      /** One summary line per pass; counts only, never message text (KYB-637). */
+      const count = { room: 0, noAgent: 0, resolved: 0, same: 0, chosen: 0, published: 0, adopted: 0 };
 
-    const seen = new Set<string>();
-    for (const entry of newest.values()) {
-      const agent = resolve(entry.agent);
-      if (!agent) continue;
-      seen.add(agent.id);
-      const localSession = get().sessions[agent.id];
-      const localAt = localLastAt(agent.id);
-      const remoteAt = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
-      if (localSession === entry.sessionId) {
-        count.same += 1;
-        continue;
-      }
-      // A thread the person opened on purpose stays unless the directory's
-      // newest moved AFTER they picked (someone really did talk elsewhere).
-      const choice = get().sessionChoice[agent.id];
-      if (choice && choice.sessionId === localSession && remoteAt <= choice.at) {
-        count.chosen += 1;
-        continue;
-      }
+      // Directory rows name the agent by its registered name; older rows from
+      // this app carry its id. Resolve either to the local agent, and skip what
+      // is not one of ours (a room, an agent no longer granted).
+      const resolve = (name: string): Agent | undefined =>
+        get().agents.find((a) => a.registeredName === name || a.id === name || a.name === name);
+      const localLastAt = (agentId: string): number => {
+        const local = get().conversations[agentId] ?? [];
+        return local.length ? Math.max(...local.map((b) => b.at)) : 0;
+      };
 
+      // Only the NEWEST row per agent is a candidate. The directory keeps every
+      // thread a person has had with an agent; walking all of them adopted one,
+      // then the next, on every tick — a conversation that emptied and refilled
+      // itself every thirty seconds.
       /**
-       * Two-way. The account's thread is adopted when it is the newer one;
-       * when THIS machine's is newer, it is published so the other devices
-       * adopt it instead. Without the second half a desktop that had been
-       * talking all afternoon lost to a phone that said one thing later, and
-       * a thread this app had never recorded under the shared name was
-       * invisible everywhere else.
-       *
-       * Adopting replaces this device's view of the older thread. Nothing is
-       * destroyed — that session is still durable on the agent — but it is no
-       * longer what this agent's chat shows.
+       * A member's session in a room is filed under the room id as its label.
+       * It is adopted only where this machine has none — a room's transcript is
+       * assembled here from what each member said, so replacing a member's
+       * session would orphan the part of the transcript that came from it.
        */
-      if (localSession && localAt >= remoteAt) {
-        count.published += 1;
+      for (const entry of indexed) {
+        if (!entry.label || !isRoomId(entry.label)) continue;
+        count.room += 1;
+        const roomHere = get().rooms.find((r) => r.id === entry.label);
+        const agent = resolve(entry.agent);
+        if (!roomHere || !agent) continue;
+        const key = `${roomHere.id}::${agent.id}`;
+        if (!get().sessions[key]) set((s) => ({ sessions: { ...s.sessions, [key]: entry.sessionId } }));
+      }
+
+      const newest = new Map<string, (typeof indexed)[number]>();
+      for (const entry of indexed) {
+        if (entry.label && isRoomId(entry.label)) continue;
+        const agent = resolve(entry.agent);
+        if (!agent) {
+          count.noAgent += 1;
+          continue;
+        }
+        count.resolved += 1;
+        const at = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
+        const held = newest.get(agent.id);
+        const heldAt = held?.lastMessageAt ? Date.parse(held.lastMessageAt) : 0;
+        if (!held || at > heldAt) newest.set(agent.id, entry);
+      }
+
+      const seen = new Set<string>();
+      for (const entry of newest.values()) {
+        const agent = resolve(entry.agent);
+        if (!agent) continue;
+        seen.add(agent.id);
+        const localSession = get().sessions[agent.id];
+        const localAt = localLastAt(agent.id);
+        const remoteAt = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
+        if (localSession === entry.sessionId) {
+          count.same += 1;
+          continue;
+        }
+        // A thread the person opened on purpose stays unless the directory's
+        // newest moved AFTER they picked (someone really did talk elsewhere).
+        const choice = get().sessionChoice[agent.id];
+        if (choice && choice.sessionId === localSession && remoteAt <= choice.at) {
+          count.chosen += 1;
+          continue;
+        }
+
+        /**
+         * Two-way. The account's thread is adopted when it is the newer one;
+         * when THIS machine's is newer, it is published so the other devices
+         * adopt it instead. Without the second half a desktop that had been
+         * talking all afternoon lost to a phone that said one thing later, and
+         * a thread this app had never recorded under the shared name was
+         * invisible everywhere else.
+         *
+         * Adopting replaces this device's view of the older thread. Nothing is
+         * destroyed — that session is still durable on the agent — but it is no
+         * longer what this agent's chat shows.
+         */
+        if (localSession && localAt >= remoteAt) {
+          count.published += 1;
+          void window.studio.recordSession({
+            agent: agent.registeredName ?? agent.id,
+            sessionId: localSession,
+            label: agent.id,
+            lastMessageAt: localAt || Date.now(),
+            lastMessagePreview: [...(get().conversations[agent.id] ?? [])].reverse().find((b) => b.kind === "text")?.["text" as never] ?? undefined,
+          });
+          continue;
+        }
+
+        count.adopted += 1;
+        set((s) => {
+          const streamIndexes = { ...s.streamIndexes };
+          // The cursor belongs to the session being replaced; carrying it over
+          // would post the next message into a thread this device is no longer on.
+          delete streamIndexes[agent.id];
+          return {
+            sessions: { ...s.sessions, [agent.id]: entry.sessionId },
+            conversations: { ...s.conversations, [agent.id]: [] },
+            streamIndexes,
+          };
+        });
+        await get().hydrate(agent.id);
+      }
+
+      // Threads this machine holds that the directory has never heard of.
+      for (const agent of get().agents) {
+        const localSession = get().sessions[agent.id];
+        if (!localSession || seen.has(agent.id) || isRoomId(agent.id)) continue;
+        const localAt = localLastAt(agent.id);
+        if (!localAt) continue;
         void window.studio.recordSession({
           agent: agent.registeredName ?? agent.id,
           sessionId: localSession,
           label: agent.id,
-          lastMessageAt: localAt || Date.now(),
-          lastMessagePreview: [...(get().conversations[agent.id] ?? [])].reverse().find((b) => b.kind === "text")?.["text" as never] ?? undefined,
+          lastMessageAt: localAt,
         });
-        continue;
       }
+      get().persist();
 
-      count.adopted += 1;
-      set((s) => {
-        const streamIndexes = { ...s.streamIndexes };
-        // The cursor belongs to the session being replaced; carrying it over
-        // would post the next message into a thread this device is no longer on.
-        delete streamIndexes[agent.id];
-        return {
-          sessions: { ...s.sessions, [agent.id]: entry.sessionId },
-          conversations: { ...s.conversations, [agent.id]: [] },
-          streamIndexes,
-        };
-      });
-      await get().hydrate(agent.id);
+      console.log(
+        `[index] sync: ${indexed.length} row(s); ${count.resolved} for an agent here (${newest.size} newest), ` +
+          `${count.adopted} adopted, ${count.published} published (local newer), ${count.same} already current, ` +
+          `${count.chosen} kept (chosen), ${count.resolved - newest.size} older; skipped ${count.room} room, ${count.noAgent} no agent`,
+      );
+    } catch (error) {
+      // A failed pass still settles the gate: waiting the full bound on every
+      // first message would not make the directory any more readable.
+      console.log(`[index] sync failed: ${(error as Error)?.message ?? String(error)}`);
+    } finally {
+      // After the adopted threads have been replayed, not before: a first
+      // message released earlier would land in a chat that the replay then
+      // declines to fill, because it only fills an empty one. And only for the
+      // sign-in this pass started under.
+      if (generation === signInGeneration) settleDirectory();
     }
-
-    // Threads this machine holds that the directory has never heard of.
-    for (const agent of get().agents) {
-      const localSession = get().sessions[agent.id];
-      if (!localSession || seen.has(agent.id) || isRoomId(agent.id)) continue;
-      const localAt = localLastAt(agent.id);
-      if (!localAt) continue;
-      void window.studio.recordSession({
-        agent: agent.registeredName ?? agent.id,
-        sessionId: localSession,
-        label: agent.id,
-        lastMessageAt: localAt,
-      });
-    }
-    get().persist();
-
-    console.log(
-      `[index] sync: ${indexed.length} row(s); ${count.resolved} for an agent here, ` +
-        `${count.adopted} adopted, ${count.published} published (local newer), ${count.same} already current, ` +
-        `${count.chosen} kept (chosen), ${count.resolved - newest.size} older; skipped ${count.room} room, ${count.noAgent} no agent`,
-    );
-    // After the adopted threads have been replayed, not before: a first message
-    // released earlier would land in a chat that the replay then declines to
-    // fill, because it only fills an empty one.
-    settleDirectory();
   },
 
   /**
@@ -1557,8 +1605,21 @@ export const useStore = create<State>((set, get) => ({
      */
     if (!directorySettled && !directoryWaited && !get().sessions[agentId]) {
       const shown = `u${at}`;
+      const generation = signInGeneration;
       console.log(`[send] waiting for the thread directory before the first message to ${agentId}`);
-      void waitForDirectory().then(() => {
+      void waitForDirectory().then((how) => {
+        if (generation !== signInGeneration) {
+          // Signed out (or in again) while it waited. Sending now would go out
+          // under whatever account and gate are current, not the one it was
+          // written under. It stays on screen, unsent.
+          console.log(`[send] not sent: the sign-in ended while the first message to ${agentId} waited`);
+          return;
+        }
+        if (how === "timeout") {
+          console.log(
+            `[send] thread directory not read after ${directoryWaitMs / 1000} s; the first message to ${agentId} starts a new thread`,
+          );
+        }
         const stillShown = (get().conversations[agentId] ?? []).some((b) => b.id === shown);
         directoryWaited = true;
         try {
@@ -2111,7 +2172,7 @@ export const useStore = create<State>((set, get) => ({
 
       // Restore before touching the network, so reopening shows the
       // conversation immediately rather than an empty window that fills in later.
-      await signedIn(get);
+      await signedIn(get, set);
     } catch (e) {
       set({ authState: "signed-out", authError: e instanceof Error ? e.message : String(e) });
     }
@@ -2326,7 +2387,7 @@ export const useStore = create<State>((set, get) => ({
         account: { email: session.email, orgName: session.orgName },
         authError: null,
       });
-      await signedIn(get);
+      await signedIn(get, set);
       return true;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -2343,7 +2404,11 @@ export const useStore = create<State>((set, get) => ({
     // history — the eve session ids are dropped because they will not resume,
     // but what was said stays and reappears on the next sign-in.
     get().persist();
+    // End this sign-in's directory gate: a first message still waiting on it
+    // is not sent, and a pass still running does not settle the next one.
+    signInGeneration += 1;
+    settleDirectory();
     await window.studio?.signOut();
-    set({ authState: "signed-out", account: null, sessions: {}, streamIndexes: {} });
+    set({ authState: "signed-out", account: null, sessions: {}, streamIndexes: {}, directoryLoading: false });
   },
 }));

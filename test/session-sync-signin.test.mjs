@@ -19,8 +19,12 @@ after(() => window.close());
 test("signIn: the directory answering before the agents still adopts the account's thread, and focus reads it again", async (t) => {
   const logs = captureLogs(t);
 
-  assert.equal(await useStore.getState().signIn(() => {}), true);
+  const signingIn = useStore.getState().signIn(() => {});
+  await sleep(10);
+  assert.equal(useStore.getState().directoryLoading, true, "nothing says the messages are still loading");
+  assert.equal(await signingIn, true);
   await sleep(600);
+  assert.equal(useStore.getState().directoryLoading, false, "\"Loading messages\" outlived the directory read");
 
   const state = useStore.getState();
   assert.equal(state.sessions[REMOTE_AGENT.id], OLD_THREAD.sessionId, "the account's thread was not adopted");
@@ -38,5 +42,5 @@ test("signIn: the directory answering before the agents still adopts the account
 
   const summary = logs().find((l) => l.startsWith("[index] sync: "));
   assert.ok(summary, `no summary line: ${JSON.stringify(logs())}`);
-  assert.match(summary, /1 row\(s\); 1 for an agent here, 1 adopted/);
+  assert.match(summary, /1 row\(s\); 1 for an agent here \(1 newest\), 1 adopted/);
 });

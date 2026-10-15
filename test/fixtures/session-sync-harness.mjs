@@ -48,15 +48,17 @@ export const OLD_THREAD = {
 };
 
 /**
- * Install a bridge. `delays` (ms) per method; `rows` is what the directory
+ * Install a bridge. `delays` (ms) per method; `hang` methods never answer; `rows` is what the directory
  * holds; `agents` what the control plane grants; `stored` whether a session
  * is already on disk (bootstrap) or a sign-in is needed.
  */
-export function installBridge({ delays = {}, rows = [OLD_THREAD], agents = [REMOTE_AGENT], stored = false } = {}) {
+export function installBridge({ delays = {}, hang = [], rows = [OLD_THREAD], agents = [REMOTE_AGENT], stored = false } = {}) {
   const calls = [];
   const sends = [];
   const after = async (name) => {
     calls.push(name);
+    // `hang`: never answers, like a control plane that has stopped responding.
+    if (hang.includes(name)) await new Promise(() => {});
     if (delays[name]) await sleep(delays[name]);
   };
   const known = {
@@ -102,4 +104,9 @@ export function installBridge({ delays = {}, rows = [OLD_THREAD], agents = [REMO
 export function captureLogs(t) {
   const mock = t.mock.method(console, "log", () => {});
   return () => mock.mock.calls.map((c) => c.arguments.map(String).join(" "));
+}
+
+/** How many times `text` appears in the agent's chat: a message must be there exactly once. */
+export function occurrences(useStore, agentId, text) {
+  return (useStore.getState().conversations[agentId] ?? []).filter((b) => b.text === text).length;
 }

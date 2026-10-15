@@ -355,6 +355,12 @@ export function Conversation(): ReactNode {
         accent: agents.find((a) => a.id === peer.id || a.name === peer.name)?.accent,
       }));
   const blocks = conversations[activeAgentId] ?? [];
+  // KYB-643: right after signing in, the account's threads are still being
+  // read. A chat with no thread yet may be about to receive one, so "No
+  // messages yet" would be a guess, and usually a wrong one.
+  const directoryLoading = useStore((s) => s.directoryLoading);
+  const hasThread = useStore((s) => Boolean(s.sessions[activeAgentId]));
+  const loadingMessages = !room && directoryLoading && !hasThread;
   const [draft, setDraft] = useState("");
   const [acCursor, setAcCursor] = useState(0);
   const [folderMenu, setFolderMenu] = useState(false);
@@ -835,7 +841,12 @@ export function Conversation(): ReactNode {
               body
             );
           })}
-          {blocks.length === 0 ? (
+          {blocks.length === 0 && loadingMessages ? (
+            <div className="empty" role="status">
+              <Spinner />
+              <span> Loading messages…</span>
+            </div>
+          ) : blocks.length === 0 ? (
             <div className="empty">
               {room
                 ? `No messages yet. Say something to ${roomMembers.map((m) => m.name).join(" and ")}.`
