@@ -58,20 +58,83 @@ let crossDeviceReady = false;
  * the rate at which polling costs anything.
  */
 function startCrossDeviceRefresh(get: () => State): void {
-  if (crossDeviceReady) return;
-  crossDeviceReady = true;
-
   const refresh = (): void => void get().refreshFromOthers();
 
-  window.addEventListener("focus", refresh);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") refresh();
-  });
-  setInterval(() => {
-    if (document.visibilityState === "visible") refresh();
-  }, 30_000);
+  // The listeners once per window; the read every time someone signs in. A
+  // second sign-in in the same window (after signing out) still has to learn
+  // the account's threads, and returning early here is how it would not.
+  if (!crossDeviceReady) {
+    crossDeviceReady = true;
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refresh();
+    });
+    setInterval(() => {
+      if (document.visibilityState === "visible") refresh();
+    }, 30_000);
+  }
 
   refresh();
+}
+
+/**
+ * Whether the account's thread directory has been read, against a loaded agent
+ * list, since this sign-in (KYB-643).
+ *
+ * Until it has, a first message to an agent this device has no thread with
+ * would start a NEW thread while the directory may be about to name an
+ * existing one. That new thread then becomes the account's newest, and every
+ * other device moves onto it. So `send` waits for this, briefly.
+ *
+ * Settled by default: only `signedIn` opens it, so nothing that never signs in
+ * (tests, a missing bridge) ever waits on it.
+ */
+let directorySettled = true;
+let settleDirectory: () => void = () => {};
+let directoryReady: Promise<void> = Promise.resolve();
+
+function expectDirectory(): void {
+  settleDirectory(); // release anyone still waiting on a previous sign-in
+  directorySettled = false;
+  directoryReady = new Promise<void>((resolve) => {
+    settleDirectory = () => {
+      directorySettled = true;
+      resolve();
+    };
+  });
+}
+
+/**
+ * How long a first message waits for the directory before going out anyway.
+ * A control plane that does not answer must not stop someone talking to an
+ * agent; the directory read itself gives up after 15 s.
+ */
+export const DIRECTORY_WAIT_MS = 5_000;
+
+function waitForDirectory(): Promise<void> {
+  return Promise.race([directoryReady, new Promise<void>((r) => setTimeout(r, DIRECTORY_WAIT_MS))]);
+}
+
+/** Set for the one synchronous re-entry of `send` after it has waited. */
+let directoryWaited = false;
+
+/**
+ * Everything that follows a successful sign-in, for BOTH ways in (KYB-643).
+ *
+ * `bootstrap` (a stored session) and `signIn` (a fresh one: every first run and
+ * every wiped config) used to repeat these steps by hand, and `signIn` left
+ * out the last one. After a fresh sign-in the directory was read once, before
+ * the agents had loaded, and never again until a relaunch, so the account's
+ * threads were not picked up and the first message started a new one.
+ */
+async function signedIn(get: () => State): Promise<void> {
+  expectDirectory();
+  // Local state first, so reopening shows the conversation immediately.
+  await get().restore();
+  await get().refreshAgents();
+  // Then the account's threads, which can only be matched against agents that
+  // have loaded, and from then on on every focus and every 30 s.
+  startCrossDeviceRefresh(get);
 }
 
 function ensureListeners(
@@ -972,7 +1035,16 @@ export const useStore = create<State>((set, get) => ({
    */
   syncSessions: async () => {
     if (!window.studio) return;
+    // KYB-643: a row resolved against an agent list that has not loaded matches
+    // nothing and is skipped. That is not an answer, so it is not treated as
+    // one: no rows are judged, and the directory is not marked as read.
+    if (get().agents.length === 0) {
+      console.log("[index] sync skipped — agents not loaded yet");
+      return;
+    }
     const indexed = await window.studio.listSessions();
+    /** One summary line per pass; counts only, never message text (KYB-637). */
+    const count = { room: 0, noAgent: 0, resolved: 0, same: 0, chosen: 0, published: 0, adopted: 0 };
 
     // Directory rows name the agent by its registered name; older rows from
     // this app carry its id. Resolve either to the local agent, and skip what
@@ -996,6 +1068,7 @@ export const useStore = create<State>((set, get) => ({
      */
     for (const entry of indexed) {
       if (!entry.label || !isRoomId(entry.label)) continue;
+      count.room += 1;
       const roomHere = get().rooms.find((r) => r.id === entry.label);
       const agent = resolve(entry.agent);
       if (!roomHere || !agent) continue;
@@ -1007,7 +1080,11 @@ export const useStore = create<State>((set, get) => ({
     for (const entry of indexed) {
       if (entry.label && isRoomId(entry.label)) continue;
       const agent = resolve(entry.agent);
-      if (!agent) continue;
+      if (!agent) {
+        count.noAgent += 1;
+        continue;
+      }
+      count.resolved += 1;
       const at = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
       const held = newest.get(agent.id);
       const heldAt = held?.lastMessageAt ? Date.parse(held.lastMessageAt) : 0;
@@ -1022,11 +1099,17 @@ export const useStore = create<State>((set, get) => ({
       const localSession = get().sessions[agent.id];
       const localAt = localLastAt(agent.id);
       const remoteAt = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
-      if (localSession === entry.sessionId) continue;
+      if (localSession === entry.sessionId) {
+        count.same += 1;
+        continue;
+      }
       // A thread the person opened on purpose stays unless the directory's
       // newest moved AFTER they picked (someone really did talk elsewhere).
       const choice = get().sessionChoice[agent.id];
-      if (choice && choice.sessionId === localSession && remoteAt <= choice.at) continue;
+      if (choice && choice.sessionId === localSession && remoteAt <= choice.at) {
+        count.chosen += 1;
+        continue;
+      }
 
       /**
        * Two-way. The account's thread is adopted when it is the newer one;
@@ -1041,6 +1124,7 @@ export const useStore = create<State>((set, get) => ({
        * longer what this agent's chat shows.
        */
       if (localSession && localAt >= remoteAt) {
+        count.published += 1;
         void window.studio.recordSession({
           agent: agent.registeredName ?? agent.id,
           sessionId: localSession,
@@ -1051,6 +1135,7 @@ export const useStore = create<State>((set, get) => ({
         continue;
       }
 
+      count.adopted += 1;
       set((s) => {
         const streamIndexes = { ...s.streamIndexes };
         // The cursor belongs to the session being replaced; carrying it over
@@ -1079,6 +1164,16 @@ export const useStore = create<State>((set, get) => ({
       });
     }
     get().persist();
+
+    console.log(
+      `[index] sync: ${indexed.length} row(s); ${count.resolved} for an agent here, ` +
+        `${count.adopted} adopted, ${count.published} published (local newer), ${count.same} already current, ` +
+        `${count.chosen} kept (chosen), ${count.resolved - newest.size} older; skipped ${count.room} room, ${count.noAgent} no agent`,
+    );
+    // After the adopted threads have been replayed, not before: a first message
+    // released earlier would land in a chat that the replay then declines to
+    // fill, because it only fills an empty one.
+    settleDirectory();
   },
 
   /**
@@ -1448,6 +1543,32 @@ export const useStore = create<State>((set, get) => ({
     // Save the question immediately. If the app dies mid-turn, losing the answer
     // is annoying; losing what you asked is worse.
     get().persist();
+
+    /**
+     * KYB-643: no thread with this agent yet, and the account's directory is
+     * still being read. Sending now would start a new thread that every other
+     * device then moves onto, while the directory may be about to name the one
+     * the person has been using. So wait for it (bounded), then go out on
+     * whatever thread it found.
+     *
+     * The bubble stays on screen meanwhile. If the directory adopts a thread,
+     * adopting replaces this chat with that thread's history, bubble included,
+     * so it is put back after the history rather than lost.
+     */
+    if (!directorySettled && !directoryWaited && !get().sessions[agentId]) {
+      const shown = `u${at}`;
+      console.log(`[send] waiting for the thread directory before the first message to ${agentId}`);
+      void waitForDirectory().then(() => {
+        const stillShown = (get().conversations[agentId] ?? []).some((b) => b.id === shown);
+        directoryWaited = true;
+        try {
+          get().send(agentId, text, fromQueue || stillShown, attachments);
+        } finally {
+          directoryWaited = false;
+        }
+      });
+      return;
+    }
 
     const agent = get().agents.find((a) => a.id === agentId);
 
@@ -1945,11 +2066,9 @@ export const useStore = create<State>((set, get) => ({
     }
     const ws = await window.studio.loadState<Record<string, string>>("workspaces.json");
     if (ws) set({ workspaces: ws });
-
-    // After the local state, so the directory can only add threads this device
-    // does not have. Not awaited by the caller: a slow control plane must not
-    // hold up an app whose conversations are already on disk.
-    void get().syncSessions();
+    // The directory is NOT read here. Here is before the agents have loaded,
+    // and a row matched against no agents is silently skipped (KYB-643);
+    // `signedIn` reads it once they have.
   },
 
   /** Write the transcript now. Cheap, and called at every point worth surviving. */
@@ -1992,10 +2111,7 @@ export const useStore = create<State>((set, get) => ({
 
       // Restore before touching the network, so reopening shows the
       // conversation immediately rather than an empty window that fills in later.
-      await get().restore();
-
-      await get().refreshAgents();
-      startCrossDeviceRefresh(get);
+      await signedIn(get);
     } catch (e) {
       set({ authState: "signed-out", authError: e instanceof Error ? e.message : String(e) });
     }
@@ -2210,8 +2326,7 @@ export const useStore = create<State>((set, get) => ({
         account: { email: session.email, orgName: session.orgName },
         authError: null,
       });
-      await get().restore();
-      await get().refreshAgents();
+      await signedIn(get);
       return true;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
