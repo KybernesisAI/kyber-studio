@@ -661,8 +661,17 @@ const LOCAL_ACTIONS: { action: LocalAction; label: string; detail: string }[] = 
   { action: "local-mcp", label: "Use local services", detail: "Call an MCP server running on this computer." },
 ];
 
-function LocalPermissions(): ReactNode {
+/**
+ * What the permissions card says when a save is refused. Not the error itself,
+ * which names the user's profile path and an IPC channel (KYB-641); that goes
+ * to the log.
+ */
+export const PERMISSION_SAVE_FAILED_MESSAGE = "Couldn’t save that setting. Please try again.";
+
+/** Exported so a test can mount it and drive a refused save (KYB-621). */
+export function LocalPermissions(): ReactNode {
   const [perms, setPerms] = useState<Record<LocalAction, LocalPermission> | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -673,8 +682,19 @@ function LocalPermissions(): ReactNode {
   }, []);
 
   const set = async (action: LocalAction, value: LocalPermission): Promise<void> => {
-    const next = await window.studio?.setLocalPermission({ action, value });
-    if (next) setPerms(next);
+    // A save can fail (KYB-621: on Windows, whenever another process holds the
+    // file). Unhandled, the select silently snapped back; say so instead, in
+    // words a person can act on, and log the detail (KYB-641).
+    try {
+      const next = await window.studio?.setLocalPermission({ action, value });
+      setSaveError(null);
+      if (next) setPerms(next);
+    } catch (error) {
+      console.error(
+        `[permissions] could not save ${action}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      setSaveError(PERMISSION_SAVE_FAILED_MESSAGE);
+    }
   };
 
   if (!perms) return null;
@@ -690,6 +710,7 @@ function LocalPermissions(): ReactNode {
               ? "Every one of these asks first. Answering “always” or “never” on a card is remembered here."
               : `${standing} of these no longer ask. Set one back to “Ask” to be prompted again.`}
           </div>
+          {saveError ? <div className="muted" role="alert">{saveError}</div> : null}
         </div>
       </div>
       {LOCAL_ACTIONS.map((a) => (

@@ -1,6 +1,6 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,7 +43,9 @@ mock.module("electron", {
   },
 });
 
-const { executeLocalAction, relayErrorPayload } = await import("../src/main/localExec.ts");
+const { answerAsk, authorize, executeLocalAction, readPermissions, relayErrorPayload, rememberDecision } = await import(
+  "../src/main/localExec.ts"
+);
 
 const sealed = (plain) => `kyb:v1:${Buffer.from(`ENC(${plain})`, "utf8").toString("base64")}`;
 
@@ -180,3 +182,62 @@ for (const [label, damaged] of damagedFixtures) {
     assert.match(payload.error, /could not be read/i, "the relay was told nothing at all");
   });
 }
+
+/**
+ * KYB-621: remembering a card answer can fail (on Windows, whenever another
+ * process holds the permissions file). Before this, the throw escaped
+ * `authorize` after the user had decided, and the agent's request was never
+ * answered. Now it is logged and the decision is unaffected.
+ */
+test("a remembered card answer that cannot be saved is logged, not thrown", () => {
+  const lines = [];
+  const failing = () => {
+    throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+  };
+  assert.doesNotThrow(() => rememberDecision(failing, (line) => lines.push(line)));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /could not remember the decision: EPERM/);
+
+  let ran = false;
+  rememberDecision(() => { ran = true; }, (line) => lines.push(line));
+  assert.equal(ran, true);
+  assert.equal(lines.length, 1, "a successful remember logged something");
+});
+
+/**
+ * The same, through the real card flow rather than the helper on its own:
+ * reverting `authorize` to call setPermission directly must fail here. The
+ * permissions file is made PERMANENTLY unwritable: on POSIX its directory is
+ * made read-only (a read-only file would not stop the rename); on Windows the
+ * file itself is (which does). The person answers "always" and asks for
+ * it to be remembered; the request must still be answered with their decision.
+ */
+test("a card answered 'always, remember' whose save fails still answers the request, and logs the loss", {
+  skip: process.platform !== "win32" && process.getuid?.() === 0 && "root ignores directory permissions",
+}, async (t) => {
+  const logged = t.mock.method(console, "error", () => {});
+  const sender = {
+    isDestroyed: () => false,
+    // The card is answered as soon as it is shown, the way a click would.
+    send: (_channel, card) => setImmediate(() => answerAsk(card.id, true, true)),
+  };
+  // POSIX: a read-only directory. Windows: the read-only attribute on the file,
+  // which refuses the rename with EPERM even after the retry.
+  const perms = join(dir, "local-permissions.json");
+  if (!existsSync(perms)) writeFileSync(perms, "{}", "utf8");
+  if (process.platform === "win32") {
+    chmodSync(perms, 0o444);
+    t.after(() => chmodSync(perms, 0o666));
+  } else {
+    chmodSync(dir, 0o555);
+    t.after(() => chmodSync(dir, 0o755));
+  }
+
+  const allowed = await authorize(sender, { id: "card-1", agent: "a", action: "run-command", payload: { command: "ls" } });
+
+  assert.equal(allowed, true, "the person's decision was lost along with the save");
+  const lines = logged.mock.calls.map((c) => String(c.arguments[0]));
+  assert.ok(lines.some((l) => /could not remember the decision/.test(l)), `nothing logged: ${JSON.stringify(lines)}`);
+  // And nothing was remembered: the next request asks again.
+  assert.equal(readPermissions()["run-command"], "ask");
+});

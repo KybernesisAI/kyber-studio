@@ -35,8 +35,10 @@ export function saveState(name: string, value: unknown): void {
     // Atomic, and it tidies up after itself when it cannot be — see
     // ./atomicWrite for why the rename matters and what a failure leaves.
     writeAtomic(file(name), JSON.stringify(value));
-  } catch {
-    /* losing a save is survivable; crashing on one is not */
+  } catch (error) {
+    // Losing a save is survivable; crashing on one is not. But a lost save
+    // must at least be visible to whoever reads the log (KYB-621).
+    console.error(`[state] could not save ${name}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
