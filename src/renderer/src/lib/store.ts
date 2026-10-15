@@ -123,9 +123,15 @@ function expectDirectory(set: (partial: Partial<State>) => void): void {
 /**
  * How long a first message waits for the directory before going out anyway.
  * A control plane that does not answer must not stop someone talking to an
- * agent; the directory read itself gives up after 15 s.
+ * agent.
+ *
+ * 15 s, the directory read's own timeout (`listSessions` in sessionIndex.ts),
+ * chosen by the owner on 15 October 2026. Expiring sooner would start a new
+ * thread on a read that was merely slow, and that thread then becomes the
+ * account's newest on every device. At 15 s, a new thread is only started
+ * when the read has actually failed, with nothing better to go on.
  */
-export const DIRECTORY_WAIT_MS = 5_000;
+export const DIRECTORY_WAIT_MS = 15_000;
 let directoryWaitMs = DIRECTORY_WAIT_MS;
 /** Tests only: shorten the bound so its exit can be driven without a 5 s wait. */
 export function setDirectoryWaitForTests(ms: number): void {
