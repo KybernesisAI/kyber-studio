@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -65,15 +65,22 @@ test("the retry is bounded: when the target stays refused, the last error is thr
 });
 
 test("off Windows, and for errors that are not 'in use', the rename is not retried", () => {
+  // The sleep RECORDS rather than throws: a throwing sleep is caught by the
+  // same assert.throws as the rename's own error, so a wrongful retry would
+  // pass. Each throw is pinned to the rename's code for the same reason.
   for (const platform of ["linux", "darwin"]) {
     const { calls, rename } = flakyRename(1);
-    assert.throws(() => renameWithRetry("a.tmp", "a", rename, () => assert.fail("slept"), platform));
+    const slept = [];
+    assert.throws(() => renameWithRetry("a.tmp", "a", rename, (ms) => slept.push(ms), platform), { code: "EPERM" });
     assert.equal(calls.length, 1, `${platform} retried`);
+    assert.deepEqual(slept, [], `${platform} slept`);
   }
   for (const code of ["ENOSPC", "ENOENT", "EISDIR", "EXDEV"]) {
     const { calls, rename } = flakyRename(1, code);
-    assert.throws(() => renameWithRetry("a.tmp", "a", rename, () => assert.fail("slept"), "win32"));
+    const slept = [];
+    assert.throws(() => renameWithRetry("a.tmp", "a", rename, (ms) => slept.push(ms), "win32"), { code });
     assert.equal(calls.length, 1, `${code} was retried`);
+    assert.deepEqual(slept, [], `${code} slept`);
   }
 });
 
@@ -95,6 +102,13 @@ test("a target held open by another process is still written, once the holder le
     holder.stdout.on("data", (d) => String(d).includes("held") && resolve());
     holder.on("exit", (code) => reject(new Error(`holder exited ${code} before holding`)));
   });
+
+  // The control: the hold really does refuse a bare rename, so the write below
+  // succeeds BECAUSE of the retry, not because no retry was needed.
+  const probe = join(dir, "probe");
+  writeFileSync(probe, "PROBE");
+  assert.throws(() => renameSync(probe, target), { code: "EPERM" }, "the hold did not refuse a bare rename");
+  rmSync(probe, { force: true });
 
   writeAtomic(target, "NEW", { mode: 0o600 });
   await new Promise((resolve) => (holder.exitCode !== null ? resolve() : holder.on("exit", resolve)));

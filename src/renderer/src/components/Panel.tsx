@@ -661,7 +661,8 @@ const LOCAL_ACTIONS: { action: LocalAction; label: string; detail: string }[] = 
   { action: "local-mcp", label: "Use local services", detail: "Call an MCP server running on this computer." },
 ];
 
-function LocalPermissions(): ReactNode {
+/** Exported so a test can mount it and drive a refused save (KYB-621). */
+export function LocalPermissions(): ReactNode {
   const [perms, setPerms] = useState<Record<LocalAction, LocalPermission> | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 

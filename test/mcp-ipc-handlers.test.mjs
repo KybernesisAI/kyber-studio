@@ -1,6 +1,6 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -210,4 +210,25 @@ test("the preload forwards the options argument rather than dropping it", () => 
     /"studio:saveMcpServers",\s*servers,\s*options/,
     `the preload drops the options argument: ${line.trim()}`,
   );
+});
+
+/**
+ * KYB-621: the permissions panel's save, through the REGISTERED handler, against
+ * a target that can never be written. The handler must reject — that rejection
+ * is what the card shows (test/local-permissions-dom.test.mjs) — rather than
+ * swallow the failure and answer with the unchanged permissions as if it had
+ * saved. On POSIX a read-only DIRECTORY refuses the temp write; a read-only
+ * file would not stop the rename.
+ */
+test("a permission save that cannot be written rejects through the handler, and changes nothing", {
+  skip: process.platform === "win32" && "a read-only directory does not refuse writes on Windows",
+}, (t) => {
+  const before = invoke("studio:localPermissions");
+  chmodSync(dir, 0o555);
+  t.after(() => chmodSync(dir, 0o755));
+
+  assert.throws(() => invoke("studio:setLocalPermission", { action: "run-command", value: "always" }), {
+    code: "EACCES",
+  });
+  assert.deepEqual(invoke("studio:localPermissions"), before, "the refused value was applied anyway");
 });

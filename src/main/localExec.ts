@@ -140,7 +140,13 @@ export function answerAsk(id: string, allow: boolean, remember: boolean): void {
   asks.delete(id);
 }
 
-async function authorize(
+/**
+ * Decide whether one request may run: a standing setting, or a card the person answers.
+ *
+ * Exported so a test can drive the real card flow end to end — including a
+ * remembered answer whose save fails (KYB-621) — without standing up the relay.
+ */
+export async function authorize(
   sender: WebContents | null,
   request: { id: string; agent: string; action: LocalAction; payload: Record<string, unknown> },
 ): Promise<boolean> {
