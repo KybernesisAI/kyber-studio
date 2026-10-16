@@ -17,7 +17,10 @@ cd "$(dirname "$0")/.."
 [ "$(git branch --show-current)" = "appydave" ] || { echo "not on appydave branch" >&2; exit 1; }
 
 source "$HOME/.nvm/nvm.sh" >/dev/null
-nvm use 24.21.0 >/dev/null   # 24.13 fails the test gate (electron named-export error)
+# Newest installed 24.x: 0.5.17 needs >=24.15 (engines), and 24.13 fails the
+# test gate (electron named-export error). A pinned patch broke on a machine
+# that had a different one installed.
+nvm use 24 >/dev/null
 
 npm run fetch:speech
 npm run build
