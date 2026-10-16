@@ -1155,7 +1155,10 @@ export const useStore = create<State>((set, get) => ({
     for (const entry of indexed) {
       if (entry.label && isRoomId(entry.label)) continue;
       const agent = resolve(entry.agent);
-      if (!agent) continue;
+      // A local agent's session is a Claude Code session in THIS machine's
+      // ~/.claude; another machine's id cannot be resumed here ("No conversation
+      // found with session ID", UAT story 3, 2026-10-16).
+      if (!agent || agent.kind === "local-claude") continue;
       byAgent.set(agent.id, [...(byAgent.get(agent.id) ?? []), entry]);
     }
 
@@ -1207,7 +1210,7 @@ export const useStore = create<State>((set, get) => ({
     // Threads this machine holds that the directory has never heard of.
     for (const agent of get().agents) {
       const localSession = get().sessions[agent.id];
-      if (!localSession || seen.has(agent.id) || isRoomId(agent.id)) continue;
+      if (!localSession || seen.has(agent.id) || isRoomId(agent.id) || agent.kind === "local-claude") continue;
       const localAt = localLastAt(agent.id);
       if (!localAt) continue;
       void window.studio.recordSession({
@@ -1681,6 +1684,10 @@ export const useStore = create<State>((set, get) => ({
         streamId,
       })
       .then((res) => {
+        // "New conversation" was pressed while this turn was finishing. Writing
+        // its session back would re-adopt the thread the person just left, and
+        // its reply would land after the divider (UAT story 6, 2026-10-16).
+        if (sentAtGeneration !== currentGeneration(agentId)) return;
         set((s) => ({
           sessions: { ...s.sessions, [agentId]: res.sessionId },
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
@@ -2399,6 +2406,11 @@ export const useStore = create<State>((set, get) => ({
       });
       await get().restore();
       await get().refreshAgents();
+      // Boot only starts these when a session already exists, so a first
+      // sign-in ran with no cross-device sync and no scheduled turns until the
+      // app was relaunched. Both are idempotent.
+      startCrossDeviceRefresh(get);
+      startScheduler(get);
       return true;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
