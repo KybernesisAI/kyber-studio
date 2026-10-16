@@ -1146,8 +1146,13 @@ export async function sendTurn(input: {
       // A 401 here is not a conversation to have with the user. Refresh and try
       // once more: sessions are meant to renew silently, and "sign out and back
       // in" is not an instruction any product should give.
-      if (error instanceof ClientError && error.status === 401) {
-        console.log("[auth] agent refused the token; refreshing and retrying once");
+      //
+      // A 403 gets the same treatment. The bundle lists the agents granted when
+      // it was minted, and it lives an hour: an agent built and granted inside
+      // that hour is refused until the next refresh, while a phone that signed
+      // in later works. A refresh re-mints the bundle from live grants.
+      if (error instanceof ClientError && (error.status === 401 || error.status === 403)) {
+        console.log(`[auth] agent refused the credential (${error.status}); refreshing and retrying once`);
         const renewed = await forceRefresh();
         if (!renewed) throw error;
         response = await dispatch();
@@ -2071,4 +2076,61 @@ export async function testRemoteMcp(
   } catch {
     return { ok: false, error: "Could not reach the control plane." };
   }
+}
+
+// ---- The person's vault -----------------------------------------------------
+// Secrets travel here exactly once, on add, over the signed-in session; the
+// control plane seals them. Listing returns labels and handles only, which is
+// also all an agent ever gets. Studio never holds a vault secret after the
+// request that carried it.
+
+export interface VaultItem {
+  id: string;
+  agentName: string;
+  kind: "login" | "card" | "address" | "contact";
+  label: string;
+  origin: string | null;
+  summary: Record<string, unknown>;
+  updatedAt: string;
+}
+
+async function vaultCall<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const s = await activeSession();
+  if (!s) throw new Error("Not signed in.");
+  const res = await fetch(`${issuer()}${path}`, {
+    method,
+    headers: authHeaders(s, { json: body !== undefined }),
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (res.status === 401) throw new Error("Session expired. Sign in again.");
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(detail.error ?? `The vault request failed (HTTP ${res.status}).`);
+  }
+  return (await res.json()) as T;
+}
+
+// A vault belongs to one agent. Every call names it; the control plane refuses one that does not.
+const agentParam = (agent: string): string => `agent=${encodeURIComponent(agent.trim().toLowerCase())}`;
+
+export async function vaultList(agent: string): Promise<VaultItem[]> {
+  const body = await vaultCall<{ items?: VaultItem[] }>("GET", `/api/me/vault?${agentParam(agent)}`);
+  return body.items ?? [];
+}
+
+export async function vaultAdd(agent: string, input: Record<string, unknown>): Promise<VaultItem> {
+  const body = await vaultCall<{ item: VaultItem }>("POST", `/api/me/vault?${agentParam(agent)}`, input);
+  return body.item;
+}
+
+export async function vaultRemove(agent: string, id: string): Promise<void> {
+  await vaultCall("DELETE", `/api/me/vault?id=${encodeURIComponent(id)}&${agentParam(agent)}`);
+}
+
+export async function vaultImport(
+  agent: string,
+  rows: { name?: string; url?: string; username?: string; password?: string }[],
+): Promise<{ added: number; skipped: string[] }> {
+  return vaultCall("POST", `/api/me/vault/import?${agentParam(agent)}`, { rows });
 }

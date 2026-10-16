@@ -3,6 +3,7 @@ import { Conversation } from "./components/Conversation";
 import { Palette } from "./components/Palette";
 import { Panel } from "./components/Panel";
 import { Plugins } from "./components/Plugins";
+import { ComputerView } from "./components/Computer";
 import { Sidebar } from "./components/Sidebar";
 import { SignIn } from "./components/SignIn";
 import { useStore } from "./lib/store";
@@ -45,6 +46,7 @@ export function App(): ReactNode {
       <Conversation />
       <Panel />
       <Plugins />
+      <ComputerView />
       <Palette />
     </div>
   );

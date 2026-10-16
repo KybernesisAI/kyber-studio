@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { BrowserWindow, app, safeStorage, shell } from "electron";
 import { electronApp, is, optimizer, platform } from "@electron-toolkit/utils";
 import { registerIpc } from "./ipc";
-import { setLocalExecWindow, startLocalExec, stopLocalExec } from "./localExec";
+import { leaveLocalExec, setLocalExecWindow, startLocalExec, stopLocalExec } from "./localExec";
 import { createCredentialStorageReporter } from "./credentialStorage";
 import { focusExistingWindow } from "./singleInstance";
 
@@ -321,7 +321,8 @@ app.on("window-all-closed", () => {
 // watcher, a port. None of them should outlive the app that started them, and
 // an orphaned server is the kind of thing a user finds in Activity Monitor a
 // week later and never trusts again.
-app.on("will-quit", () => {
+let saidGoodbye = false;
+app.on("will-quit", (event) => {
   // Stop the local-execution poller alongside the MCP servers: it was written
   // for exactly this and never wired up, so it kept polling the relay through
   // teardown.
@@ -329,4 +330,12 @@ app.on("will-quit", () => {
   stopAll();
   // Local agents run in their own process group, so quitting would not take them with it.
   stopAllLocalTurns();
+  // And tell the control plane this machine is gone, so an agent asked to work
+  // here is told "not connected" now rather than after the liveness window.
+  // One bounded round trip, then the quit proceeds whatever happened.
+  if (!saidGoodbye) {
+    saidGoodbye = true;
+    event.preventDefault();
+    void leaveLocalExec().finally(() => app.quit());
+  }
 });

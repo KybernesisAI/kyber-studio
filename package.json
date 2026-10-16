@@ -1,6 +1,6 @@
 {
   "name": "kyber-studio",
-  "version": "0.5.9",
+  "version": "0.5.17",
   "description": "KYBER Studio — the desktop door to your Kybernesis agents.",
   "homepage": "https://github.com/KybernesisAI/kyber-studio",
   "main": "./out/main/index.js",
@@ -19,6 +19,8 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "package": "npm run build && electron-builder",
     "package:linux": "npm run build && electron-builder --linux",
+    "package:win": "npm run build && electron-builder --win",
+    "prepackage:win": "node scripts/fetch-speech-model.mjs && node scripts/prepare-windows-vc-redist.mjs",
     "release:mac": "npm run build && electron-builder --mac --publish always",
     "release:linux": "npm run build && electron-builder --linux --publish always",
     "release": "npm version patch -m \"release: v%s\" && git push --follow-tags",
@@ -36,6 +38,7 @@
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^3.0.0",
     "@huggingface/transformers": "^4.2.0",
+    "@novnc/novnc": "^1.7.0",
     "@opentelemetry/api": "^1.9.0",
     "ai": "^7.0.58",
     "electron-updater": "^6.3.9",
@@ -101,10 +104,37 @@
       ]
     },
     "win": {
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "artifactName": "KYBER-Studio-${version}-win-${arch}.${ext}",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "files": [
+        "out/**/*",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/darwin/**",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/linux/**",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/x64/DirectML.dll",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/x64/dxcompiler.dll",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/x64/dxil.dll"
+      ]
+    },
+    "nsis": {
+      "include": "build/windows-installer.nsh",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
     },
     "linux": {
-      "icon": "build/icon.png",
+      "icon": "build/icons",
       "target": [
         {
           "target": "AppImage",
@@ -151,6 +181,9 @@
         "from": "resources/models",
         "to": "models"
       }
-    ]
+    ],
+    "appImage": {
+      "artifactName": "KYBER-Studio-${version}.${ext}"
+    }
   }
 }

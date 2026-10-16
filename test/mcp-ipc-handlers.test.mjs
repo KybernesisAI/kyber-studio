@@ -1,6 +1,6 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -210,4 +210,73 @@ test("the preload forwards the options argument rather than dropping it", () => 
     /"studio:saveMcpServers",\s*servers,\s*options/,
     `the preload drops the options argument: ${line.trim()}`,
   );
+});
+
+/**
+ * KYB-621: the permissions panel's save, through the REGISTERED handler, against
+ * a target that can never be written. The handler must reject — that rejection
+ * is what the card shows (test/local-permissions-dom.test.mjs) — rather than
+ * swallow the failure and answer with the unchanged permissions as if it had
+ * saved. On POSIX a read-only DIRECTORY refuses the temp write; a read-only
+ * file would not stop the rename. On Windows a read-only file does.
+ */
+test("a permission save that cannot be written rejects through the handler, and changes nothing", {
+  skip: process.platform !== "win32" && process.getuid?.() === 0 && "root ignores directory permissions",
+}, (t) => {
+  // POSIX: a read-only directory. Windows: the read-only attribute on the file,
+  // which refuses the rename with EPERM — the retry's own case — so this also
+  // shows the retry giving up and the failure still reaching the caller.
+  const perms = join(dir, "local-permissions.json");
+  if (!existsSync(perms)) writeFileSync(perms, "{}", "utf8");
+  const before = invoke("studio:localPermissions");
+  if (process.platform === "win32") {
+    chmodSync(perms, 0o444);
+    t.after(() => chmodSync(perms, 0o666));
+  } else {
+    chmodSync(dir, 0o555);
+    t.after(() => chmodSync(dir, 0o755));
+  }
+
+  assert.throws(() => invoke("studio:setLocalPermission", { action: "run-command", value: "always" }), {
+    code: process.platform === "win32" ? "EPERM" : "EACCES",
+  });
+  assert.deepEqual(invoke("studio:localPermissions"), before, "the refused value was applied anyway");
+});
+
+/**
+ * KYB-621: the MCP config — the ticket's headline case — saved through the
+ * REGISTERED handler against a target that can never be written. It must reject
+ * (the Plugins panel folds a rejection into "That didn't save: …", pinned in
+ * test/mcp-panel-dom.test.mjs), leave the file's bytes alone, and leave the
+ * servers it reports unchanged.
+ *
+ * Runs on BOTH arms, because Windows is where the save actually fails:
+ *   - POSIX: a read-only directory refuses the temp write (EACCES). A read-only
+ *     FILE would not stop the rename, so it would prove nothing.
+ *   - Windows: the read-only attribute on the file refuses the rename (EPERM),
+ *     which is exactly the error the retry exists for — so this also shows the
+ *     retry giving up and the failure still reaching the caller.
+ */
+test("an MCP config save that cannot be written rejects through the handler, and changes nothing", {
+  skip: process.platform !== "win32" && process.getuid?.() === 0 && "root ignores directory permissions",
+}, (t) => {
+  writeFileSync(configPath(), JSON.stringify({ servers: [server()] }, null, 2), "utf8");
+  const bytes = readFileSync(configPath(), "utf8");
+  const before = invoke("studio:mcpServers");
+  assert.equal(before.ok, true, "the fixture did not load");
+
+  if (process.platform === "win32") {
+    chmodSync(configPath(), 0o444);
+    t.after(() => chmodSync(configPath(), 0o666));
+  } else {
+    chmodSync(dir, 0o555);
+    t.after(() => chmodSync(dir, 0o755));
+  }
+
+  assert.throws(() => invoke("studio:saveMcpServers", []), {
+    code: process.platform === "win32" ? "EPERM" : "EACCES",
+  });
+  assert.equal(readFileSync(configPath(), "utf8"), bytes, "the refused save changed the file");
+  assert.deepEqual(invoke("studio:mcpServers"), before, "the refused save changed what is reported");
+  assert.equal(readdirSync(dir).some((f) => f.endsWith(".tmp")), false, "a temp file was left behind");
 });

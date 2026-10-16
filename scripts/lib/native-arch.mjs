@@ -230,10 +230,14 @@ export function identify(file) {
   // PE — Windows. "MZ", then a 4-byte offset at 0x3C to the "PE\0\0" signature,
   // with the COFF Machine field 4 bytes after it. Every field is little-endian.
   //
-  // There is NO Windows target: this branch is here so that the win32 prebuilds
-  // onnxruntime-node's fat npm package drags into every bundle are classified
-  // as foreign payload instead of vanishing into a silent skip. It is not
-  // Windows support and does not imply any.
+  // This branch predates any Windows target and used to say so. It existed only
+  // to classify the win32 prebuilds onnxruntime-node's fat npm package drags
+  // into every bundle as foreign payload, rather than letting them vanish into
+  // a silent skip.
+  //
+  // There IS a Windows target now, so the same reading also judges a Windows
+  // package's own binaries. The code below is unchanged; only the claim about
+  // why it is here was wrong once the target existed.
   if (buffer[0] === 0x4d && buffer[1] === 0x5a) {
     if (read < 0x40) return null;
     const peOffset = buffer.readUInt32LE(0x3c);

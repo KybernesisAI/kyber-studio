@@ -1,6 +1,65 @@
 import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
 
 /**
+ * The pause before each retry of a refused rename, in milliseconds. Five
+ * retries, about 0.8 s in all.
+ *
+ * @remarks
+ * KYB-621, measured on windows-latest on 14 October 2026: while ANY other
+ * process holds the target open — whatever share mode it used, including
+ * `FILE_SHARE_DELETE` — `renameSync` onto it fails with `EPERM`. An indexer,
+ * a virus scanner or a backup agent glancing at the file is enough. A 300 ms
+ * hold cleared after about 335 ms of retrying. POSIX has no such failure:
+ * rename replaces the name and an open handle keeps the old inode, measured on
+ * Linux the same day.
+ *
+ * The budget is short because `writeAtomic` is synchronous on Electron's main
+ * process, so every millisecond here freezes the window. That is the accepted
+ * cost, decided by the repository owner: a target that can NEVER be written
+ * (read-only, which also reports `EPERM`) costs about 0.8 s per save before
+ * the error surfaces as it always did. Making the write asynchronous would
+ * remove the freeze at the price of changing every caller.
+ */
+export const RENAME_RETRY_DELAYS_MS: readonly number[] = [25, 50, 100, 200, 400];
+
+/** What Windows reports for a rename refused because the target is in use. */
+const TRANSIENT_RENAME_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+
+/** Block this thread for `ms` without spinning. Allowed on Node's main thread and on Electron's main process (measured on 34.5.8). */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * `renameSync`, retried on Windows while the target is held open. Off Windows,
+ * and for any other error, it is exactly `renameSync`. When the budget runs out
+ * the last error is thrown unchanged.
+ *
+ * The three seams exist so the retry can be tested on any platform with a fake
+ * rename; production passes none of them.
+ */
+export function renameWithRetry(
+  from: string,
+  to: string,
+  rename: (from: string, to: string) => void = renameSync,
+  sleep: (ms: number) => void = sleepSync,
+  platform: string = process.platform,
+): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rename(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code ?? "";
+      if (platform !== "win32" || !TRANSIENT_RENAME_CODES.has(code) || attempt >= RENAME_RETRY_DELAYS_MS.length) {
+        throw error;
+      }
+      sleep(RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+/**
  * Write a file so a reader sees either the old contents or the new ones, never
  * half of either — and leave nothing behind when it fails.
  *
@@ -24,6 +83,11 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  * persistent kind — a full disk, a permissions change, a lock held by another
  * process — so it will not clean itself up on the next attempt either. That
  * leftover is what KYB-580 was filed about.
+ *
+ * On Windows the rename itself fails whenever another process holds the
+ * TARGET open, which an indexer or scanner can do at any moment, so the rename
+ * is retried there briefly before the failure is let through: see
+ * {@link renameWithRetry} and {@link RENAME_RETRY_DELAYS_MS} (KYB-621).
  *
  * The temp name is derived from the target rather than randomised, deliberately:
  * a crash between write and rename then leaves ONE stale file per target, which
@@ -101,6 +165,49 @@ import { chmodSync, renameSync, rmSync, writeFileSync } from "node:fs";
  * future caller that wants atomicity without `0600` would silently get the
  * symlink-following variant. Nothing at such a call site would say so. If one
  * ever appears, separate the two rather than passing a mode nobody wants.
+ *
+ * ## On Windows the mode does almost nothing — KYB-616
+ *
+ * Node documents that on Windows only the write permission can be changed: a
+ * mode sets or clears the read-only attribute and that is all. `0o600` keeps
+ * the owner's write bit, so on Windows all three steps above leave the file an
+ * ordinary writable file. None of them restricts who can read it.
+ *
+ * **What keeps a secrets container owner-only there is the directory's ACL,
+ * inherited.** Every file this function publishes is a new file when a mode is
+ * passed, as every secrets caller does: the stale temp is removed first and the
+ * rename replaces the target rather than writing into it. A new file takes its
+ * ACL from the directory it is created in. The containers live in Electron's
+ * `userData`, under `%APPDATA%`, which belongs to the user's profile. Measured
+ * on Windows 11 on 13 October 2026, as an unelevated user: the directory and
+ * every file in it carry exactly three entries, all inherited — the user,
+ * `NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators`. No `Users`, no
+ * `Authenticated Users`, no `Everyone`. Observed on the same machine on 14
+ * October 2026, KYB-616's two-account check: a second, non-administrator local
+ * account was refused reading the container from both PowerShell and `cmd`,
+ * and was refused listing the first user's `%APPDATA%` and profile
+ * directories.
+ *
+ * Relying on that was a decision rather than a default, and it has a limit
+ * that must be stated alongside the reassurance: **a local administrator can
+ * read these files.** That is the same position as `root` against a POSIX
+ * `0600` file. Neither mode bits nor this ACL were ever going to stop it.
+ *
+ * Two things follow for anyone changing this.
+ *
+ * - **Keep passing the mode.** It is correct on Linux and macOS and inert on
+ *   Windows, so removing it to tidy one platform would regress two.
+ * - **An ACL of our own would belong on the DIRECTORY, not the files.**
+ *   Because every publish is a fresh file, a per-file ACL would be thrown away
+ *   by the next write and would have to be reapplied every time.
+ *
+ * The reliance is pinned by `test/windows-userdata-acl.test.mjs`, which runs
+ * on the Windows CI arm and is shown failing against a directory that grants
+ * read to each of the three broad groups. It observes only the profile of
+ * the machine running it — a CI runner, or a developer's own — so it guards
+ * against `writeAtomic` breaking the inheritance, not against a permissive
+ * `%APPDATA%` on a user's machine, nor against our code moving `userData`
+ * out of `%APPDATA%` altogether.
  */
 export function writeAtomic(target: string, data: string, options: { mode?: number } = {}): void {
   const tmp = `${target}.tmp`;
@@ -112,7 +219,7 @@ export function writeAtomic(target: string, data: string, options: { mode?: numb
       writeFileSync(tmp, data, { encoding: "utf8", mode: options.mode });
       chmodSync(tmp, options.mode);
     }
-    renameSync(tmp, target);
+    renameWithRetry(tmp, target);
   } catch (error) {
     try {
       rmSync(tmp, { force: true });

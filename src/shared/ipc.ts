@@ -195,6 +195,24 @@ export interface VoiceContext {
   voice?: string;
 }
 
+export type VaultKind = "login" | "card" | "address" | "contact";
+
+export interface VaultItem {
+  id: string;
+  agentName: string;
+  kind: VaultKind;
+  label: string;
+  origin: string | null;
+  summary: Record<string, unknown>;
+  updatedAt: string;
+}
+
+export type VaultAddInput =
+  | { kind: "login"; label: string; origin: string; username: string; password: string }
+  | { kind: "card"; label: string; cardholder: string; number: string; expMonth: number; expYear: number; cvc?: string }
+  | { kind: "address"; label: string; address: Record<string, string> }
+  | { kind: "contact"; label: string; contact: Record<string, string> };
+
 export interface StudioApi {
   session(): Promise<Session | null>;
   signIn(): Promise<{ userCode: string; verificationUri: string }>;
@@ -411,6 +429,14 @@ export interface StudioApi {
   /** Native folder picker; null when cancelled. */
   pickFolder(): Promise<string | null>;
   manage(input: { url: string; path: string; body?: unknown }): Promise<{ ok: boolean; status: number; data: unknown }>;
+
+  /** One agent's vault for this person on the control plane: what it has, never the secrets. */
+  vaultList(agent: string): Promise<VaultItem[]>;
+  /** Add one item to one agent's vault. The secret goes to the control plane once, over the signed-in session, and is sealed there. */
+  vaultAdd(agent: string, input: VaultAddInput): Promise<VaultItem>;
+  vaultRemove(agent: string, id: string): Promise<void>;
+  /** Rows from a Chrome / Google Password Manager CSV export, into one agent's vault. */
+  vaultImport(agent: string, rows: { name?: string; url?: string; username?: string; password?: string }[]): Promise<{ added: number; skipped: string[] }>;
   setLocalPermission(input: {
     action: LocalAction;
     value: LocalPermission;

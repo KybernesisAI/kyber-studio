@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import { ComputerCard } from "./Computer";
+import { VaultView } from "./Vault";
 import { isImage, toAvatarDataUrl } from "../lib/avatarImage";
 import { useEffect, useState, useRef } from "react";
 import {
@@ -96,11 +98,13 @@ function Row({
   title,
   detail,
   onClick,
+  active,
 }: {
   icon: ReactNode;
   title: string;
   detail?: string;
   onClick?: () => void;
+  active?: boolean;
 }): ReactNode {
   const body = (
     <>
@@ -111,12 +115,122 @@ function Row({
       </span>
     </>
   );
+  const cls = `routine-row${active ? " routine-row--active" : ""}`;
   return onClick ? (
-    <button className="routine-row" onClick={onClick}>
+    <button className={cls} onClick={onClick}>
       {body}
     </button>
   ) : (
-    <div className="routine-row">{body}</div>
+    <div className={cls}>{body}</div>
+  );
+}
+
+const SURFACE_LABEL: Record<string, string> = { chat: "Chat", routines: "Routines", imessage: "iMessage", buzz: "Buzz", api: "API" };
+
+function whenShort(iso: string): string {
+  const t = Date.parse(iso);
+  if (!t) return "";
+  const diff = Date.now() - t;
+  const m = Math.round(diff / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.round(h / 24);
+  if (d < 7) return `${d} d ago`;
+  return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/**
+ * The compact entry in the drawer: the routines feed (one tap, it is the thing
+ * people look for most) and a door to the full list. The list itself lives in
+ * its own drawer so the overview stays an overview.
+ */
+function ConversationsEntry(): ReactNode {
+  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, loadSessions, setPanel } = useStore();
+  const list = agentSessions[activeAgentId];
+  const current = sessions[activeAgentId];
+  const routinesId = routinesSessions[activeAgentId];
+  useEffect(() => {
+    void loadSessions(activeAgentId);
+  }, [activeAgentId, loadSessions]);
+  const routines = list?.find((s) => s.id === routinesId || s.surface === "routines");
+  const others = (list ?? []).filter((s) => s.id !== routines?.id);
+  return (
+    <Section title="Conversations">
+      {routines ? (
+        <Row
+          icon={<Icon name="clock" size={14} />}
+          title="Routines feed"
+          detail={`${routines.routine ? `Last: ${routines.routine} · ` : ""}${whenShort(routines.updatedAt)}`}
+          active={current === routines.id}
+          onClick={() => void openSession(activeAgentId, routines.id)}
+        />
+      ) : null}
+      <Row
+        icon={<Icon name="chevronRight" size={14} />}
+        title="Show conversations"
+        detail={list ? `${others.length} thread${others.length === 1 ? "" : "s"} across this app, your phone and iMessage` : "Loading…"}
+        onClick={() => setPanel("conversations")}
+      />
+    </Section>
+  );
+}
+
+/**
+ * Every conversation this agent has had — this app's, the phone's, iMessage,
+ * Buzz — in its own drawer. The chat shows one at a time; this is how you get
+ * to the others, which until now sat on the agent's disk with no door.
+ */
+function ConversationsView(): ReactNode {
+  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, startConversation, loadSessions, inflight, setPanel } = useStore();
+  const list = agentSessions[activeAgentId];
+  const current = sessions[activeAgentId];
+  const routinesId = routinesSessions[activeAgentId];
+  useEffect(() => {
+    void loadSessions(activeAgentId);
+  }, [activeAgentId, loadSessions]);
+  const others = (list ?? []).filter((s) => s.id !== routinesId && s.surface !== "routines");
+  const busy = Boolean(inflight[activeAgentId]);
+  const pick = (id: string) => {
+    void openSession(activeAgentId, id);
+    setPanel("overview");
+  };
+  return (
+    <>
+      <Head title="Conversations" onBack={() => setPanel("overview")} onClose={() => setPanel("none")} />
+      <div className="panel__body">
+        <Row
+          icon={<Icon name="plus" size={14} />}
+          title="New conversation"
+          detail={busy ? "Wait for the current turn to finish" : "Leaves this thread where it is; the next message starts a fresh one."}
+          onClick={
+            busy
+              ? undefined
+              : () => {
+                  startConversation(activeAgentId);
+                  setPanel("none");
+                }
+          }
+        />
+        <div className="panel__section-head" style={{ marginTop: 16 }}>
+          <span className="panel__section-title">All threads</span>
+          {list ? <span className="muted">{others.length}</span> : null}
+        </div>
+        {list === undefined ? <Empty loaded={false} none="" /> : null}
+        {list && others.length === 0 ? <Empty loaded none="No conversations yet." /> : null}
+        {others.map((s) => (
+          <Row
+            key={s.id}
+            icon={<Icon name="monitor" size={14} />}
+            title={s.title}
+            detail={`${SURFACE_LABEL[s.surface] ?? s.surface}${s.channel ? ` · ${s.channel}` : ""} · ${whenShort(s.updatedAt)}${s.status === "alive" ? "" : " · ended"}`}
+            active={current === s.id}
+            onClick={() => pick(s.id)}
+          />
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -330,6 +444,14 @@ function Overview(): ReactNode {
     <>
       <Head title={agent.name} onClose={() => setPanel("none")} />
       <div className="panel__body">
+        <div style={{ marginBottom: 12, display: "flex", gap: 8 }}>
+          <button className="btn" style={{ flex: 1 }} onClick={() => setPluginsOpen(true)}>
+            Plugins
+          </button>
+          <button className="btn" style={{ flex: 1 }} onClick={() => setPanel("settings")}>
+            Settings
+          </button>
+        </div>
         <div className="card" style={{ marginBottom: 4 }}>
           <div className="stack-row" style={{ marginBottom: 6 }}>
             <span style={{ flex: 1 }} className="muted">Host</span>
@@ -342,6 +464,10 @@ function Overview(): ReactNode {
             </span>
           </div>
         </div>
+
+        <ComputerCard />
+
+        <ConversationsEntry />
 
         <Section title="Routines" count={loaded ? schedules.length : undefined}>
           <NewRoutine />
@@ -413,15 +539,6 @@ function Overview(): ReactNode {
             ))}
           </Section>
         ) : null}
-
-        <div style={{ marginTop: 20, display: "flex", gap: 8 }}>
-          <button className="btn" style={{ flex: 1 }} onClick={() => setPluginsOpen(true)}>
-            Plugins
-          </button>
-          <button className="btn" style={{ flex: 1 }} onClick={() => setPanel("settings")}>
-            Settings
-          </button>
-        </div>
       </div>
     </>
   );
@@ -544,8 +661,17 @@ const LOCAL_ACTIONS: { action: LocalAction; label: string; detail: string }[] = 
   { action: "local-mcp", label: "Use local services", detail: "Call an MCP server running on this computer." },
 ];
 
-function LocalPermissions(): ReactNode {
+/**
+ * What the permissions card says when a save is refused. Not the error itself,
+ * which names the user's profile path and an IPC channel (KYB-641); that goes
+ * to the log.
+ */
+export const PERMISSION_SAVE_FAILED_MESSAGE = "Couldn’t save that setting. Please try again.";
+
+/** Exported so a test can mount it and drive a refused save (KYB-621). */
+export function LocalPermissions(): ReactNode {
   const [perms, setPerms] = useState<Record<LocalAction, LocalPermission> | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -556,8 +682,19 @@ function LocalPermissions(): ReactNode {
   }, []);
 
   const set = async (action: LocalAction, value: LocalPermission): Promise<void> => {
-    const next = await window.studio?.setLocalPermission({ action, value });
-    if (next) setPerms(next);
+    // A save can fail (KYB-621: on Windows, whenever another process holds the
+    // file). Unhandled, the select silently snapped back; say so instead, in
+    // words a person can act on, and log the detail (KYB-641).
+    try {
+      const next = await window.studio?.setLocalPermission({ action, value });
+      setSaveError(null);
+      if (next) setPerms(next);
+    } catch (error) {
+      console.error(
+        `[permissions] could not save ${action}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      setSaveError(PERMISSION_SAVE_FAILED_MESSAGE);
+    }
   };
 
   if (!perms) return null;
@@ -573,6 +710,7 @@ function LocalPermissions(): ReactNode {
               ? "Every one of these asks first. Answering “always” or “never” on a card is remembered here."
               : `${standing} of these no longer ask. Set one back to “Ask” to be prompted again.`}
           </div>
+          {saveError ? <div className="muted" role="alert">{saveError}</div> : null}
         </div>
       </div>
       {LOCAL_ACTIONS.map((a) => (
@@ -730,6 +868,18 @@ function Settings(): ReactNode {
 
         <div className="card stack-row">
           <div style={{ flex: 1 }}>
+            <div>Vault</div>
+            <div className="muted">
+              This agent's own logins, cards and addresses, kept apart from every other agent's. It types them into pages on its computer without ever seeing them.
+            </div>
+          </div>
+          <button className="btn" onClick={() => setPanel("vault")}>
+            Open
+          </button>
+        </div>
+
+        <div className="card stack-row">
+          <div style={{ flex: 1 }}>
             <div>Start a fresh conversation</div>
             <div className="muted">
               {sessions[activeAgentId]
@@ -846,6 +996,8 @@ export function Panel(): ReactNode {
       {shown === "overview" ? <Overview /> : null}
       {shown === "routine" ? <RoutineView /> : null}
       {shown === "settings" ? <Settings /> : null}
+      {shown === "vault" ? <VaultView /> : null}
+      {shown === "conversations" ? <ConversationsView /> : null}
     </aside>
   );
 }

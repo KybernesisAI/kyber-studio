@@ -209,7 +209,48 @@ test("off Linux the reporter never asks for the backend, and the line says why",
   assert.equal(asked, 0, "the Linux-only backend API was called on darwin");
   assert.equal(lines.length, 1);
   assert.match(lines[0], /platform=darwin/);
-  assert.match(lines[0], /backend=n\/a \(Linux-only API\)/);
+  assert.match(lines[0], /backend=keychain \(platform default, not queried\)/);
+});
+
+/**
+ * KYB-619: what the line says on each platform, as whole strings.
+ *
+ * Exact rather than `match`, because the Linux half is a promise that nothing
+ * moved: those strings are what five distributions were measured printing, and
+ * a regex would let a stray field or a changed separator through. The Windows
+ * and macOS halves name the mechanism Electron documents for that platform, and
+ * say it was not queried, because nothing on the machine was asked for it.
+ */
+test("the line names each platform's mechanism, and Linux is byte-identical", () => {
+  const line = (platform, backend, argv = []) =>
+    describeStorageDiagnostic(collectStorageDiagnostic(fakeSafeStorage({ backend }), { platform, argv }));
+
+  assert.equal(
+    line("linux", "gnome_libsecret"),
+    "[storage] platform=linux backend=gnome_libsecret passwordStore=auto encryptionAvailable=deferred",
+  );
+  assert.equal(
+    line("linux", "basic_text", ["--password-store=basic"]),
+    "[storage] platform=linux backend=basic_text passwordStore=basic encryptionAvailable=deferred",
+  );
+  assert.equal(
+    describeStorageDiagnostic({ platform: "linux", backend: null, override: null }),
+    "[storage] platform=linux backend=unknown passwordStore=auto encryptionAvailable=deferred",
+  );
+
+  assert.equal(
+    line("win32", "gnome_libsecret"),
+    "[storage] platform=win32 backend=dpapi (platform default, not queried) passwordStore=auto encryptionAvailable=deferred",
+  );
+  assert.equal(
+    line("darwin", "gnome_libsecret"),
+    "[storage] platform=darwin backend=keychain (platform default, not queried) passwordStore=auto encryptionAvailable=deferred",
+  );
+  // Anywhere else nothing is documented, so nothing is named.
+  assert.equal(
+    line("freebsd", "gnome_libsecret"),
+    "[storage] platform=freebsd backend=n/a (Linux-only API) passwordStore=auto encryptionAvailable=deferred",
+  );
 });
 
 /**

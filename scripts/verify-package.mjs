@@ -42,7 +42,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 
 /**
@@ -67,12 +67,19 @@ import {
  * with no artefact in it, so it lives in a module the test suite can exercise.
  */
 import { inspectPreload } from "./lib/preload-shape.mjs";
+import { excludedPayloadVerdict } from "./lib/excluded-payload.mjs";
+import { createRequire } from "node:module";
 
 // ── 0. Where is the app, and what shape is it? ─────────────────────────
 /**
  * The only place layout knowledge lives. electron-builder emits a bundle on
- * macOS and a plain directory on Linux; every path below is derived from an
- * entry here, so adding Windows later is one more entry and nothing else.
+ * macOS and a plain directory on Linux and Windows; every path below is derived
+ * from an entry here.
+ *
+ * An earlier version of this comment predicted that adding Windows would be
+ * "one more entry and nothing else". It was not. Windows and Linux both keep
+ * the archive at `resources/app.asar`, so the archive stopped being enough to
+ * identify a layout and `layoutFor` had to learn to look at the executable.
  *
  * Linux arches other than x64 land in `dist/linux-<arch>-unpacked` with the
  * same internal shape, so they need no entry — CI passes the path explicitly
@@ -85,6 +92,10 @@ const LAYOUTS = [
     defaultPath: "dist/mac-arm64/KYBER Studio.app",
     asar: "Contents/Resources/app.asar",
     binary: "Contents/MacOS/KYBER Studio",
+    // `build.mac.files` excludes two paths; neither is modelled here yet, so
+    // section 4 reports them as unchecked rather than ticking them. Modelling
+    // them is a macOS job and this entry is not it.
+    excluded: [],
   },
   {
     label: "Linux unpacked directory",
@@ -92,16 +103,95 @@ const LAYOUTS = [
     defaultPath: "dist/linux-unpacked",
     asar: "resources/app.asar",
     binary: "kyber-studio",
+    // As above, and more of them: `build.linux.files` excludes seven paths,
+    // two of which use a wildcard directory name (`sharp-linuxmusl-*`) that
+    // the two rule kinds here cannot express. Unmodelled, and reported as
+    // unmodelled.
+    excluded: [],
+  },
+  {
+    label: "Windows unpacked directory",
+    platform: "win32",
+    defaultPath: "dist/win-unpacked",
+    // Same archive path as Linux. That collision is why `layoutFor` reads the
+    // executable, and the executable is what tells the two apart.
+    asar: "resources/app.asar",
+    binary: "KYBER Studio.exe",
+    /**
+     * Mirrors the six negations in `build.win.files`. Sizes are the installed
+     * bytes of onnxruntime-node 1.24.3; together they are 38.0 MB of a 62.2 MB
+     * payload, and nothing in `src/` requests a non-CPU execution provider.
+     *
+     * The three DLLs are named individually and not by their directory,
+     * because the directory also holds the two files the app genuinely loads.
+     */
+    excluded: [
+      {
+        kind: "tree",
+        value: "node_modules/onnxruntime-node/bin/napi-v6/darwin",
+        why: "the macOS runtime; unloadable on Windows",
+      },
+      {
+        kind: "tree",
+        value: "node_modules/onnxruntime-node/bin/napi-v6/linux",
+        why: "the Linux runtime; unloadable on Windows",
+      },
+      {
+        kind: "tree",
+        value: "node_modules/onnxruntime-node/bin/napi-v6/win32/arm64",
+        why: "x64 is the only Windows arch built",
+      },
+      {
+        kind: "file",
+        value: "DirectML.dll",
+        why: "18.5 MB, delay-loaded, and never requested",
+      },
+      {
+        kind: "file",
+        value: "dxcompiler.dll",
+        why: "18.0 MB, and in neither import table",
+      },
+      {
+        kind: "file",
+        value: "dxil.dll",
+        why: "1.5 MB, and in neither import table",
+      },
+    ],
   },
 ];
 
-/** The archive is the marker: it is the one file both layouts must contain. */
+/**
+ * The archive narrows it down; the executable decides.
+ *
+ * Measured before this changed: `verify-package.mjs "dist/win-unpacked"` found
+ * `resources/app.asar`, matched the Linux entry because Linux is listed first,
+ * and reported `its executable is missing: dist/win-unpacked/kyber-studio`. It
+ * named the wrong platform — and had the executable been present under some
+ * other name, section 3 would have gone on to judge every native binary
+ * against Linux and ticked a tree it never examined.
+ *
+ * `kyber-studio` and `KYBER Studio.exe` are not the same file, so one `existsSync`
+ * settles it.
+ *
+ * When the archive is ambiguous and NO candidate's executable exists, the tree
+ * is half-written and nothing in it can identify the platform. The host breaks
+ * that tie, for the WORDING only: every real invocation verifies a package
+ * built on the machine verifying it, and keeping the pre-existing "its
+ * executable is missing: <path>" message — which names the file to go and look
+ * for — is worth more than a message about an ambiguity the reader cannot act
+ * on. Only when no candidate matches the host either does it return
+ * `{ archived }` and say the platform cannot be inferred.
+ */
 function layoutFor(app) {
-  for (const layout of LAYOUTS) {
-    const asar = join(app, layout.asar);
-    if (existsSync(asar)) return { layout, asar, binary: join(app, layout.binary) };
-  }
-  return null;
+  const archived = LAYOUTS.filter((layout) => existsSync(join(app, layout.asar)));
+  if (archived.length === 0) return null;
+  const layout =
+    archived.length === 1
+      ? archived[0]
+      : (archived.find((candidate) => existsSync(join(app, candidate.binary))) ??
+        archived.find((candidate) => candidate.platform === process.platform));
+  if (!layout) return { archived };
+  return { layout, asar: join(app, layout.asar), binary: join(app, layout.binary) };
 }
 
 const defaultPath = LAYOUTS.find((l) => l.platform === process.platform)?.defaultPath;
@@ -142,14 +232,28 @@ if (!APP) {
 
 const found = layoutFor(APP);
 if (!found) {
-  // Naming both candidates turns "it is missing" into "you built the other
+  // Naming the candidates turns "it is missing" into "you built the other
   // platform" or "you typo'd the arch", which is the actual question.
   const width = Math.max(...LAYOUTS.map((l) => l.label.length));
-  console.error(`\nNo packaged app at ${APP}. Looked for both known layouts:\n`);
+  console.error(`\nNo packaged app at ${APP}. Looked for all known layouts:\n`);
   for (const layout of LAYOUTS) {
     console.error(`  ${layout.label.padEnd(width)}  ${join(APP, layout.asar)}`);
   }
   console.error(`\nRun electron-builder first, or pass the path to the build you mean.\n`);
+  process.exit(1);
+}
+
+if (!found.layout) {
+  // An archive at a path more than one layout claims, and no executable to say
+  // which. Naming the candidates is the whole answer: one of them is the build
+  // that was meant to happen and did not finish.
+  const width = Math.max(...found.archived.map((l) => l.label.length));
+  console.error(`\nFound an app archive at ${APP}, but no executable beside it:\n`);
+  for (const layout of found.archived) {
+    console.error(`  ${layout.label.padEnd(width)}  ${join(APP, layout.binary)}`);
+  }
+  console.error(`\nThat is a half-written build, and its platform cannot be inferred.`);
+  console.error(`Re-run electron-builder for the platform you meant.\n`);
   process.exit(1);
 }
 
@@ -168,15 +272,49 @@ if (!existsSync(binary)) {
  * `npx asar` was the obvious spelling and the wrong one: when the local binary
  * is absent, npx silently falls back to fetching the deprecated legacy `asar`
  * package from the registry. A silent behaviour change, inside the one script
- * whose entire job is catching silent breakage. The local binary is resolved
- * from the repo root — derived from this file's own URL, because the cwd of a
- * CI step is not something we get to assume.
+ * whose entire job is catching silent breakage. It is resolved from the repo
+ * root instead — derived from this file's own URL, because the cwd of a CI step
+ * is not something we get to assume.
+ *
+ * What is NOT used is `node_modules/.bin/asar`, and the reason is measured
+ * rather than theoretical. On Windows npm writes three files into `.bin`: an
+ * extensionless SH script, `asar.cmd` and `asar.ps1`. The extensionless one
+ * exists — so an `existsSync` guard passes — but `CreateProcess` cannot execute
+ * a shell script, so `spawnSync` fails with ENOENT:
+ *
+ * ```
+ * Error: spawnSync D:\a\kyber-studio\kyber-studio\node_modules\.bin\asar ENOENT
+ * ```
+ *
+ * That killed the first Windows run of this script outright, at this line,
+ * before any check ran. Note the shape of it: the guard below tested for
+ * PRESENCE and the file was present. Presence is not runnability.
+ *
+ * Reaching for `asar.cmd` instead would trade one problem for two: since
+ * CVE-2024-27980 Node refuses to spawn a `.cmd` without `shell: true`, and
+ * `shell: true` alongside an argument array is deprecated (DEP0190). So this
+ * runs the package's own JS entry with the Node already running — no shell, no
+ * extension, nothing platform-specific.
  */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const ASAR_BIN = join(REPO_ROOT, "node_modules/.bin/asar");
 
-if (!existsSync(ASAR_BIN)) {
-  console.error(`\nNo asar binary at ${ASAR_BIN}.`);
+/**
+ * Resolution prefers the package's declared entry and falls back to its path
+ * under the repo root. The fallback is not redundancy for its own sake:
+ * `@electron/asar` may restrict subpath access through `exports`, in which case
+ * `require.resolve` throws even though the file is sitting right there.
+ */
+const ASAR_ENTRY = (() => {
+  const direct = join(REPO_ROOT, "node_modules/@electron/asar/bin/asar.js");
+  try {
+    return createRequire(import.meta.url).resolve("@electron/asar/bin/asar.js");
+  } catch {
+    return direct;
+  }
+})();
+
+if (!existsSync(ASAR_ENTRY)) {
+  console.error(`\nNo asar entry point at ${ASAR_ENTRY}.`);
   console.error(`\n@electron/asar reaches us transitively (via @electron/universal) and is hoisted,`);
   console.error(`so a dependency-tree change can remove it without touching this package.json.`);
   console.error(`Reinstall, or declare @electron/asar as a devDependency and re-run.\n`);
@@ -194,7 +332,7 @@ process.on("exit", () => {
   }
 });
 
-execFileSync(ASAR_BIN, ["extract", asar, extracted], { stdio: "ignore" });
+execFileSync(process.execPath, [ASAR_ENTRY, "extract", asar, extracted], { stdio: "ignore" });
 
 /** Node's own resolution: look in node_modules here, then in every parent. */
 function resolvable(fromDir, name) {
@@ -613,7 +751,7 @@ if (wrongArch.length > 0) {
 }
 
 // Zero is not a failure here, and not this section's call to make: a bundle
-// with no native binaries at all is what sections 1 and 4 are for. Say what was
+// with no native binaries at all is what sections 1 and 5 are for. Say what was
 // seen rather than printing a reassuring "all of nothing is correct".
 //
 // The two zeroes are different and must not print the same line. "No .node files
@@ -634,7 +772,115 @@ if (natives.length === 0) {
 }
 reportUncheckedFiles(console.log);
 
-// ── 4. Can the app's runtime import the paths that matter? ─────────────
+// ── 4. Did the declared payload exclusions actually fire? ─────────────
+/**
+ * A negation in `build.<platform>.files` is invisible when it stops working. It
+ * removes nothing from the package and nothing from the build log, so payload
+ * it was written to drop comes back, every other check still passes, and the
+ * only symptom is an installer that got bigger. For Windows that is 38.0 MB of
+ * GPU runtime no part of this app asks for.
+ *
+ * Two ways it stops working, both upstream and both outside our control: a
+ * release moves a directory, or it changes a filename's case. electron-builder
+ * matches case-sensitively, so an `onnxruntime-node` that shipped
+ * `DirectML.DLL` would simply stop matching the glob written for
+ * `DirectML.dll` and the file would ship.
+ *
+ * So this section does not re-read the globs — re-reading them would agree
+ * with them, including when they are wrong. It looks for the files. Matching is
+ * case-insensitive for the reason above; `scripts/lib/excluded-payload.mjs`
+ * carries the argument and the tests, including why the opposite choice is the
+ * tempting one and still wrong.
+ *
+ * Scope is the archive and its `.unpacked` sibling, and that scope is a REAL
+ * LIMIT rather than a detail. Everything declared today comes from
+ * `node_modules`, so it can only land in one of those two trees — verified: all
+ * six current rules resolve inside them.
+ *
+ * But a rule whose target lies OUTSIDE them — a file beside the executable, say
+ * — matches nothing, and a rule matching nothing is indistinguishable here from
+ * a rule that fired. It would be reported as satisfied and this section would
+ * exit 0. **It would pass silently, not fail.** The count guard below does not
+ * catch it either, because such a rule IS modelled and the counts still agree.
+ *
+ * An earlier version of this comment claimed the opposite — that an
+ * out-of-scope rule "would fail here rather than passing quietly". That was
+ * wrong, and wrong in the one direction this whole section exists to prevent, so
+ * it is corrected rather than quietly dropped. If a rule outside these two trees
+ * is ever added, widen the walk or give rules an explicit root; do not trust
+ * this section to notice.
+ */
+/**
+ * The rules on the layout are a MODEL of the patterns in package.json, written
+ * by hand because this check deliberately does not re-read the patterns. That
+ * buys independence and costs the possibility of drift: a seventh pattern added
+ * to `build.win.files` with no rule beside it would not be verified, and the
+ * section would still report success over the six it did know about.
+ *
+ * Comparing counts closes that without re-reading what the patterns mean. It is
+ * resolved from the script's own location rather than the working directory,
+ * because CI invokes this with an absolute app path from wherever it happens to
+ * be standing.
+ *
+ * The comparison is only enforced for a layout that models at least one rule —
+ * "if you model it, model all of it". A layout modelling NOTHING is the
+ * pre-existing state of macOS and Linux, and is already reported honestly by
+ * the verdict rather than ticked; failing on it would break the Linux release
+ * gate the moment this merged, for a gap this change did not introduce and
+ * this lane is not about. Which is why the verdict names the count.
+ */
+const MANIFEST = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const declaredPatterns = FILES_KEY.split(".").reduce((node, key) => node?.[key], MANIFEST) ?? [];
+const negations = declaredPatterns.filter((p) => typeof p === "string" && p.startsWith("!"));
+const modelled = found.layout.excluded ?? [];
+
+if (modelled.length > 0 && negations.length !== modelled.length) {
+  console.error(`\n✗ ${FILES_KEY} excludes ${negations.length} path(s), but the ${found.layout.label}`);
+  console.error(`  layout models ${modelled.length}. An exclusion with no rule here is not verified,`);
+  console.error(`  and this section would report success without having looked for it.\n`);
+  console.error(`  excluded in ${FILES_KEY}:`);
+  for (const pattern of negations) console.error(`    ${pattern}`);
+  console.error(`\n  modelled on the layout:`);
+  for (const rule of modelled) console.error(`    ${rule.kind.padEnd(8)} ${rule.value}`);
+  console.error(`\n  Add the missing rule to LAYOUTS in section 0, or remove the stale one.\n`);
+  process.exit(1);
+}
+
+const payloadPaths = [];
+for (const root of [extracted, UNPACKED]) {
+  if (!existsSync(root)) continue;
+  (function walk(dir) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      // Not followed AND not collected, matching the native walk in section 3.
+      // A symlink is a pointer, not payload: its target is either inside these
+      // trees and collected on its own account, or outside them and not part of
+      // the package. A deliberate blind spot, in a check whose job is "is this
+      // present" — worth saying so rather than leaving it to be rediscovered.
+      if (entry.isSymbolicLink()) continue;
+      const at = join(dir, entry.name);
+      // Relative to the tree root, so a rule here reads the way it reads in
+      // package.json. Directories are collected as well as descended into: a
+      // `tree` rule names a directory, and one left behind empty is still an
+      // exclusion that did not fire.
+      payloadPaths.push(relative(root, at));
+      if (entry.isDirectory()) walk(at);
+    }
+  })(root);
+}
+
+const exclusions = excludedPayloadVerdict(payloadPaths, modelled, {
+  filesKey: FILES_KEY,
+  layoutLabel: found.layout.label,
+  declaredCount: negations.length,
+});
+// Same split as section 3: the half that decides what to say is a pure function
+// in `scripts/lib/`, reachable from the suite without building an artefact, and
+// this half only prints and exits.
+const printExclusion = exclusions.ok ? console.log : console.error;
+for (const line of exclusions.lines) printExclusion(line);
+if (!exclusions.ok) process.exit(1);
+
+// ── 5. Can the app's runtime import the paths that matter? ─────────────
 /**
  * Modules chosen because they are NOT on the startup path. A build that boots
  * and then dies on first use is the exact failure this file exists for.
@@ -648,7 +894,20 @@ for (const entry of ENTRY_POINTS) {
   // resolve, not join: the app path may be absolute (a mounted volume), and
   // joining it onto the working directory produces a path that exists nowhere
   // — which reads as a broken build rather than a broken check.
-  const target = resolve(asar, entry);
+  //
+  // Then a file:// URL, not the path. A dynamic `import()` of a bare Windows
+  // path fails, because the drive letter parses as a URL scheme:
+  //
+  //   Error [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in:
+  //   file, data, node, and electron are supported by the default ESM loader.
+  //   On Windows, absolute paths must be valid file:// URLs. Received
+  //   protocol 'd:'
+  //
+  // Measured on a Windows runner once the asar spawn above was fixed; this
+  // section was the next thing in the way. A file:// URL is correct on POSIX
+  // too, so there is no platform branch here — the previous spelling simply
+  // happened to work on the only platform that had ever run it.
+  const target = pathToFileURL(resolve(asar, entry)).href;
   try {
     execFileSync(binary, ["--input-type=module", "-e", `await import(${JSON.stringify(target)});`], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
@@ -662,7 +921,7 @@ for (const entry of ENTRY_POINTS) {
   }
 }
 
-// ── 5. Does dictation actually run inside the package? ─────────────────
+// ── 6. Does dictation actually run inside the package? ─────────────────
 /**
  * Everything above proves modules resolve. This proves the one that has to do
  * real work does it: @huggingface/transformers pulls in onnxruntime-node, whose
@@ -759,8 +1018,15 @@ try {
 }
 
 // Same trick as ENTRY_POINTS: the path the packaged runtime will use is the
-// extracted-tree path, re-rooted at the archive it actually ships in.
-const transformersInAsar = resolve(asar, TRANSFORMERS, transformersEntry);
+// extracted-tree path, re-rooted at the archive it actually ships in — and as a
+// file:// URL, for the same reason given there. This is the sibling of that
+// call, and fixing only the other one left this failing on Windows with an
+// identical ERR_UNSUPPORTED_ESM_URL_SCHEME one section later.
+//
+// MODEL_ROOT below stays a PATH: it is handed to transformers.js as
+// `env.localModelPath`, which reads the filesystem and would not understand a
+// URL. Only the import is a URL.
+const transformersUrl = pathToFileURL(resolve(asar, TRANSFORMERS, transformersEntry)).href;
 
 /**
  * Deliberately no `language` or `task`: whisper-base.en is an English-only
@@ -773,7 +1039,7 @@ const transformersInAsar = resolve(asar, TRANSFORMERS, transformersEntry);
  * depending on version. Both are passes. Do not "fix" this by matching text.
  */
 const probe = `
-const { env, pipeline } = await import(${JSON.stringify(transformersInAsar)});
+const { env, pipeline } = await import(${JSON.stringify(transformersUrl)});
 env.allowRemoteModels = false;
 env.localModelPath = ${JSON.stringify(MODEL_ROOT)};
 const transcribe = await pipeline("automatic-speech-recognition", ${JSON.stringify(CHECKPOINT)}, { dtype: "q8" });

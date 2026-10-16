@@ -3,21 +3,15 @@
  * touching state, so the rules can be tested against the exact sequences that
  * broke them.
  *
- * Two rules, both earned by data loss:
+ * The model is main's (v0.5.17): only the directory's NEWEST thread per agent
+ * is a candidate, and a thread the person picked on purpose (`sessionChoice`)
+ * stays unless the directory's newest moved AFTER the pick.
  *
- * 1. **A fresh start waits for the user.** After "New conversation" the agent
- *    has no local session on purpose. The directory still lists every earlier
- *    thread, and "no local session" used to read as "adopt the newest one" — so
- *    within one sync tick the chat switched to the retired session, and once
- *    that id was blocked, to the next-older one. Now nothing whose last
- *    activity predates the latest divider is a candidate. A thread with
- *    activity AFTER the divider (another device, genuinely newer) still is.
- *
- * 2. **Adopting never deletes local blocks.** The old adoption set the
- *    transcript to `[]` and refilled it from the adopted session, which
- *    destroyed everything the stream never described — the divider, the
- *    archived conversation above it, cards, questions. Adoption now changes
- *    the session and leaves the blocks; the caller merges the replay in.
+ * "New conversation" is a pick too: a pick of NO thread, recorded as a choice
+ * without a session id. Without it, a chat with no session read as "adopt the
+ * newest", and within one sync tick (≤30 s) the conversation the person just
+ * left came back. A thread with activity after the fresh start — another device
+ * genuinely talking — is still adopted.
  */
 
 export interface DirectoryEntry {
@@ -25,8 +19,9 @@ export interface DirectoryEntry {
   lastMessageAt?: string | null;
 }
 
-export interface AdoptionBlock {
-  kind: string;
+/** A thread picked on purpose, and when. No `sessionId` = "New conversation". */
+export interface SessionChoice {
+  sessionId?: string;
   at: number;
 }
 
@@ -36,23 +31,14 @@ export type AdoptionDecision =
   | { kind: "publish"; localAt: number }
   | { kind: "adopt"; sessionId: string };
 
-/** When the latest "New conversation" was pressed; 0 if never. */
-export function lastDividerAt(blocks: readonly AdoptionBlock[]): number {
-  let at = 0;
-  for (const b of blocks) if (b.kind === "divider" && b.at > at) at = b.at;
-  return at;
-}
-
-/**
- * A fresh start that has not been answered yet: no session, and nothing said
- * since the divider. The one state in which no existing thread may be adopted,
- * whatever the source claims.
- */
-export function freshStartPending(localSession: string | undefined, blocks: readonly AdoptionBlock[]): boolean {
-  return !localSession && blocks.length > 0 && blocks[blocks.length - 1].kind === "divider";
-}
-
 const entryAt = (e: DirectoryEntry): number => (e.lastMessageAt ? Date.parse(e.lastMessageAt) : 0);
+
+/** The directory's newest row, or undefined. */
+export function newestEntry<E extends DirectoryEntry>(entries: readonly E[]): E | undefined {
+  let newest: E | undefined;
+  for (const entry of entries) if (!newest || entryAt(entry) > entryAt(newest)) newest = entry;
+  return newest;
+}
 
 /**
  * Decide for ONE agent, given the directory rows that resolve to it.
@@ -60,30 +46,26 @@ const entryAt = (e: DirectoryEntry): number => (e.lastMessageAt ? Date.parse(e.l
 export function decideAdoption(input: {
   entries: readonly DirectoryEntry[];
   localSession: string | undefined;
-  localBlocks: readonly AdoptionBlock[];
-  retired: readonly string[];
+  /** When this device last saw activity in its thread; 0 if never. */
+  localAt: number;
+  choice: SessionChoice | undefined;
 }): AdoptionDecision {
-  const { entries, localSession, localBlocks, retired } = input;
-  const freshSince = lastDividerAt(localBlocks);
-
-  let newest: DirectoryEntry | undefined;
-  for (const entry of entries) {
-    if (retired.includes(entry.sessionId)) continue;
-    // Older than the fresh start: the conversation the person chose to leave,
-    // or one even older than that. Never a candidate.
-    if (freshSince > 0 && entryAt(entry) <= freshSince) continue;
-    if (!newest || entryAt(entry) > entryAt(newest)) newest = entry;
-  }
+  const { entries, localSession, localAt, choice } = input;
+  const newest = newestEntry(entries);
   if (!newest || newest.sessionId === localSession) return { kind: "skip" };
-
-  const localAt = localBlocks.reduce((max, b) => (b.at > max ? b.at : max), 0);
-  if (localSession && localAt >= entryAt(newest)) return { kind: "publish", localAt };
+  const remoteAt = entryAt(newest);
+  // A thread the person opened on purpose — or a fresh start they asked for —
+  // stays unless the directory's newest moved AFTER they picked.
+  if (choice && choice.sessionId === localSession && remoteAt <= choice.at) return { kind: "skip" };
+  if (localSession && localAt >= remoteAt) return { kind: "publish", localAt };
   return { kind: "adopt", sessionId: newest.sessionId };
 }
 
 /**
  * The state change for adopting `sessionId`: a new session, the stream cursor
- * dropped (it belongs to the thread being left), and the transcript UNTOUCHED.
+ * dropped (it belongs to the thread being left), and the view emptied so the
+ * caller can hydrate the adopted thread into it. Nothing is destroyed — the
+ * earlier thread is still durable on the agent and in the conversation picker.
  */
 export function adoptedState<B>(
   state: {
@@ -102,7 +84,7 @@ export function adoptedState<B>(
   delete streamIndexes[agentId];
   return {
     sessions: { ...state.sessions, [agentId]: sessionId },
-    conversations: state.conversations,
+    conversations: { ...state.conversations, [agentId]: [] },
     streamIndexes,
   };
 }

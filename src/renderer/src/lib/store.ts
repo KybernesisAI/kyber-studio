@@ -3,7 +3,7 @@ import type { PendingAttachment } from "./attachments";
 import type { AgentSummary } from "@shared/ipc";
 import { summarize } from "./agentInfo";
 import type { Agent, Block, PeerEvent, Room } from "@shared/types";
-import { adoptedState, decideAdoption, freshStartPending } from "@shared/sessionAdoption";
+import { adoptedState, decideAdoption, type SessionChoice } from "@shared/sessionAdoption";
 import { currentConversation } from "@shared/conversationView";
 import { ROOM_PREFIX, isRoomId } from "@shared/types";
 import { recipientsFor, type RoomPolicy } from "@shared/addressing";
@@ -771,7 +771,26 @@ function flushQueue(get: () => State, agentId: string): void {
   setTimeout(() => get().send(agentId, next, true), 0);
 }
 
-export type PanelView = "none" | "overview" | "routine" | "settings";
+export type PanelView = "none" | "overview" | "routine" | "settings" | "vault" | "conversations";
+
+/** One conversation as the agent's management routes describe it (see @kybernesis/manage's /sessions). */
+export interface AgentSession {
+  id: string;
+  title: string;
+  surface: "chat" | "routines" | "imessage" | "buzz" | "api";
+  trigger: string;
+  routine?: string;
+  channel?: string;
+  status: "alive" | "ended" | "failed";
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What an agent reports about its own computer (see @kybernesis/manage's /computer route). */
+export interface ComputerInfo {
+  name: string;
+  screen: { width: number; height: number };
+}
 
 interface State {
   agents: Agent[];
@@ -782,6 +801,10 @@ interface State {
   activeRoutineId: string | null;
   pluginsOpen: boolean;
   paletteOpen: boolean;
+  /** The agent's own computer, per agent: what its management routes report. undefined = not asked, null = none. */
+  computers: Record<string, ComputerInfo | null | undefined>;
+  /** The full-screen view of the active agent's computer. */
+  computerOpen: boolean;
 
   authState: "loading" | "signed-in" | "signed-out";
   authError: string | null;
@@ -860,13 +883,19 @@ interface State {
   /** Per-agent eve session id, so a conversation keeps its thread across turns. */
   sessions: Record<string, string | undefined>;
   /**
-   * Sessions this device retired with "New conversation", which it must never
-   * adopt again. Without this the account directory still lists the retired
-   * session as the agent's newest thread, and the next sync (≤30 s) adopts it
-   * back — wiping the fresh view and replaying the conversation that was just
-   * left. That is what made Reset look like it did nothing.
+   * Every conversation the agent itself knows about, from its management
+   * routes — Studio's, the phone's, iMessage threads, Buzz rooms, the routines
+   * feed. undefined = not asked yet.
    */
-  retiredSessions: string[];
+  agentSessions: Record<string, AgentSession[] | undefined>;
+  /** The agent's routines conversation, when it has one. Shown as a feed, never adopted as the chat. */
+  routinesSessions: Record<string, string | null | undefined>;
+  /**
+   * A conversation the person picked on purpose, and when. Cross-device sync
+   * may only replace it with a thread that moved AFTER the pick; otherwise
+   * opening an older conversation flipped back within thirty seconds.
+   */
+  sessionChoice: Record<string, SessionChoice | undefined>;
   streamIndexes: Record<string, number | undefined>;
   /** Per-agent "what it is doing right now", or null when idle. */
   activity: Record<string, string | null>;
@@ -918,6 +947,12 @@ interface State {
   hydrate(agentId: string, mode?: "fill" | "merge"): Promise<void>;
   /** Learn which threads this account has, from the control-plane directory. */
   syncSessions(): Promise<void>;
+  /** Ask the agent for every conversation it has had. */
+  loadSessions(agentId: string): Promise<AgentSession[]>;
+  /** Switch the chat to one of the agent's conversations and read it. */
+  openSession(agentId: string, sessionId: string): Promise<void>;
+  /** Leave the current thread and start fresh, with an empty transcript. */
+  startConversation(agentId: string): void;
   /** Pick up turns that happened on another device. Cheap; safe to call often. */
   refreshFromOthers(): Promise<void>;
   /** Rooms from the account: adopt what other devices made, publish what this one has. */
@@ -931,6 +966,9 @@ interface State {
   openRoutine(id: string): void;
   setPluginsOpen(open: boolean): void;
   setPaletteOpen(open: boolean): void;
+  setComputerOpen(open: boolean): void;
+  /** Ask the agent whether it has a computer. Cheap; the panel asks on every open. */
+  loadComputer(agentId: string): Promise<void>;
 
   send(
     agentId: string,
@@ -956,7 +994,7 @@ interface State {
    * message queues behind it forever.
    */
   resetConversation(agentId: string): void;
-  answerQuestion(agentId: string, blockId: string, answer: { optionId?: string; text?: string }): void;
+  answerQuestion(agentId: string, blockId: string, answer: { optionId?: string; text?: string; label?: string }): void;
   patchAgent(id: string, patch: Partial<Agent>): void;
 
   bootstrap(): Promise<void>;
@@ -1030,6 +1068,8 @@ export const useStore = create<State>((set, get) => ({
   panel: "none",
   activeRoutineId: null,
   pluginsOpen: false,
+  computers: {},
+  computerOpen: false,
   paletteOpen: false,
 
   authState: "loading",
@@ -1037,7 +1077,9 @@ export const useStore = create<State>((set, get) => ({
   issuer: "agent.kybernesis.ai",
   account: null,
   sessions: {},
-  retiredSessions: [],
+  agentSessions: {},
+  routinesSessions: {},
+  sessionChoice: {},
   streamIndexes: {},
   rooms: [],
   roomQueue: {},
@@ -1106,9 +1148,9 @@ export const useStore = create<State>((set, get) => ({
       if (!get().sessions[key]) set((s) => ({ sessions: { ...s.sessions, [key]: entry.sessionId } }));
     }
 
-    // Every non-room row, grouped by the local agent it resolves to. Which one
-    // (if any) the chat should show is decided in ../../../shared/sessionAdoption,
-    // where the fresh-start and never-delete rules are tested.
+    // Every non-room row, grouped by the local agent it resolves to. Only the
+    // newest is a candidate; which one (if any) the chat should show is decided
+    // in ../../../shared/sessionAdoption, where the rules are tested.
     const byAgent = new Map<string, (typeof indexed)[number][]>();
     for (const entry of indexed) {
       if (entry.label && isRoomId(entry.label)) continue;
@@ -1131,15 +1173,18 @@ export const useStore = create<State>((set, get) => ({
        * a thread this app had never recorded under the shared name was
        * invisible everywhere else.
        *
-       * Adopting changes which session this chat talks to. It no longer
-       * replaces the transcript: the adopted thread is MERGED in, so nothing
-       * held locally — an archived conversation, a divider, a card — is lost.
+       * A thread the person opened on purpose — or a "New conversation" — stays
+       * unless the directory's newest moved AFTER they picked.
+       *
+       * Adopting replaces this device's view of the older thread. Nothing is
+       * destroyed — that session is still durable on the agent — but it is no
+       * longer what this agent's chat shows.
        */
       const decision = decideAdoption({
         entries,
         localSession: get().sessions[agent.id],
-        localBlocks: get().conversations[agent.id] ?? [],
-        retired: get().retiredSessions,
+        localAt: localLastAt(agent.id),
+        choice: get().sessionChoice[agent.id],
       });
       if (decision.kind === "skip") continue;
       if (decision.kind === "publish") {
@@ -1156,7 +1201,7 @@ export const useStore = create<State>((set, get) => ({
       }
 
       set((s) => adoptedState(s, agent.id, decision.sessionId));
-      await get().hydrate(agent.id, "merge");
+      await get().hydrate(agent.id);
     }
 
     // Threads this machine holds that the directory has never heard of.
@@ -1358,9 +1403,63 @@ export const useStore = create<State>((set, get) => ({
   },
 
   setPanel: (panel) => set({ panel, activeRoutineId: null }),
+  loadSessions: async (agentId) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (!window.studio || !agent?.url) return [];
+    try {
+      const res = await window.studio.manage({ url: agent.url, path: "/sessions?limit=60" });
+      if (!res.ok) return get().agentSessions[agentId] ?? [];
+      const data = res.data as { sessions?: AgentSession[]; routines?: string | null };
+      const sessions = data.sessions ?? [];
+      set((st) => ({
+        agentSessions: { ...st.agentSessions, [agentId]: sessions },
+        routinesSessions: { ...st.routinesSessions, [agentId]: data.routines ?? null },
+      }));
+      return sessions;
+    } catch {
+      return get().agentSessions[agentId] ?? [];
+    }
+  },
+  openSession: async (agentId, sessionId) => {
+    if (get().sessions[agentId] === sessionId) return;
+    if (get().inflight[agentId]) return; // a turn is running in the current thread; let it finish
+    retireGeneration(agentId);
+    set((st) => {
+      const streamIndexes = { ...st.streamIndexes };
+      // The cursor belongs to the thread being left.
+      delete streamIndexes[agentId];
+      return {
+        sessions: { ...st.sessions, [agentId]: sessionId },
+        conversations: { ...st.conversations, [agentId]: [] },
+        streamIndexes,
+        sessionChoice: { ...st.sessionChoice, [agentId]: { sessionId, at: Date.now() } },
+        activity: { ...st.activity, [agentId]: null },
+      };
+    });
+    get().persist();
+    await get().hydrate(agentId);
+  },
+  startConversation: (agentId) => {
+    get().resetConversation(agentId);
+    set((st) => ({
+      conversations: { ...st.conversations, [agentId]: [] },
+      sessionChoice: { ...st.sessionChoice, [agentId]: { at: Date.now() } },
+    }));
+    get().persist();
+  },
   openRoutine: (id) => set({ panel: "routine", activeRoutineId: id }),
   setPluginsOpen: (pluginsOpen) => set({ pluginsOpen }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
+  setComputerOpen: (computerOpen) => set({ computerOpen }),
+  loadComputer: async (agentId) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (!window.studio || !agent?.url) return;
+    // An agent without the management routes answers 404; an agent with them
+    // and no computer answers { computer: null }. Both are "no card".
+    const res = await window.studio.manage({ url: agent.url, path: "/computer" });
+    const computer = res.ok ? ((res.data as { computer?: ComputerInfo | null }).computer ?? null) : null;
+    set((s) => ({ computers: { ...s.computers, [agentId]: computer } }));
+  },
   createRoom: (memberIds) => {
     const id = `${ROOM_PREFIX}${Date.now().toString(36)}`;
     set((s) => ({
@@ -1730,7 +1829,9 @@ export const useStore = create<State>((set, get) => ({
     const at = Date.now();
     set((s) => ({
       sessions: { ...s.sessions, [agentId]: undefined },
-      retiredSessions: sessionId ? [...s.retiredSessions, sessionId] : s.retiredSessions,
+      // A pick of no thread: sync may not bring back the one just left, or an
+      // older one, until something moves after this moment.
+      sessionChoice: { ...s.sessionChoice, [agentId]: { at } },
       streamIndexes: { ...s.streamIndexes, [agentId]: 0 },
       inflight: { ...s.inflight, [agentId]: undefined },
       activity: { ...s.activity, [agentId]: null },
@@ -1751,7 +1852,7 @@ export const useStore = create<State>((set, get) => ({
     if (sessionId) {
       void window.studio.resetSession({ url, sessionId }).catch(() => undefined);
       // Best effort, for the person's other devices; this device's guard is
-      // `retiredSessions`, which does not depend on the directory honouring it.
+      // `sessionChoice`, which does not depend on the directory honouring it.
       void window.studio
         .recordSession({ agent: agent.registeredName ?? agent.id, sessionId, label: agent.id, archived: true })
         .catch(() => undefined);
@@ -1762,7 +1863,10 @@ export const useStore = create<State>((set, get) => ({
     const block = (get().conversations[agentId] ?? []).find((b) => b.id === blockId);
     if (!block || block.kind !== "question") return;
 
+    // A card may name what was chosen in its own words; a vault answer in
+    // particular carries an item id the person should never see as "their answer".
     const label =
+      answer.label ??
       answer.text ??
       block.options?.find((o) => o.id === answer.optionId)?.label ??
       answer.optionId ??
@@ -1999,10 +2103,10 @@ export const useStore = create<State>((set, get) => ({
     const saved = await window.studio.loadState<{
       conversations: Record<string, Block[]>;
       sessions: Record<string, string | undefined>;
-      retiredSessions?: string[];
       streamIndexes: Record<string, number | undefined>;
       prefs: State["prefs"];
       rooms: Room[];
+      sessionChoice?: State["sessionChoice"];
     }>("conversations.json");
     if (saved?.rooms) set({ rooms: saved.rooms });
     if (saved?.prefs && !saved?.conversations) set({ prefs: saved.prefs });
@@ -2010,7 +2114,7 @@ export const useStore = create<State>((set, get) => ({
       set({
         conversations: saved.conversations,
         sessions: saved.sessions ?? {},
-        retiredSessions: saved.retiredSessions ?? [],
+        sessionChoice: saved.sessionChoice ?? {},
         streamIndexes: saved.streamIndexes ?? {},
         prefs: saved.prefs ?? {},
         rooms: saved.rooms ?? [],
@@ -2032,10 +2136,10 @@ export const useStore = create<State>((set, get) => ({
       value: {
         conversations: get().conversations,
         sessions: get().sessions,
-        retiredSessions: get().retiredSessions,
         streamIndexes: get().streamIndexes,
         prefs: get().prefs,
         rooms: get().rooms,
+        sessionChoice: get().sessionChoice,
       },
     });
   },
@@ -2240,37 +2344,33 @@ export const useStore = create<State>((set, get) => ({
       live: x.live,
     }));
     info.channels = [...info.channels, ...extra];
+    void get().loadComputer(agentId);
 
     /**
-     * Adopt the agent's own conversation, so a routine's answer shows up here.
+     * The agent's conversations, and which one this chat shows.
      *
-     * A routine cannot post into whichever session this app happened to start:
-     * eve reserves the session namespace, and the only thing that can address a
-     * session by id is handed to HTTP route handlers, never to a schedule. So
-     * the agent keeps ONE canonical conversation, every routine delivers into
-     * it, and this side joins it rather than holding a second one. Then what a
-     * routine says and what the person types are the same thread.
-     *
-     * Only when it differs from what we hold, and only when the agent actually
-     * has one — before the first routine delivers there is nothing to adopt,
-     * and switching to an empty thread would throw away a live conversation.
+     * Routines deliver into the agent's own canonical thread. This side used to
+     * ADOPT that thread as the chat, so the person's conversation was replaced
+     * by a feed of reminders on every refresh, and everything they had said
+     * before was still on disk but nowhere on screen. Now the canonical thread
+     * is listed as the routines feed, and the chat only picks a thread when it
+     * has none: the newest live conversation a person actually had.
      */
-    const canonical = await window.studio.manage({ url: agent.url, path: "/session" });
-    const named = canonical.ok
-      ? (canonical.data as { session?: { sessionId?: string } | null }).session?.sessionId
-      : undefined;
-    if (
-      typeof named === "string" &&
-      named !== "" &&
-      get().sessions[agentId] !== named &&
-      !get().retiredSessions.includes(named) &&
-      // After "New conversation" the next thread is the one the person starts.
-      !freshStartPending(get().sessions[agentId], get().conversations[agentId] ?? [])
-    ) {
-      // Session and cursor change; the transcript is kept and the adopted
-      // thread merged into it — never replaced.
-      set((st) => adoptedState(st, agentId, named));
-      await get().hydrate(agentId, "merge");
+    const listed = await get().loadSessions(agentId);
+    if (!get().sessions[agentId]) {
+      const newest = listed.find((x) => x.surface === "chat" && x.status === "alive");
+      // After "New conversation" the next thread is the one the person starts,
+      // unless one really moved since (another device).
+      const fresh = get().sessionChoice[agentId];
+      const stale = !!newest && !!fresh && !fresh.sessionId && Date.parse(newest.updatedAt) <= fresh.at;
+      if (newest && !stale) {
+        set((st) => {
+          const streamIndexes = { ...st.streamIndexes };
+          delete streamIndexes[agentId];
+          return { sessions: { ...st.sessions, [agentId]: newest.id }, conversations: { ...st.conversations, [agentId]: [] }, streamIndexes };
+        });
+        await get().hydrate(agentId);
+      }
     }
     set((s) => ({
       details: { ...s.details, [agentId]: info },
