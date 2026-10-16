@@ -356,11 +356,12 @@ export function Conversation(): ReactNode {
       }));
   const blocks = conversations[activeAgentId] ?? [];
   // KYB-643: right after signing in, the account's threads are still being
-  // read. A chat with no thread yet may be about to receive one, so "No
-  // messages yet" would be a guess, and usually a wrong one.
+  // read. An empty chat may be about to receive one, so "No messages yet"
+  // would be a guess, and usually a wrong one. Not conditioned on the chat
+  // having no thread: adoption names the thread first and replays its history
+  // after, and the directory gate stays shut until that replay has landed.
   const directoryLoading = useStore((s) => s.directoryLoading);
-  const hasThread = useStore((s) => Boolean(s.sessions[activeAgentId]));
-  const loadingMessages = !room && directoryLoading && !hasThread;
+  const loadingMessages = !room && directoryLoading;
   const [draft, setDraft] = useState("");
   const [acCursor, setAcCursor] = useState(0);
   const [folderMenu, setFolderMenu] = useState(false);
