@@ -85,3 +85,11 @@ exists**. A hook must be the *same closure* the real control calls — one that
 reimplements the action tests the hook.
 
 → Full rationale: `~/dev/ad/brains/testing-patterns/drivable-seams.md`
+
+## Status — 2026-10-17 (0.5.17 on appydave, last run on Roamy)
+
+1. PASS: 1 cold start, 2 cloud chat (Brandy via a temporary tunnel), 3 kybsite, 4 scheduled turn, 6 new conversation holds, 7 quit leaves nothing. Self-test fails as it must.
+2. Story 5 (picker) is blocked: it needs a reachable agent on `@kybernesis/manage` ≥0.10 that serves `/kyb/sessions`. Brandy has 0.7-era routes and the picker shows "Loading…" forever.
+3. Story 8 (voice orb) is stood down. There is no "Samantha" agent to grant. Voice is the per-agent `@kybernesis/voice` package plus that agent's own OpenAI key, and no agent has it yet. Which agent gets it is parked for David (see `~/dev/ad/brains/kybernesis/kyber-studio-voice-setup.md`).
+4. Story 9 (computer) is blocked: no reachable agent has `@kybernesis/computer`, which needs Docker on the agent's host. The appydave-probe upgrade (manage 0.19 + computer on its exe.dev VM) is proposed, not started.
+5. Re-run: `node uat/run.mjs [n…]`; point at agents with `UAT_CLOUD_AGENT`, `UAT_COMPUTER_AGENT`, `UAT_SAMANTHA`.
