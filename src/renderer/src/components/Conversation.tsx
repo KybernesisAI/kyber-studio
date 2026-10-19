@@ -355,6 +355,13 @@ export function Conversation(): ReactNode {
         accent: agents.find((a) => a.id === peer.id || a.name === peer.name)?.accent,
       }));
   const blocks = conversations[activeAgentId] ?? [];
+  // KYB-643: right after signing in, the account's threads are still being
+  // read. An empty chat may be about to receive one, so "No messages yet"
+  // would be a guess, and usually a wrong one. Not conditioned on the chat
+  // having no thread: adoption names the thread first and replays its history
+  // after, and the directory gate stays shut until that replay has landed.
+  const directoryLoading = useStore((s) => s.directoryLoading);
+  const loadingMessages = !room && directoryLoading;
   const [draft, setDraft] = useState("");
   const [acCursor, setAcCursor] = useState(0);
   const [folderMenu, setFolderMenu] = useState(false);
@@ -835,7 +842,12 @@ export function Conversation(): ReactNode {
               body
             );
           })}
-          {blocks.length === 0 ? (
+          {blocks.length === 0 && loadingMessages ? (
+            <div className="empty" role="status">
+              <Spinner />
+              <span> Loading messages…</span>
+            </div>
+          ) : blocks.length === 0 ? (
             <div className="empty">
               {room
                 ? `No messages yet. Say something to ${roomMembers.map((m) => m.name).join(" and ")}.`
