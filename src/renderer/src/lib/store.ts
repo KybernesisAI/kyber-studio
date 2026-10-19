@@ -742,6 +742,30 @@ function flushQueue(get: () => State, agentId: string): void {
 
 export type PanelView = "none" | "overview" | "routine" | "settings" | "vault" | "conversations";
 
+/**
+ * Which of an agent's conversations the Conversations drawer asks for (KYB-646).
+ *
+ * "active" sends `?alive=1`, so the agent drops runs that have completed,
+ * failed or been cancelled. "all" omits it. The agent sorts and truncates
+ * server-side, so switching asks again rather than filtering what is held:
+ * filtering the 60 newest of everything would hide live threads that fell
+ * outside them.
+ */
+export type ThreadFilter = "active" | "all";
+
+/** A person who has never chosen sees only the conversations still running. */
+export const DEFAULT_THREAD_FILTER: ThreadFilter = "active";
+
+/** The agent's choice of filter, or the default. */
+export function threadFilterFor(prefs: Record<string, { threadFilter?: ThreadFilter } | undefined>, agentId: string): ThreadFilter {
+  return prefs[agentId]?.threadFilter ?? DEFAULT_THREAD_FILTER;
+}
+
+/** The `/sessions` request for a filter. Exported so tests name the request rather than retype it. */
+export function sessionsPath(filter: ThreadFilter): string {
+  return filter === "active" ? "/sessions?limit=60&alive=1" : "/sessions?limit=60";
+}
+
 /** One conversation as the agent's management routes describe it (see @kybernesis/manage's /sessions). */
 export interface AgentSession {
   id: string;
@@ -802,6 +826,12 @@ interface State {
       avatar?: string;
       /** Spoken voice for this agent's voice orb. Account-wide, like the picture. */
       voice?: string;
+      /**
+       * Active or all conversations in the drawer. This machine's, not the
+       * account's: `patchAgent` does not carry it and the profile has no field
+       * for it.
+       */
+      threadFilter?: ThreadFilter;
     }
   >;
   /**
@@ -855,8 +885,11 @@ interface State {
    * Every conversation the agent itself knows about, from its management
    * routes — Studio's, the phone's, iMessage threads, Buzz rooms, the routines
    * feed. undefined = not asked yet.
+   *
+   * Tagged with the filter it was fetched under, so a list fetched as "all"
+   * is never shown as "active", or the other way round.
    */
-  agentSessions: Record<string, AgentSession[] | undefined>;
+  agentSessions: Record<string, { filter: ThreadFilter; sessions: AgentSession[] } | undefined>;
   /** The agent's routines conversation, when it has one. Shown as a feed, never adopted as the chat. */
   routinesSessions: Record<string, string | null | undefined>;
   /**
@@ -922,8 +955,14 @@ interface State {
    * may be about to receive one, so it shows "Loading messages…".
    */
   directoryLoading: boolean;
-  /** Ask the agent for every conversation it has had. */
-  loadSessions(agentId: string): Promise<AgentSession[]>;
+  /**
+   * Ask the agent for its conversations, under the drawer's current filter
+   * unless `filter` names one. A list fetched under any other filter than the
+   * drawer's is returned but not stored.
+   */
+  loadSessions(agentId: string, filter?: ThreadFilter): Promise<AgentSession[]>;
+  /** Choose active or all conversations for one agent, remember it here, and ask again. */
+  setThreadFilter(agentId: string, filter: ThreadFilter): void;
   /** Switch the chat to one of the agent's conversations and read it. */
   openSession(agentId: string, sessionId: string): Promise<void>;
   /** Leave the current thread and start fresh, with an empty transcript. */
@@ -1429,22 +1468,34 @@ export const useStore = create<State>((set, get) => ({
   },
 
   setPanel: (panel) => set({ panel, activeRoutineId: null }),
-  loadSessions: async (agentId) => {
+  loadSessions: async (agentId, requested) => {
     const agent = get().agents.find((a) => a.id === agentId);
     if (!window.studio || !agent?.url) return [];
+    const filter = requested ?? threadFilterFor(get().prefs, agentId);
     try {
-      const res = await window.studio.manage({ url: agent.url, path: "/sessions?limit=60" });
-      if (!res.ok) return get().agentSessions[agentId] ?? [];
+      const res = await window.studio.manage({ url: agent.url, path: sessionsPath(filter) });
+      if (!res.ok) return get().agentSessions[agentId]?.sessions ?? [];
       const data = res.data as { sessions?: AgentSession[]; routines?: string | null };
       const sessions = data.sessions ?? [];
+      // Stored only under the drawer's filter as it is NOW. The switch may
+      // have moved while this was in flight, and a late "active" answer would
+      // otherwise land on top of "all" and look like the toggle had done
+      // nothing; a caller that named its own filter is not the drawer's.
+      const current = threadFilterFor(get().prefs, agentId) === filter;
       set((st) => ({
-        agentSessions: { ...st.agentSessions, [agentId]: sessions },
+        ...(current ? { agentSessions: { ...st.agentSessions, [agentId]: { filter, sessions } } } : {}),
         routinesSessions: { ...st.routinesSessions, [agentId]: data.routines ?? null },
       }));
       return sessions;
     } catch {
-      return get().agentSessions[agentId] ?? [];
+      return get().agentSessions[agentId]?.sessions ?? [];
     }
+  },
+  setThreadFilter: (agentId, filter) => {
+    if (threadFilterFor(get().prefs, agentId) === filter) return;
+    set((st) => ({ prefs: { ...st.prefs, [agentId]: { ...st.prefs[agentId], threadFilter: filter } } }));
+    get().persist();
+    void get().loadSessions(agentId);
   },
   openSession: async (agentId, sessionId) => {
     if (get().sessions[agentId] === sessionId) return;
@@ -2381,7 +2432,11 @@ export const useStore = create<State>((set, get) => ({
      * is listed as the routines feed, and the chat only picks a thread when it
      * has none: the newest live conversation a person actually had.
      */
-    const listed = await get().loadSessions(agentId);
+    // Always All, as before KYB-646: which thread the chat adopts must not
+    // depend on how the drawer happens to be filtered. Under Active, `alive=1`
+    // reaches past the 60 newest and could adopt an older live thread that
+    // All would never have offered.
+    const listed = await get().loadSessions(agentId, "all");
     if (!get().sessions[agentId]) {
       const newest = listed.find((x) => x.surface === "chat" && x.status === "alive");
       if (newest) {
