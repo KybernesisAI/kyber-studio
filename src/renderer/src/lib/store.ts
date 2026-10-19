@@ -702,6 +702,10 @@ function leaveForNewConversation(
 ): void {
   retireGeneration(agentId);
   if (get().watching?.agentId === agentId) get().stopWatching();
+  // A turn stopped in the thread being left can still stream and settle: eve
+  // settles a cancelled turn as "waiting", which the bridge reports as a
+  // normal end. Its events must reach no one, or they land in the new chat.
+  for (const [streamId, owner] of streamOwners) if (owner === agentId) streamOwners.delete(streamId);
   set((st) => {
     const streamIndexes = { ...st.streamIndexes };
     // The cursor belongs to the thread being left.
@@ -1844,6 +1848,12 @@ export const useStore = create<State>((set, get) => ({
         streamId,
       })
       .then((res) => {
+        // The chat left this thread while the turn ran — Stop, then New
+        // conversation, End, or another thread picked. Writing now would put
+        // the chat back on the thread it left and turn a new conversation's
+        // hold into a pick of that thread (KYB-649). The reply is kept by the
+        // agent; opening that thread again shows it.
+        if (sentAtGeneration !== currentGeneration(agentId)) return;
         set((s) => ({
           sessions: { ...s.sessions, [agentId]: res.sessionId },
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
@@ -1889,17 +1899,20 @@ export const useStore = create<State>((set, get) => ({
         upsertBlock(get, set, agentId, bubbleId, e instanceof Error ? e.message : String(e));
       })
       .finally(() => {
-        set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
+        // Only THIS turn's flight is released. A turn that settles after Stop
+        // must not release, or disarm, a newer turn running in its place.
+        const mine = (get().inflight[agentId]?.streamId ?? streamId) === streamId;
         set((s) => {
           const rest = { ...s.streaming };
           delete rest[streamId];
+          if (!mine) return { streaming: rest };
           const flight = { ...s.inflight };
           delete flight[agentId];
-          return { streaming: rest, inflight: flight };
+          return { streaming: rest, inflight: flight, activity: { ...s.activity, [agentId]: null } };
         });
         // Keep the owner mapping briefly: a late event that arrives after the
         // response is exactly what this whole change is about.
-        disarmDeadMan(agentId);
+        if (mine) disarmDeadMan(agentId);
         setTimeout(() => streamOwners.delete(streamId), 30_000);
         get().persist();
         flushQueue(get, agentId);
@@ -1992,7 +2005,13 @@ export const useStore = create<State>((set, get) => ({
       leaveForNewConversation(get, set, agentId);
     }
     console.log(`[sessions] ending ${agentId} ${sessionId.slice(0, 18)} (confirmed)`);
-    void window.studio.resetSession({ url, sessionId }).catch(() => undefined);
+    // Nothing is destroyed if this fails — the thread stays alive on the agent
+    // — but it must not fail silently.
+    void window.studio
+      .resetSession({ url, sessionId })
+      .catch((error: unknown) =>
+        console.log(`[sessions] ending ${agentId} ${sessionId.slice(0, 18)} failed: ${(error as Error)?.message ?? String(error)}`),
+      );
   },
 
   answerQuestion: (agentId, blockId, answer) => {
@@ -2029,6 +2048,7 @@ export const useStore = create<State>((set, get) => ({
     set((s) => ({ inflight: { ...s.inflight, [agentId]: { streamId } } }));
     armDeadMan(get, set, agentId);
 
+    const sentAtGeneration = currentGeneration(agentId);
     void window.studio
       .send({
         url: agent.url,
@@ -2042,6 +2062,8 @@ export const useStore = create<State>((set, get) => ({
         streamId,
       })
       .then((res) => {
+        // As in send: the chat has left this thread (KYB-649).
+        if (sentAtGeneration !== currentGeneration(agentId)) return;
         set((s) => ({
           sessions: { ...s.sessions, [agentId]: res.sessionId },
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
@@ -2053,16 +2075,20 @@ export const useStore = create<State>((set, get) => ({
           upsertBlock(get, set, agentId, bubbleId, "(the agent returned no text for this turn)");
         }
       })
-      .catch((e: unknown) =>
-        upsertBlock(get, set, agentId, bubbleId, e instanceof Error ? e.message : String(e)),
-      )
+      .catch((e: unknown) => {
+        if (sentAtGeneration !== currentGeneration(agentId)) return;
+        upsertBlock(get, set, agentId, bubbleId, e instanceof Error ? e.message : String(e));
+      })
       .finally(() => {
-        set((s) => {
-          const flight = { ...s.inflight };
-          delete flight[agentId];
-          return { activity: { ...s.activity, [agentId]: null }, inflight: flight };
-        });
-        disarmDeadMan(agentId);
+        const mine = (get().inflight[agentId]?.streamId ?? streamId) === streamId;
+        if (mine) {
+          set((s) => {
+            const flight = { ...s.inflight };
+            delete flight[agentId];
+            return { activity: { ...s.activity, [agentId]: null }, inflight: flight };
+          });
+          disarmDeadMan(agentId);
+        }
         setTimeout(() => streamOwners.delete(streamId), 30_000);
         get().persist();
         flushQueue(get, agentId);

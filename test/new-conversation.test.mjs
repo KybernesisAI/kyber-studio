@@ -165,6 +165,98 @@ test("AC4: endConversation resets exactly the id it is given, not whatever is se
   assertStillNew("after ending the selected thread");
 });
 
+/** Sends that answer only when the test says so, like a turn still running on the agent. */
+function holdSends() {
+  const real = window.studio.send;
+  const pending = [];
+  window.studio.send = (input) => {
+    bridge.sends.push(input);
+    return new Promise((resolve) => pending.push({ input, resolve }));
+  };
+  return { pending, restore: () => (window.studio.send = real) };
+}
+
+test("B1: Stop, then New conversation — the stopped turn settling late changes nothing in the new conversation", async () => {
+  await holding(OLD_THREAD.sessionId);
+  const held = holdSends();
+  try {
+    useStore.getState().send(ID, "a question in the old thread");
+    await sleep(10);
+    const [turn] = held.pending;
+    assert.equal(turn.input.sessionId, OLD_THREAD.sessionId);
+    assert.ok(useStore.getState().inflight[ID], "the turn is not in flight");
+
+    useStore.getState().stopTurn(ID);
+    assert.equal(useStore.getState().inflight[ID], undefined, "Stop did not release the composer");
+    useStore.getState().startConversation(ID);
+    assertStillNew("straight after New conversation");
+
+    // eve settles a cancelled turn as \"waiting\": it streams, then answers normally.
+    bridge.live.emit.turn?.({ streamId: turn.input.streamId, sessionId: OLD_THREAD.sessionId, turnId: "t1" });
+    bridge.live.emit.delta?.({ streamId: turn.input.streamId, text: "partial answer from the old thread" });
+    turn.resolve({ sessionId: OLD_THREAD.sessionId, streamIndex: 12, reply: "partial answer from the old thread" });
+    await sleep(20);
+
+    assertStillNew("after the stopped turn settled");
+    assert.equal(useStore.getState().inflight[ID], undefined, "the late turn put itself back in flight");
+  } finally {
+    held.restore();
+  }
+});
+
+test("B1: End on a stuck turn — the turn settling late does not put the chat back on the ended thread", async () => {
+  await holding(OLD_THREAD.sessionId);
+  const held = holdSends();
+  bridge.resets.length = 0;
+  try {
+    useStore.getState().send(ID, "this one never settles");
+    await sleep(10);
+    const [turn] = held.pending;
+
+    useStore.getState().endConversation(ID, OLD_THREAD.sessionId);
+    assert.deepEqual(bridge.resets.map((r) => r.sessionId), [OLD_THREAD.sessionId]);
+    assertStillNew("straight after End");
+
+    turn.resolve({ sessionId: OLD_THREAD.sessionId, streamIndex: 12, reply: "" });
+    await sleep(20);
+    assertStillNew("after the stuck turn settled");
+  } finally {
+    held.restore();
+  }
+
+  const sent = bridge.sends.length;
+  useStore.getState().send(ID, "after ending");
+  await sleep(50);
+  assert.equal(bridge.sends[sent]?.sessionId, undefined, "the next message went to the ended session");
+});
+
+test("B1: a stopped turn settling late does not release a newer turn running in its place", async () => {
+  await holding(OLD_THREAD.sessionId);
+  const held = holdSends();
+  try {
+    useStore.getState().send(ID, "old");
+    await sleep(10);
+    useStore.getState().stopTurn(ID);
+    useStore.getState().startConversation(ID);
+    useStore.getState().send(ID, "new");
+    await sleep(10);
+    const [oldTurn, newTurn] = held.pending;
+    assert.equal(newTurn.input.sessionId, undefined, "the new conversation's first message went into the old thread");
+    assert.equal(useStore.getState().inflight[ID]?.streamId, newTurn.input.streamId);
+
+    oldTurn.resolve({ sessionId: OLD_THREAD.sessionId, streamIndex: 12, reply: "late" });
+    await sleep(20);
+    assert.equal(useStore.getState().inflight[ID]?.streamId, newTurn.input.streamId, "the late settle released the newer turn");
+
+    newTurn.resolve({ sessionId: "wrun_FRESH", streamIndex: 3, reply: "fresh reply" });
+    await sleep(20);
+    assert.equal(useStore.getState().sessions[ID], "wrun_FRESH");
+    assert.equal(useStore.getState().inflight[ID], undefined);
+  } finally {
+    held.restore();
+  }
+});
+
 test("control: with no thread and no fresh-start choice, loadAgentInfo does adopt — and now says so", async (t) => {
   const logs = captureLogs(t);
   useStore.setState({ sessions: {}, sessionChoice: {}, conversations: {} });

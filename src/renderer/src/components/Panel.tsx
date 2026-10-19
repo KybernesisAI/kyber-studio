@@ -292,15 +292,19 @@ export function describeThread(
   sessionId: string,
 ): { name: string; lastActive: string; alive: boolean } {
   const listed = state.agentSessions[agentId]?.sessions.find((s) => s.id === sessionId);
-  if (listed) return { name: listed.title, lastActive: whenShort(listed.updatedAt), alive: listed.status === "alive" };
   // Only the transcript on screen belongs to this thread; another one's would misname it.
   const blocks = state.sessions[agentId] === sessionId ? (state.conversations[agentId] ?? []) : [];
-  const last = [...blocks].reverse().find((b) => b.kind === "text" && typeof (b as { text?: unknown }).text === "string") as
+  const last = [...blocks]
+    .reverse()
+    .find((b) => b.kind === "text" && typeof (b as { text?: unknown }).text === "string" && (b as { text: string }).text.trim()) as
     | { text: string; at?: number }
     | undefined;
-  const name = last ? (last.text.length > 80 ? `${last.text.slice(0, 80)}…` : last.text) : "This conversation";
+  const fromTranscript = last ? (last.text.length > 80 ? `${last.text.slice(0, 80)}…` : last.text) : "This conversation";
+  if (listed) {
+    return { name: listed.title?.trim() || fromTranscript, lastActive: whenShort(listed.updatedAt), alive: listed.status === "alive" };
+  }
   const lastActive = last?.at ? whenShort(new Date(last.at).toISOString()) : "";
-  return { name, lastActive, alive: true };
+  return { name: fromTranscript, lastActive, alive: true };
 }
 
 /** Fixed until the agent reports which surface a thread belongs to (KYB-645). */
@@ -315,14 +319,16 @@ function EndConversationConfirm({
   target,
   onDone,
 }: {
-  target: { agentId: string; sessionId: string };
+  target: { agentId: string; sessionId: string; agentName: string; thread: ReturnType<typeof describeThread> };
   onDone: () => void;
 }): ReactNode {
   const endConversation = useStore((s) => s.endConversation);
-  const thread = describeThread(useStore.getState(), target.agentId, target.sessionId);
+  // Described when the confirmation OPENED and never again: if the chat moves
+  // to another thread meanwhile, this must still name the one it will end.
+  const { thread } = target;
   return (
     <div className="card" role="alertdialog" aria-label="End this conversation?">
-      <div style={{ marginBottom: 6 }}>End this conversation?</div>
+      <div style={{ marginBottom: 6 }}>End this conversation with {target.agentName}?</div>
       <div style={{ marginBottom: 6 }}>
         <strong>{thread.name}</strong>
         {thread.lastActive ? <span className="muted"> · last active {thread.lastActive}</span> : null}
@@ -922,7 +928,17 @@ function Settings(): ReactNode {
   // The thread the confirmation names, captured when it OPENS. Ending reads
   // this, never `sessions[…]` at the moment of confirming: adoption can change
   // the selected thread while the confirmation is open (KYB-649).
-  const [ending, setEnding] = useState<{ agentId: string; sessionId: string } | null>(null);
+  const [ending, setEnding] = useState<{
+    agentId: string;
+    sessionId: string;
+    agentName: string;
+    thread: ReturnType<typeof describeThread>;
+  } | null>(null);
+  // Settings is not keyed by agent: a confirmation left open across an agent
+  // switch would sit under the other agent's settings. It closes instead.
+  useEffect(() => {
+    setEnding((e) => (e && e.agentId !== activeAgentId ? null : e));
+  }, [activeAgentId]);
   if (!agent) return null;
 
   return (
@@ -997,12 +1013,12 @@ function Settings(): ReactNode {
           </button>
         </div>
 
-        {ending ? (
+        {ending && ending.agentId === activeAgentId ? (
           <EndConversationConfirm target={ending} onDone={() => setEnding(null)} />
         ) : (
           <div className="card stack-row">
             <div style={{ flex: 1 }}>
-              <div>End this conversation</div>
+              <div>Current conversation</div>
               <div className="muted">
                 {sessions[activeAgentId]
                   ? "Use this if replies stopped arriving — an agent that restarted mid-turn leaves a conversation that can never finish. You will be asked to confirm."
@@ -1014,10 +1030,16 @@ function Settings(): ReactNode {
               disabled={!sessions[activeAgentId]}
               onClick={() => {
                 const sessionId = sessions[activeAgentId];
-                if (sessionId) setEnding({ agentId: activeAgentId, sessionId });
+                if (!sessionId) return;
+                setEnding({
+                  agentId: activeAgentId,
+                  sessionId,
+                  agentName: agent.name,
+                  thread: describeThread(useStore.getState(), activeAgentId, sessionId),
+                });
               }}
             >
-              End…
+              End this conversation
             </button>
           </div>
         )}

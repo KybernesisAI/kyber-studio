@@ -35,6 +35,7 @@ const { useStore } = await import("@/lib/store");
 after(() => dom.window.close());
 
 const A = { id: "agent-a", name: "a", registeredName: "a", url: "https://a.example", accent: "#000", status: "online" };
+const B = { id: "agent-b", name: "b", registeredName: "b", url: "https://b.example", accent: "#000", status: "online" };
 
 const row = (id, status) => ({
   id,
@@ -97,7 +98,7 @@ async function click(el) {
 
 function reset({ panel, sessionId, listed = [row("live-1", "alive"), row("live-2", "alive")] }) {
   useStore.setState({
-    agents: [A],
+    agents: [A, B],
     activeAgentId: A.id,
     panel,
     prefs: {},
@@ -131,15 +132,15 @@ test("AC8: Settings' End asks first, names the thread, warns across surfaces, ne
   reset({ panel: "settings", sessionId: "live-1" });
   const view = await mount();
 
-  assert.ok(view.text().includes("End this conversation"), "the Settings row is not labelled End this conversation");
   assert.equal(view.button("Reset"), undefined, "the old one-click Reset button is still there");
-  await click(view.button("End…"));
+  await click(view.button("End this conversation"));
   assert.equal(bridge.resets.length, 0, "opening the confirmation ended something");
 
   const dialog = view.dialog();
   assert.ok(dialog, "no confirmation opened");
   const says = dialog.textContent ?? "";
   assert.ok(says.includes("title live-1"), `the confirmation does not name the thread: ${says}`);
+  assert.ok(says.includes("with a?"), `the confirmation does not name the agent: ${says}`);
   assert.ok(says.includes("last active 5 min ago"), `the confirmation does not say when it was last active: ${says}`);
   assert.ok(says.includes("cannot be continued"), says);
   assert.ok(says.includes("working memory"), says);
@@ -158,7 +159,7 @@ test("AC4 + AC8: the thread ended is the one the confirmation named, even if the
   reset({ panel: "settings", sessionId: "live-1" });
   const view = await mount();
 
-  await click(view.button("End…"));
+  await click(view.button("End this conversation"));
   // An adoption lands while the confirmation is open.
   await act(async () => {
     useStore.setState((s) => ({ sessions: { ...s.sessions, [A.id]: "live-2" } }));
@@ -177,7 +178,7 @@ test("AC8: confirming on the thread on screen ends it and leaves the chat on a n
   reset({ panel: "settings", sessionId: "live-1" });
   const view = await mount();
 
-  await click(view.button("End…"));
+  await click(view.button("End this conversation"));
   await click(view.button("End conversation"));
 
   assert.deepEqual(bridge.resets.map((r) => r.sessionId), ["live-1"]);
@@ -192,12 +193,54 @@ test("an ended thread's confirmation leaves out the cross-surface line; with no 
   installBridge();
   reset({ panel: "settings", sessionId: "live-1", listed: [row("live-1", "ended")] });
   let view = await mount();
-  await click(view.button("End…"));
+  await click(view.button("End this conversation"));
   assert.ok(!(view.dialog()?.textContent ?? "").includes(END_CROSS_SURFACE_LINE), "an ended thread was warned about as if live");
   await view.unmount();
 
   reset({ panel: "settings", sessionId: undefined });
   view = await mount();
-  assert.equal(view.button("End…")?.disabled, true, "End is offered with no conversation to end");
+  assert.equal(view.button("End this conversation")?.disabled, true, "End is offered with no conversation to end");
+  await view.unmount();
+});
+
+test("AC2b: a thread the agent has not listed is named from its transcript, and keeps that name if the chat moves while open", async () => {
+  const bridge = installBridge();
+  reset({ panel: "settings", sessionId: "live-1", listed: [] });
+  const view = await mount();
+
+  await click(view.button("End this conversation"));
+  const before = view.dialog()?.textContent ?? "";
+  assert.ok(before.includes("earlier"), `not named from the transcript: ${before}`);
+  assert.ok(before.includes("last active 1 min ago"), before);
+  assert.ok(before.includes(END_CROSS_SURFACE_LINE), "an unlisted thread lacks the cross-surface line");
+
+  await act(async () => {
+    useStore.setState((s) => ({ sessions: { ...s.sessions, [A.id]: "live-2" }, conversations: { ...s.conversations, [A.id]: [] } }));
+  });
+  assert.equal(view.dialog()?.textContent ?? "", before, "the confirmation changed what it says while open");
+
+  await click(view.button("End conversation"));
+  assert.deepEqual(bridge.resets.map((r) => r.sessionId), ["live-1"]);
+  await view.unmount();
+});
+
+test("switching agent closes an open confirmation without ending anything", async () => {
+  const bridge = installBridge();
+  reset({ panel: "settings", sessionId: "live-1" });
+  const view = await mount();
+
+  await click(view.button("End this conversation"));
+  assert.ok(view.dialog());
+  await act(async () => {
+    useStore.setState({ activeAgentId: B.id });
+  });
+  await settle();
+  assert.equal(view.dialog(), null, "the confirmation for agent a is still open under agent b");
+  await act(async () => {
+    useStore.setState({ activeAgentId: A.id });
+  });
+  await settle();
+  assert.equal(view.dialog(), null, "the confirmation came back on switching back");
+  assert.equal(bridge.resets.length, 0);
   await view.unmount();
 });

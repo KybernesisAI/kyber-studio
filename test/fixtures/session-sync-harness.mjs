@@ -75,7 +75,7 @@ export function installBridge({
   const calls = [];
   const sends = [];
   const resets = [];
-  const live = { rows, agents, agentSessions, state, saved: {} };
+  const live = { rows, agents, agentSessions, state, saved: {}, emit: {} };
   const after = async (name) => {
     calls.push(name);
     // `hang`: never answers, like a control plane that has stopped responding.
@@ -120,6 +120,13 @@ export function installBridge({
     },
     resetSession: async (input) => {
       resets.push(input);
+    },
+    // The store's stream listeners, so a test can deliver a late event.
+    onDelta: (cb) => {
+      live.emit.delta = cb;
+    },
+    onTurn: (cb) => {
+      live.emit.turn = cb;
     },
     agentInfo: async () => (live.agentSessions ? { agent: { name: "agent" } } : undefined),
     manage: async ({ path }) => {
