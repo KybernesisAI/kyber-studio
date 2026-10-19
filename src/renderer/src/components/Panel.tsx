@@ -12,7 +12,7 @@ import {
   timeOptions,
   toCron,
 } from "@/lib/schedule";
-import { useStore, type PanelView } from "@/lib/store";
+import { threadFilterFor, useStore, type PanelView, type ThreadFilter } from "@/lib/store";
 import type { LocalAction, LocalPermission } from "@shared/ipc";
 import { Avatar, Icon, Toggle } from "./primitives";
 
@@ -147,8 +147,9 @@ function whenShort(iso: string): string {
  * its own drawer so the overview stays an overview.
  */
 function ConversationsEntry(): ReactNode {
-  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, loadSessions, setPanel } = useStore();
-  const list = agentSessions[activeAgentId];
+  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, loadSessions, setPanel, prefs } = useStore();
+  const filter = threadFilterFor(prefs, activeAgentId);
+  const list = heldUnder(agentSessions[activeAgentId], filter);
   const current = sessions[activeAgentId];
   const routinesId = routinesSessions[activeAgentId];
   useEffect(() => {
@@ -170,7 +171,11 @@ function ConversationsEntry(): ReactNode {
       <Row
         icon={<Icon name="chevronRight" size={14} />}
         title="Show conversations"
-        detail={list ? `${others.length} thread${others.length === 1 ? "" : "s"} across this app, your phone and iMessage` : "Loading…"}
+        detail={
+          list
+            ? `${others.length} ${filter === "active" ? "active " : ""}thread${others.length === 1 ? "" : "s"} across this app, your phone and iMessage`
+            : "Loading…"
+        }
         onClick={() => setPanel("conversations")}
       />
     </Section>
@@ -183,8 +188,10 @@ function ConversationsEntry(): ReactNode {
  * to the others, which until now sat on the agent's disk with no door.
  */
 function ConversationsView(): ReactNode {
-  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, startConversation, loadSessions, inflight, setPanel } = useStore();
-  const list = agentSessions[activeAgentId];
+  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, startConversation, loadSessions, inflight, setPanel, prefs, setThreadFilter } =
+    useStore();
+  const filter = threadFilterFor(prefs, activeAgentId);
+  const list = heldUnder(agentSessions[activeAgentId], filter);
   const current = sessions[activeAgentId];
   const routinesId = routinesSessions[activeAgentId];
   useEffect(() => {
@@ -214,11 +221,31 @@ function ConversationsView(): ReactNode {
           }
         />
         <div className="panel__section-head" style={{ marginTop: 16 }}>
-          <span className="panel__section-title">All threads</span>
-          {list ? <span className="muted">{others.length}</span> : null}
+          <span className="panel__section-title">Threads</span>
+          {list ? <span className="muted" style={{ marginRight: 8 }}>{others.length}</span> : null}
+          <div className="thread-filter" role="group" aria-label="Which threads to show">
+            {THREAD_FILTERS.map(([value, label]) => (
+              <button
+                key={value}
+                className={`tab${filter === value ? " tab--on" : ""}`}
+                aria-pressed={filter === value}
+                onClick={() => setThreadFilter(activeAgentId, value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
         {list === undefined ? <Empty loaded={false} none="" /> : null}
-        {list && others.length === 0 ? <Empty loaded none="No conversations yet." /> : null}
+        {list && others.length === 0 && filter === "all" ? <Empty loaded none="No conversations yet." /> : null}
+        {list && others.length === 0 && filter === "active" ? (
+          <>
+            <Empty loaded none="No active conversations. Finished ones are under All." />
+            <button className="btn" style={{ width: "100%", marginTop: 4 }} onClick={() => setThreadFilter(activeAgentId, "all")}>
+              Show all conversations
+            </button>
+          </>
+        ) : null}
         {others.map((s) => (
           <Row
             key={s.id}
@@ -232,6 +259,20 @@ function ConversationsView(): ReactNode {
       </div>
     </>
   );
+}
+
+const THREAD_FILTERS: ReadonlyArray<readonly [ThreadFilter, string]> = [
+  ["active", "Active"],
+  ["all", "All"],
+];
+
+/**
+ * The held list, if it was fetched under the filter now chosen. Otherwise
+ * undefined, which reads as "Loading…" until the new request answers: a list
+ * fetched as All must not be shown under Active (KYB-646).
+ */
+function heldUnder<T>(held: { filter: ThreadFilter; sessions: T[] } | undefined, filter: ThreadFilter): T[] | undefined {
+  return held?.filter === filter ? held.sessions : undefined;
 }
 
 /** Distinguishes "not asked yet" from "the agent has none". */

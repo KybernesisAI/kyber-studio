@@ -479,6 +479,8 @@ input, textarea { font: inherit; color: inherit; }
   display: flex; align-items: center; margin: 4px 0 8px;
 }
 .panel__section-title { font-weight: 600; font-size: var(--fs-lg); flex: 1; }
+.thread-filter { display: flex; gap: 2px; }
+.thread-filter .tab { height: 24px; padding: 0 10px; font-size: var(--fs-sm); }
 
 .routine-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px; border-radius: var(--radius); width: 100%; text-align: left; }
 .routine-row:hover { background: var(--hover); }
