@@ -280,6 +280,80 @@ function Empty({ loaded, none }: { loaded: boolean; none: string }): ReactNode {
   return <div className="muted" style={{ padding: "2px 8px 6px" }}>{loaded ? none : "Loading…"}</div>;
 }
 
+/**
+ * What the End confirmation says about a thread: its title (or its last
+ * message), when it was last active, and whether the agent still lists it as
+ * alive. A thread the agent has not listed yet is treated as alive, so the
+ * cross-surface warning is shown rather than silently left out.
+ */
+export function describeThread(
+  state: Pick<ReturnType<typeof useStore.getState>, "agentSessions" | "conversations" | "sessions">,
+  agentId: string,
+  sessionId: string,
+): { name: string; lastActive: string; alive: boolean } {
+  const listed = state.agentSessions[agentId]?.sessions.find((s) => s.id === sessionId);
+  if (listed) return { name: listed.title, lastActive: whenShort(listed.updatedAt), alive: listed.status === "alive" };
+  // Only the transcript on screen belongs to this thread; another one's would misname it.
+  const blocks = state.sessions[agentId] === sessionId ? (state.conversations[agentId] ?? []) : [];
+  const last = [...blocks].reverse().find((b) => b.kind === "text" && typeof (b as { text?: unknown }).text === "string") as
+    | { text: string; at?: number }
+    | undefined;
+  const name = last ? (last.text.length > 80 ? `${last.text.slice(0, 80)}…` : last.text) : "This conversation";
+  const lastActive = last?.at ? whenShort(new Date(last.at).toISOString()) : "";
+  return { name, lastActive, alive: true };
+}
+
+/** Fixed until the agent reports which surface a thread belongs to (KYB-645). */
+export const END_CROSS_SURFACE_LINE = "If this conversation is also open in Buzz, iMessage or on your phone, it ends there too.";
+
+/**
+ * Confirm ending ONE named conversation. It ends `target.sessionId` — the
+ * thread shown when this opened — and nothing else. Never says "delete": the
+ * conversation stays stored and readable on the agent.
+ */
+function EndConversationConfirm({
+  target,
+  onDone,
+}: {
+  target: { agentId: string; sessionId: string };
+  onDone: () => void;
+}): ReactNode {
+  const endConversation = useStore((s) => s.endConversation);
+  const thread = describeThread(useStore.getState(), target.agentId, target.sessionId);
+  return (
+    <div className="card" role="alertdialog" aria-label="End this conversation?">
+      <div style={{ marginBottom: 6 }}>End this conversation?</div>
+      <div style={{ marginBottom: 6 }}>
+        <strong>{thread.name}</strong>
+        {thread.lastActive ? <span className="muted"> · last active {thread.lastActive}</span> : null}
+      </div>
+      <div className="muted" style={{ marginBottom: 6 }}>
+        It stays stored and you can still read it, but it cannot be continued, and the agent loses its working memory of it.
+      </div>
+      {thread.alive ? (
+        <div className="muted" style={{ marginBottom: 10 }}>
+          {END_CROSS_SURFACE_LINE}
+        </div>
+      ) : null}
+      <div className="stack-row">
+        <button className="btn" onClick={onDone}>
+          Cancel
+        </button>
+        <div style={{ flex: 1 }} />
+        <button
+          className="btn btn--primary"
+          onClick={() => {
+            endConversation(target.agentId, target.sessionId);
+            onDone();
+          }}
+        >
+          End conversation
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Create a routine that is actually written into the agent's repository. */
 function NewRoutine(): ReactNode {
   const { activeAgentId, createSchedule, manageError } = useStore();
@@ -839,12 +913,16 @@ function LocalAccess({ agent, url }: { agent: string; url?: string }): ReactNode
 }
 
 function Settings(): ReactNode {
-  const { agents, activeAgentId, patchAgent, setPanel, details, models, resetConversation, sessions } =
+  const { agents, activeAgentId, patchAgent, setPanel, details, models, sessions } =
     useStore();
   const agent = agents.find((a) => a.id === activeAgentId);
   const info = details[activeAgentId];
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
+  // The thread the confirmation names, captured when it OPENS. Ending reads
+  // this, never `sessions[…]` at the moment of confirming: adoption can change
+  // the selected thread while the confirmation is open (KYB-649).
+  const [ending, setEnding] = useState<{ agentId: string; sessionId: string } | null>(null);
   if (!agent) return null;
 
   return (
@@ -919,23 +997,30 @@ function Settings(): ReactNode {
           </button>
         </div>
 
-        <div className="card stack-row">
-          <div style={{ flex: 1 }}>
-            <div>Start a fresh conversation</div>
-            <div className="muted">
-              {sessions[activeAgentId]
-                ? "Retires the agent's current session. Use this if replies stopped arriving — an agent that restarted mid-turn leaves a session that can never finish."
-                : "No session yet; the next message starts one."}
+        {ending ? (
+          <EndConversationConfirm target={ending} onDone={() => setEnding(null)} />
+        ) : (
+          <div className="card stack-row">
+            <div style={{ flex: 1 }}>
+              <div>End this conversation</div>
+              <div className="muted">
+                {sessions[activeAgentId]
+                  ? "Use this if replies stopped arriving — an agent that restarted mid-turn leaves a conversation that can never finish. You will be asked to confirm."
+                  : "No conversation yet; the next message starts one."}
+              </div>
             </div>
+            <button
+              className="btn"
+              disabled={!sessions[activeAgentId]}
+              onClick={() => {
+                const sessionId = sessions[activeAgentId];
+                if (sessionId) setEnding({ agentId: activeAgentId, sessionId });
+              }}
+            >
+              End…
+            </button>
           </div>
-          <button
-            className="btn"
-            disabled={!sessions[activeAgentId]}
-            onClick={() => resetConversation(activeAgentId)}
-          >
-            Reset
-          </button>
-        </div>
+        )}
 
         <div className="card stack-row">
           <div style={{ flex: 1 }}>

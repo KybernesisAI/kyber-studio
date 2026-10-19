@@ -687,6 +687,36 @@ function retireGeneration(agentId: string): void {
   generation.set(agentId, currentGeneration(agentId) + 1);
 }
 
+/**
+ * Put the agent's chat on a new, empty conversation. LOCAL ONLY: nothing is
+ * sent to the agent, and the thread being left is untouched there.
+ *
+ * Records a fresh-start choice (`sessionId: null`) so neither adoption path —
+ * the directory sync nor `loadAgentInfo` — fills the new conversation with
+ * another thread before the person has said anything (KYB-649).
+ */
+function leaveForNewConversation(
+  get: () => State,
+  set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
+  agentId: string,
+): void {
+  retireGeneration(agentId);
+  if (get().watching?.agentId === agentId) get().stopWatching();
+  set((st) => {
+    const streamIndexes = { ...st.streamIndexes };
+    // The cursor belongs to the thread being left.
+    delete streamIndexes[agentId];
+    return {
+      sessions: { ...st.sessions, [agentId]: undefined },
+      conversations: { ...st.conversations, [agentId]: [] },
+      streamIndexes,
+      sessionChoice: { ...st.sessionChoice, [agentId]: { sessionId: null, at: Date.now() } },
+      activity: { ...st.activity, [agentId]: null },
+    };
+  });
+  get().persist();
+}
+
 function armDeadMan(
   get: () => State,
   set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
@@ -896,8 +926,14 @@ interface State {
    * A conversation the person picked on purpose, and when. Cross-device sync
    * may only replace it with a thread that moved AFTER the pick; otherwise
    * opening an older conversation flipped back within thirty seconds.
+   *
+   * `sessionId: null` is a NEW conversation the person asked for (KYB-649).
+   * Nothing adopts a thread over it, however new: the directory stores no
+   * surface, so its newest row can be a Buzz thread some Studio client
+   * republished, and yielding would put the person's next message into it.
+   * It stands until they send, pick a thread, or end the conversation.
    */
-  sessionChoice: Record<string, { sessionId: string; at: number } | undefined>;
+  sessionChoice: Record<string, { sessionId: string | null; at: number } | undefined>;
   streamIndexes: Record<string, number | undefined>;
   /** Per-agent "what it is doing right now", or null when idle. */
   activity: Record<string, string | null>;
@@ -965,7 +1001,13 @@ interface State {
   setThreadFilter(agentId: string, filter: ThreadFilter): void;
   /** Switch the chat to one of the agent's conversations and read it. */
   openSession(agentId: string, sessionId: string): Promise<void>;
-  /** Leave the current thread and start fresh, with an empty transcript. */
+  /**
+   * Leave the current thread and start fresh, with an empty transcript.
+   *
+   * Local only: the thread being left is NOT retired and stays in the drawer.
+   * This used to reset the selected session, which ended a live Buzz
+   * conversation mid-turn (KYB-649).
+   */
   startConversation(agentId: string): void;
   /** Pick up turns that happened on another device. Cheap; safe to call often. */
   refreshFromOthers(): Promise<void>;
@@ -988,13 +1030,20 @@ interface State {
   /** Ask the agent to stop the turn it is running. */
   stopTurn(agentId: string): void;
   /**
-   * Retire the eve session and start a fresh one.
+   * Terminally retire ONE named session on the agent, after the person has
+   * confirmed it.
    *
-   * The escape hatch for a conversation that cannot move: a turn interrupted by
-   * an agent restart never settles, so the session never parks and every later
-   * message queues behind it forever.
+   * The target is passed in — the id the confirmation showed when it opened —
+   * and never read from `sessions[agentId]` here: adoption can change the
+   * selected thread while a confirmation is open, and the session ended must
+   * be the one the person was shown (KYB-649). If it is still the selected
+   * thread, the chat then starts fresh exactly as "New conversation" does.
+   *
+   * Also the escape hatch for a conversation that cannot move: a turn
+   * interrupted by an agent restart never settles, so the session never parks
+   * and every later message queues behind it forever.
    */
-  resetConversation(agentId: string): void;
+  endConversation(agentId: string, sessionId: string): void;
   answerQuestion(agentId: string, blockId: string, answer: { optionId?: string; text?: string; label?: string }): void;
   patchAgent(id: string, patch: Partial<Agent>): void;
 
@@ -1146,7 +1195,7 @@ export const useStore = create<State>((set, get) => ({
         return;
       }
       /** One summary line per pass; counts only, never message text (KYB-637). */
-      const count = { room: 0, noAgent: 0, resolved: 0, same: 0, chosen: 0, published: 0, adopted: 0 };
+      const count = { room: 0, noAgent: 0, resolved: 0, same: 0, chosen: 0, fresh: 0, published: 0, adopted: 0 };
 
       // Directory rows name the agent by its registered name; older rows from
       // this app carry its id. Resolve either to the local agent, and skip what
@@ -1205,9 +1254,15 @@ export const useStore = create<State>((set, get) => ({
           count.same += 1;
           continue;
         }
+        const choice = get().sessionChoice[agent.id];
+        // A new conversation the person started stays new, whatever the
+        // directory says, until they send or pick a thread (KYB-649).
+        if (choice && choice.sessionId === null && !localSession) {
+          count.fresh += 1;
+          continue;
+        }
         // A thread the person opened on purpose stays unless the directory's
         // newest moved AFTER they picked (someone really did talk elsewhere).
-        const choice = get().sessionChoice[agent.id];
         if (choice && choice.sessionId === localSession && remoteAt <= choice.at) {
           count.chosen += 1;
           continue;
@@ -1270,7 +1325,7 @@ export const useStore = create<State>((set, get) => ({
       console.log(
         `[index] sync: ${indexed.length} row(s); ${count.resolved} for an agent here (${newest.size} newest), ` +
           `${count.adopted} adopted, ${count.published} published (local newer), ${count.same} already current, ` +
-          `${count.chosen} kept (chosen), ${count.resolved - newest.size} older; skipped ${count.room} room, ${count.noAgent} no agent`,
+          `${count.chosen} kept (chosen), ${count.fresh} kept (new conversation), ${count.resolved - newest.size} older; skipped ${count.room} room, ${count.noAgent} no agent`,
       );
     } catch (error) {
       // A failed pass still settles the gate: waiting the full bound on every
@@ -1303,6 +1358,9 @@ export const useStore = create<State>((set, get) => ({
 
     const replayed = await window.studio.replaySession({ url: agent.url, sessionId });
     if (!replayed || replayed.blocks.length === 0) return;
+    // The chat moved on while this was being read — a new conversation, or
+    // another thread. Writing now would put this thread's history into it.
+    if (get().sessions[agentId] !== sessionId) return;
     if (mode === "fill" && (get().conversations[agentId] ?? []).length > 0) return;
 
     /**
@@ -1517,12 +1575,9 @@ export const useStore = create<State>((set, get) => ({
     await get().hydrate(agentId);
   },
   startConversation: (agentId) => {
-    get().resetConversation(agentId);
-    set((st) => ({
-      conversations: { ...st.conversations, [agentId]: [] },
-      sessionChoice: { ...st.sessionChoice, [agentId]: undefined },
-    }));
-    get().persist();
+    // A turn is running in the current thread; let it finish (as openSession).
+    if (get().inflight[agentId]) return;
+    leaveForNewConversation(get, set, agentId);
   },
   openRoutine: (id) => set({ panel: "routine", activeRoutineId: id }),
   setPluginsOpen: (pluginsOpen) => set({ pluginsOpen }),
@@ -1792,6 +1847,12 @@ export const useStore = create<State>((set, get) => ({
         set((s) => ({
           sessions: { ...s.sessions, [agentId]: res.sessionId },
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
+          // The first message of a new conversation makes it a thread like any
+          // other: the fresh-start hold gives way to an ordinary choice.
+          sessionChoice:
+            s.sessionChoice[agentId]?.sessionId === null && res.sessionId
+              ? { ...s.sessionChoice, [agentId]: { sessionId: res.sessionId, at: Date.now() } }
+              : s.sessionChoice,
         }));
         /**
          * Tell the account where this conversation lives.
@@ -1917,23 +1978,20 @@ export const useStore = create<State>((set, get) => ({
     flushQueue(get, agentId);
   },
 
-  resetConversation: (agentId) => {
+  endConversation: (agentId, sessionId) => {
     const agent = get().agents.find((a) => a.id === agentId);
-    if (!agent?.url || !window.studio) return;
+    if (!agent?.url || !window.studio || !sessionId) return;
     const url = agent.url;
-    const sessionId = get().sessions[agentId];
-    // Drop the local handles first. Even if the agent cannot retire the session
-    // (its owner may already be gone), the next message must not be posted into
-    // the session that was stuck — that is the whole point of resetting.
-    disarmDeadMan(agentId);
-    retireGeneration(agentId);
-    set((s) => ({
-      sessions: { ...s.sessions, [agentId]: undefined },
-      streamIndexes: { ...s.streamIndexes, [agentId]: 0 },
-      inflight: { ...s.inflight, [agentId]: undefined },
-      activity: { ...s.activity, [agentId]: null },
-    }));
-    get().persist();
+    // Drop the local handles first, when it is the thread on screen. Even if
+    // the agent cannot retire the session (its owner may already be gone), the
+    // next message must not be posted into the session that was stuck — that
+    // is the whole point of ending it.
+    if (get().sessions[agentId] === sessionId) {
+      disarmDeadMan(agentId);
+      set((s) => ({ inflight: { ...s.inflight, [agentId]: undefined } }));
+      leaveForNewConversation(get, set, agentId);
+    }
+    console.log(`[sessions] ending ${agentId} ${sessionId.slice(0, 18)} (confirmed)`);
     void window.studio.resetSession({ url, sessionId }).catch(() => undefined);
   },
 
@@ -2437,9 +2495,14 @@ export const useStore = create<State>((set, get) => ({
     // reaches past the 60 newest and could adopt an older live thread that
     // All would never have offered.
     const listed = await get().loadSessions(agentId, "all");
-    if (!get().sessions[agentId]) {
+    // Not over a new conversation the person started (KYB-649): with nothing
+    // held, this would otherwise fill it with the newest live thread — which,
+    // while KYB-645 stands, can be a Buzz conversation labelled "chat".
+    const fresh = get().sessionChoice[agentId]?.sessionId === null;
+    if (!get().sessions[agentId] && !fresh) {
       const newest = listed.find((x) => x.surface === "chat" && x.status === "alive");
       if (newest) {
+        console.log(`[sessions] ${agentId}: no thread held; adopted the newest live chat thread ${newest.id.slice(0, 18)}`);
         set((st) => {
           const streamIndexes = { ...st.streamIndexes };
           delete streamIndexes[agentId];

@@ -55,11 +55,27 @@ export const OLD_THREAD = {
  *
  * `delays`, `rows` and `agents` are read on every call, so a test can change
  * them between sign-ins: `bridge.live.agents = [...]` is another account.
+ *
+ * `agentSessions`, when given, is what the agent's own `/sessions` lists, and
+ * turns on `agentInfo` so `loadAgentInfo` runs (KYB-649); without it the agent
+ * reports nothing, as before. `state` is what `conversations.json` holds.
+ * Every `resetSession` is recorded in `resets`: nothing may retire a session
+ * the test did not mean to.
  */
-export function installBridge({ delays = {}, hang = [], fail = [], rows = [OLD_THREAD], agents = [REMOTE_AGENT], stored = false } = {}) {
+export function installBridge({
+  delays = {},
+  hang = [],
+  fail = [],
+  rows = [OLD_THREAD],
+  agents = [REMOTE_AGENT],
+  stored = false,
+  agentSessions,
+  state = null,
+} = {}) {
   const calls = [];
   const sends = [];
-  const live = { rows, agents };
+  const resets = [];
+  const live = { rows, agents, agentSessions, state, saved: {} };
   const after = async (name) => {
     calls.push(name);
     // `hang`: never answers, like a control plane that has stopped responding.
@@ -71,8 +87,11 @@ export function installBridge({ delays = {}, hang = [], fail = [], rows = [OLD_T
     session: async () => (stored ? { email: "p@example.com", orgName: "o" } : null),
     signIn: async () => ({ userCode: "CODE", verificationUri: "https://example/verify" }),
     awaitSignIn: async () => ({ email: "p@example.com", orgName: "o" }),
-    loadState: async () => null,
-    saveState: async () => true,
+    loadState: async (name) => (name === "conversations.json" ? live.state : null),
+    saveState: async ({ name, value }) => {
+      live.saved[name] = structuredClone(value);
+      return true;
+    },
     controlPlane: async () => ({ url: "https://cp.example" }),
     listRooms: async () => [],
     listSessions: async () => {
@@ -99,11 +118,21 @@ export function installBridge({ delays = {}, hang = [], fail = [], rows = [OLD_T
       sends.push(input);
       return { sessionId: input.sessionId ?? "wrun_NEW", streamIndex: 9, reply: "OK" };
     },
+    resetSession: async (input) => {
+      resets.push(input);
+    },
+    agentInfo: async () => (live.agentSessions ? { agent: { name: "agent" } } : undefined),
+    manage: async ({ path }) => {
+      if (live.agentSessions && path.startsWith("/sessions")) {
+        return { ok: true, status: 200, data: { sessions: live.agentSessions, routines: null } };
+      }
+      return { ok: false, status: 404 };
+    },
   };
   window.studio = new Proxy(known, {
     get: (target, key) => (key in target ? target[key] : async () => undefined),
   });
-  return { calls, sends, live };
+  return { calls, sends, resets, live };
 }
 
 /** Collect `console.log` lines for the life of one test. */
