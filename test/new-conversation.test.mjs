@@ -257,6 +257,32 @@ test("B1: a stopped turn settling late does not release a newer turn running in 
   }
 });
 
+test("B1: answering a question card, then Stop and New conversation — the late settle changes nothing", async () => {
+  await holding(OLD_THREAD.sessionId);
+  useStore.setState((s) => ({
+    conversations: {
+      ...s.conversations,
+      [ID]: [...(s.conversations[ID] ?? []), { kind: "question", id: "q1", requestId: "r1", prompt: "which?", options: [{ id: "o1", label: "this one" }], at: Date.now() }],
+    },
+  }));
+  const held = holdSends();
+  try {
+    useStore.getState().answerQuestion(ID, "q1", { optionId: "o1" });
+    await sleep(10);
+    const [turn] = held.pending;
+    assert.ok(turn, "answering sent nothing");
+    assert.equal(turn.input.sessionId, OLD_THREAD.sessionId);
+
+    useStore.getState().stopTurn(ID);
+    useStore.getState().startConversation(ID);
+    turn.resolve({ sessionId: OLD_THREAD.sessionId, streamIndex: 12, reply: "late answer" });
+    await sleep(20);
+    assertStillNew("after the answered turn settled");
+  } finally {
+    held.restore();
+  }
+});
+
 test("control: with no thread and no fresh-start choice, loadAgentInfo does adopt — and now says so", async (t) => {
   const logs = captureLogs(t);
   useStore.setState({ sessions: {}, sessionChoice: {}, conversations: {} });

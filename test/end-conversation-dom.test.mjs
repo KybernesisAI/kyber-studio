@@ -148,7 +148,7 @@ test("AC8: Settings' End asks first, names the thread, warns across surfaces, ne
   assert.ok(!/delet/i.test(says), "the confirmation talks about deleting");
 
   await click(view.button("Cancel"));
-  assert.equal(view.dialog(), null, "Cancel did not close the confirmation");
+  assert.ok(!view.dialog(), "Cancel did not close the confirmation");
   assert.equal(bridge.resets.length, 0, "Cancel sent a reset");
   assert.equal(useStore.getState().sessions[A.id], "live-1", "Cancel moved the chat");
   await view.unmount();
@@ -185,7 +185,7 @@ test("AC8: confirming on the thread on screen ends it and leaves the chat on a n
   const st = useStore.getState();
   assert.equal(st.sessions[A.id], undefined);
   assert.equal(st.sessionChoice[A.id]?.sessionId, null);
-  assert.equal(view.dialog(), null);
+  assert.ok(!view.dialog());
   await view.unmount();
 });
 
@@ -235,12 +235,12 @@ test("switching agent closes an open confirmation without ending anything", asyn
     useStore.setState({ activeAgentId: B.id });
   });
   await settle();
-  assert.equal(view.dialog(), null, "the confirmation for agent a is still open under agent b");
+  assert.ok(!view.dialog(), "the confirmation for agent a is still open under agent b");
   await act(async () => {
     useStore.setState({ activeAgentId: A.id });
   });
   await settle();
-  assert.equal(view.dialog(), null, "the confirmation came back on switching back");
+  assert.ok(!view.dialog(), "the confirmation came back on switching back");
   assert.equal(bridge.resets.length, 0);
   await view.unmount();
 });
