@@ -12,7 +12,7 @@ import {
   timeOptions,
   toCron,
 } from "@/lib/schedule";
-import { threadFilterFor, useStore, type AgentSession, type PanelView, type ThreadFilter } from "@/lib/store";
+import { isRetired, threadFilterFor, useStore, type AgentSession, type PanelView, type ThreadFilter } from "@/lib/store";
 import type { LocalAction, LocalPermission } from "@shared/ipc";
 import { Avatar, Icon, Toggle } from "./primitives";
 
@@ -147,9 +147,9 @@ function whenShort(iso: string): string {
  * its own drawer so the overview stays an overview.
  */
 function ConversationsEntry(): ReactNode {
-  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, loadSessions, setPanel, prefs } = useStore();
+  const { activeAgentId, sessions, agentSessions, threadIndex, routinesSessions, openSession, loadSessions, setPanel, prefs } = useStore();
   const filter = threadFilterFor(prefs, activeAgentId);
-  const list = heldUnder(agentSessions[activeAgentId], filter);
+  const list = asKnown(heldUnder(agentSessions[activeAgentId], filter), threadIndex[activeAgentId], filter);
   const current = sessions[activeAgentId];
   const routinesId = routinesSessions[activeAgentId];
   useEffect(() => {
@@ -207,7 +207,7 @@ function ConversationsView(): ReactNode {
     unarchiveThread,
   } = useStore();
   const filter = threadFilterFor(prefs, activeAgentId);
-  const list = heldUnder(agentSessions[activeAgentId], filter);
+  const list = asKnown(heldUnder(agentSessions[activeAgentId], filter), threadIndex[activeAgentId], filter);
   const current = sessions[activeAgentId];
   const routinesId = routinesSessions[activeAgentId];
   const [showArchived, setShowArchived] = useState(false);
@@ -364,6 +364,26 @@ const THREAD_FILTERS: ReadonlyArray<readonly [ThreadFilter, string]> = [
  */
 function heldUnder<T>(held: { filter: ThreadFilter; sessions: T[] } | undefined, filter: ThreadFilter): T[] | undefined {
   return held?.filter === filter ? held.sessions : undefined;
+}
+
+/**
+ * A listing as this client knows it (KYB-649, AC9). A thread ended from here
+ * stays ended even when the agent's list has not caught up yet — retirement
+ * is terminal — and the Active list drops it. Without this an End stayed
+ * invisible, and End… stayed offered, until the next refresh found the agent
+ * current.
+ */
+function asKnown(
+  list: AgentSession[] | undefined,
+  known: Record<string, AgentSession> | undefined,
+  filter: ThreadFilter,
+): AgentSession[] | undefined {
+  if (!list) return list;
+  const out = list.map((s) => {
+    const k = known?.[s.id];
+    return isRetired(k) && !isRetired(s) ? { ...s, status: k!.status } : s;
+  });
+  return filter === "active" ? out.filter((s) => !isRetired(s)) : out;
 }
 
 /** Distinguishes "not asked yet" from "the agent has none". */

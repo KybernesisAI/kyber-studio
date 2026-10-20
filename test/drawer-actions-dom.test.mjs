@@ -62,8 +62,14 @@ function installBridge() {
   const resets = [];
   const manage = [];
   const sends = [];
+  const askListeners = new Set();
   window.studio = new Proxy(
     {
+      // The permission card's subscription, so a test can deliver an ask.
+      onLocalAsk: (handler) => {
+        askListeners.add(handler);
+        return () => askListeners.delete(handler);
+      },
       resetSession: async (input) => {
         resets.push(input);
       },
@@ -84,7 +90,7 @@ function installBridge() {
         key in target ? target[key] : typeof key === "string" && key.startsWith("on") ? () => () => {} : async () => undefined,
     },
   );
-  return { resets, manage, sends };
+  return { resets, manage, sends, askListeners };
 }
 
 async function settle(ms = 0) {
@@ -301,5 +307,90 @@ test("AC3b control: a live thread, and one the agent has not listed yet, keep th
   reset({ panel: "none", sessionId: "unlisted", listed: [] });
   view = await mount(Conversation);
   assert.ok(view.host.querySelector('[role="textbox"]'), "a thread not yet listed lost its composer");
+  await view.unmount();
+});
+
+// ---- Round 1 review findings -------------------------------------------------
+
+test("AC9: after End, the open list drops the thread under Active even when the agent's list has not caught up", async () => {
+  // This bridge's /sessions fails, so every refresh leaves the stale list in
+  // place: the agent still reports live-2 alive after its reset.
+  const bridge = installBridge();
+  reset({ sessionId: "live-1", filter: "active", listed: [row("live-1", "alive"), row("live-2", "alive")] });
+  const view = await mount();
+
+  await click(view.labelled("End title live-2"));
+  await click(view.button("End conversation"));
+  await settle(10);
+  assert.deepEqual(bridge.resets.map((r) => r.sessionId), ["live-2"]);
+  assert.equal(useStore.getState().agentSessions[A.id].sessions.find((s) => s.id === "live-2")?.status, "alive", "precondition: the listing is stale");
+  assert.ok(!view.rowButton("title live-2"), "the ended thread is still in the Active list");
+  assert.ok(view.rowButton("title live-1"), "End hid the wrong thread");
+  await view.unmount();
+});
+
+test("AC9: after End, under All the row reads ended at once and offers no second End", async () => {
+  installBridge();
+  reset({ sessionId: "live-1", filter: "all", listed: [row("live-1", "alive"), row("live-2", "alive")] });
+  const view = await mount();
+
+  await click(view.labelled("End title live-2"));
+  await click(view.button("End conversation"));
+  await settle(10);
+  assert.ok(view.rowDetail("title live-2").includes("· ended"), `the ended row is not labelled: ${view.rowDetail("title live-2")}`);
+  assert.ok(!view.labelled("End title live-2"), "End is still offered on a thread just ended");
+  await view.unmount();
+});
+
+test("AC9: the overview's count drops on End without waiting for the agent's list", async () => {
+  installBridge();
+  reset({ panel: "overview", sessionId: undefined, filter: "active", listed: [row("live-1", "alive"), row("live-2", "alive")] });
+  const view = await mount();
+  assert.ok(view.rowDetail("Show conversations").includes("2 active threads"), view.rowDetail("Show conversations"));
+
+  await act(async () => {
+    useStore.getState().endConversation(A.id, "live-2");
+  });
+  await settle(10);
+  assert.ok(view.rowDetail("Show conversations").includes("1 active thread "), view.rowDetail("Show conversations"));
+  await view.unmount();
+});
+
+const ASK = { id: "ask-1", agent: "b", action: "shell", label: "Run a command on this computer", detail: "ls" };
+
+test("the permission card keeps listening while a retired thread is open, and shows an ask", async () => {
+  const bridge = installBridge();
+  reset({ panel: "none", sessionId: "old-1", listed: [row("old-1", "ended")] });
+  const view = await mount(Conversation);
+  assert.ok(!view.host.querySelector('[role="textbox"]'), "precondition: the thread opened read-only");
+  assert.equal(bridge.askListeners.size, 1, "no one is listening for permission asks");
+
+  await act(async () => {
+    for (const h of bridge.askListeners) h(ASK);
+  });
+  assert.ok(view.text().includes("Run a command on this computer"), "an ask arriving while a retired thread is open is not shown");
+  await view.unmount();
+});
+
+test("a permission card already on screen survives moving to a retired thread and back", async () => {
+  const bridge = installBridge();
+  reset({ panel: "none", sessionId: "live-1", listed: [row("live-1", "alive"), row("old-1", "ended")] });
+  const view = await mount(Conversation);
+  await act(async () => {
+    for (const h of bridge.askListeners) h(ASK);
+  });
+  assert.ok(view.text().includes("Run a command on this computer"), "precondition: the card is shown");
+
+  await act(async () => {
+    useStore.setState((s) => ({ sessions: { ...s.sessions, [A.id]: "old-1" } }));
+  });
+  assert.ok(!view.host.querySelector('[role="textbox"]'), "precondition: the retired thread is read-only");
+  assert.ok(view.text().includes("Run a command on this computer"), "the card vanished on the retired thread");
+
+  await act(async () => {
+    useStore.setState((s) => ({ sessions: { ...s.sessions, [A.id]: "live-1" } }));
+  });
+  assert.ok(view.text().includes("Run a command on this computer"), "the card did not survive the round trip");
+  assert.equal(bridge.askListeners.size, 1);
   await view.unmount();
 });

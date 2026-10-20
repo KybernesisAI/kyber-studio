@@ -342,6 +342,9 @@ export function Conversation(): ReactNode {
   const roomQueue = useStore((s) => s.roomQueue);
   const setRoomPolicy = useStore((s) => s.setRoomPolicy);
   const room = rooms.find((r) => r.id === activeAgentId);
+  // The open thread is one the agent reports ended or failed (KYB-649).
+  const held = agent ? sessions[agent.id] : undefined;
+  const retired = !room && Boolean(agent && held && isRetired(threadIndex[agent.id]?.[held]));
   const roomMembers = (room?.memberIds ?? [])
     .map((id) => agents.find((a) => a.id === id))
     .filter((a): a is NonNullable<typeof a> => Boolean(a));
@@ -865,11 +868,15 @@ export function Conversation(): ReactNode {
         </div>
       </div>
 
-      {/* A thread the agent reports ended or failed opens to READ (KYB-649):
-          it cannot be continued, so the composer is not offered at all. */}
-      {!room && agent && sessions[agent.id] && isRetired(threadIndex[agent.id]?.[sessions[agent.id] as string]) ? (
-        <div className="composer composer--retired" role="status">
-          <div className="card stack-row">
+      <div className={`composer${retired ? " composer--retired" : ""}`}>
+        {/* Outside the switch below, always mounted: the permission card is for
+            EVERY agent, and unmounting it while a retired thread is open would
+            leave asks with no listener, denied unseen when they time out. */}
+        <LocalAskCard />
+        {/* A thread the agent reports ended or failed opens to READ (KYB-649):
+            it cannot be continued, so the composer is not offered at all. */}
+        {retired && agent ? (
+          <div className="card stack-row" role="status">
             <span style={{ flex: 1 }} className="muted">
               This conversation has ended. You can read it, but it cannot be continued.
             </span>
@@ -877,10 +884,8 @@ export function Conversation(): ReactNode {
               New conversation
             </button>
           </div>
-        </div>
-      ) : (
-      <div className="composer">
-        <LocalAskCard />
+        ) : (
+        <>
         {suggestions.length > 0 ? (
           <div className="composer__ac">
             <Autocomplete
@@ -1115,8 +1120,9 @@ export function Conversation(): ReactNode {
             ) : null}
           </div>
         ) : null}
+        </>
+        )}
       </div>
-      )}
     </div>
   );
 }
