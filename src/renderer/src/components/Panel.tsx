@@ -12,7 +12,7 @@ import {
   timeOptions,
   toCron,
 } from "@/lib/schedule";
-import { threadFilterFor, useStore, type PanelView, type ThreadFilter } from "@/lib/store";
+import { threadFilterFor, useStore, type AgentSession, type PanelView, type ThreadFilter } from "@/lib/store";
 import type { LocalAction, LocalPermission } from "@shared/ipc";
 import { Avatar, Icon, Toggle } from "./primitives";
 
@@ -156,7 +156,8 @@ function ConversationsEntry(): ReactNode {
     void loadSessions(activeAgentId);
   }, [activeAgentId, loadSessions]);
   const routines = list?.find((s) => s.id === routinesId || s.surface === "routines");
-  const others = (list ?? []).filter((s) => s.id !== routines?.id);
+  const archived = new Set(prefs[activeAgentId]?.archived ?? []);
+  const others = (list ?? []).filter((s) => s.id !== routines?.id && !archived.has(s.id));
   return (
     <Section title="Conversations">
       {routines ? (
@@ -188,16 +189,56 @@ function ConversationsEntry(): ReactNode {
  * to the others, which until now sat on the agent's disk with no door.
  */
 function ConversationsView(): ReactNode {
-  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, startConversation, loadSessions, inflight, setPanel, prefs, setThreadFilter } =
-    useStore();
+  const {
+    agents,
+    activeAgentId,
+    sessions,
+    agentSessions,
+    threadIndex,
+    routinesSessions,
+    openSession,
+    startConversation,
+    loadSessions,
+    inflight,
+    setPanel,
+    prefs,
+    setThreadFilter,
+    archiveThread,
+    unarchiveThread,
+  } = useStore();
   const filter = threadFilterFor(prefs, activeAgentId);
   const list = heldUnder(agentSessions[activeAgentId], filter);
   const current = sessions[activeAgentId];
   const routinesId = routinesSessions[activeAgentId];
+  const [showArchived, setShowArchived] = useState(false);
+  // The thread an End confirmation was opened for, described as it was then.
+  const [ending, setEnding] = useState<EndTarget | null>(null);
   useEffect(() => {
     void loadSessions(activeAgentId);
+    setShowArchived(false);
+    setEnding(null);
   }, [activeAgentId, loadSessions]);
-  const others = (list ?? []).filter((s) => s.id !== routinesId && s.surface !== "routines");
+  const archivedIds = prefs[activeAgentId]?.archived ?? [];
+  const archived = new Set(archivedIds);
+  // Archived is the person's choice, held here; ended is the agent's report.
+  // Archiving hides a thread whatever its status, and ending never archives.
+  const others = (list ?? []).filter((s) => s.id !== routinesId && s.surface !== "routines" && !archived.has(s.id));
+  const known = threadIndex[activeAgentId] ?? {};
+  const toggleArchived = (): void => {
+    // The archived list must name threads the current filter does not fetch —
+    // an ended thread under Active — so it asks for all of them once.
+    if (!showArchived) void loadSessions(activeAgentId, "all");
+    setShowArchived(!showArchived);
+  };
+  const askEnd = (s: AgentSession): void => {
+    const agentName = agents.find((a) => a.id === activeAgentId)?.name ?? "this agent";
+    setEnding({
+      agentId: activeAgentId,
+      sessionId: s.id,
+      agentName,
+      thread: describeThread(useStore.getState(), activeAgentId, s.id),
+    });
+  };
   const busy = Boolean(inflight[activeAgentId]);
   const pick = (id: string) => {
     void openSession(activeAgentId, id);
@@ -246,16 +287,66 @@ function ConversationsView(): ReactNode {
             </button>
           </>
         ) : null}
-        {others.map((s) => (
-          <Row
-            key={s.id}
-            icon={<Icon name="monitor" size={14} />}
-            title={s.title}
-            detail={`${SURFACE_LABEL[s.surface] ?? s.surface}${s.channel ? ` · ${s.channel}` : ""} · ${whenShort(s.updatedAt)}${s.status === "alive" ? "" : " · ended"}`}
-            active={current === s.id}
-            onClick={() => pick(s.id)}
-          />
-        ))}
+        {others.map((s) =>
+          ending?.sessionId === s.id && ending.agentId === activeAgentId ? (
+            <EndConversationConfirm key={s.id} target={ending} onDone={() => setEnding(null)} />
+          ) : (
+            <ThreadRow
+              key={s.id}
+              thread={s}
+              active={current === s.id}
+              onPick={() => pick(s.id)}
+              actions={
+                <>
+                  {s.status === "alive" ? (
+                    <button className="btn btn--small" onClick={() => askEnd(s)} aria-label={`End ${s.title}`}>
+                      End…
+                    </button>
+                  ) : null}
+                  <button className="btn btn--small" onClick={() => archiveThread(activeAgentId, s.id)} aria-label={`Archive ${s.title}`}>
+                    Archive
+                  </button>
+                </>
+              }
+            />
+          ),
+        )}
+
+        <div className="panel__section-head" style={{ marginTop: 16 }}>
+          <span className="panel__section-title">Archived</span>
+          <span className="muted" style={{ marginRight: 8 }}>{archivedIds.length}</span>
+          <button className="btn btn--small" onClick={toggleArchived} aria-pressed={showArchived}>
+            {showArchived ? "Hide archived" : "Show archived"}
+          </button>
+        </div>
+        {showArchived && archivedIds.length === 0 ? <Empty loaded none="Nothing archived. Archiving hides a thread here and leaves it untouched on the agent." /> : null}
+        {showArchived
+          ? archivedIds.map((id) => {
+              const s: AgentSession = known[id] ?? {
+                id,
+                title: "A conversation not listed by the agent right now",
+                surface: "chat",
+                trigger: "",
+                status: "alive",
+                createdAt: "",
+                updatedAt: "",
+              };
+              return (
+                <ThreadRow
+                  key={id}
+                  thread={s}
+                  unknown={!known[id]}
+                  active={current === id}
+                  onPick={() => pick(id)}
+                  actions={
+                    <button className="btn btn--small" onClick={() => unarchiveThread(activeAgentId, id)} aria-label={`Unarchive ${s.title}`}>
+                      Unarchive
+                    </button>
+                  }
+                />
+              );
+            })
+          : null}
       </div>
     </>
   );
@@ -280,6 +371,38 @@ function Empty({ loaded, none }: { loaded: boolean; none: string }): ReactNode {
   return <div className="muted" style={{ padding: "2px 8px 6px" }}>{loaded ? none : "Loading…"}</div>;
 }
 
+/** One thread in the drawer: pick it to read it, with its own actions beside it. */
+function ThreadRow({
+  thread: s,
+  active,
+  unknown,
+  onPick,
+  actions,
+}: {
+  thread: AgentSession;
+  active: boolean;
+  unknown?: boolean;
+  onPick: () => void;
+  actions: ReactNode;
+}): ReactNode {
+  // A retired thread says so on its row, and never as an error: most of an
+  // owner's history was ended by a routine upgrade, not by anything they did.
+  const detail = unknown
+    ? "Not in the agent's current list"
+    : `${SURFACE_LABEL[s.surface] ?? s.surface}${s.channel ? ` · ${s.channel}` : ""} · ${whenShort(s.updatedAt)}${s.status === "alive" ? "" : " · ended"}`;
+  return (
+    <div className="thread-row" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <Row icon={<Icon name="monitor" size={14} />} title={s.title} detail={detail} active={active} onClick={onPick} />
+      </div>
+      {actions}
+    </div>
+  );
+}
+
+/** A confirmation's target: the thread, described once, when it opened. */
+type EndTarget = { agentId: string; sessionId: string; agentName: string; thread: ReturnType<typeof describeThread> };
+
 /**
  * What the End confirmation says about a thread: its title (or its last
  * message), when it was last active, and whether the agent still lists it as
@@ -287,11 +410,12 @@ function Empty({ loaded, none }: { loaded: boolean; none: string }): ReactNode {
  * cross-surface warning is shown rather than silently left out.
  */
 export function describeThread(
-  state: Pick<ReturnType<typeof useStore.getState>, "agentSessions" | "conversations" | "sessions">,
+  state: Pick<ReturnType<typeof useStore.getState>, "agentSessions" | "threadIndex" | "conversations" | "sessions">,
   agentId: string,
   sessionId: string,
 ): { name: string; lastActive: string; alive: boolean } {
-  const listed = state.agentSessions[agentId]?.sessions.find((s) => s.id === sessionId);
+  const listed =
+    state.threadIndex[agentId]?.[sessionId] ?? state.agentSessions[agentId]?.sessions.find((s) => s.id === sessionId);
   // Only the transcript on screen belongs to this thread; another one's would misname it.
   const blocks = state.sessions[agentId] === sessionId ? (state.conversations[agentId] ?? []) : [];
   const last = [...blocks]
@@ -319,7 +443,7 @@ function EndConversationConfirm({
   target,
   onDone,
 }: {
-  target: { agentId: string; sessionId: string; agentName: string; thread: ReturnType<typeof describeThread> };
+  target: EndTarget;
   onDone: () => void;
 }): ReactNode {
   const endConversation = useStore((s) => s.endConversation);
@@ -928,12 +1052,7 @@ function Settings(): ReactNode {
   // The thread the confirmation names, captured when it OPENS. Ending reads
   // this, never `sessions[…]` at the moment of confirming: adoption can change
   // the selected thread while the confirmation is open (KYB-649).
-  const [ending, setEnding] = useState<{
-    agentId: string;
-    sessionId: string;
-    agentName: string;
-    thread: ReturnType<typeof describeThread>;
-  } | null>(null);
+  const [ending, setEnding] = useState<EndTarget | null>(null);
   // Settings is not keyed by agent: a confirmation left open across an agent
   // switch would sit under the other agent's settings. It closes instead.
   useEffect(() => {

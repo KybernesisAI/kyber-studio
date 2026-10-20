@@ -7,7 +7,7 @@ import {
 } from "../lib/attachments";
 import type { Block, PeerEvent } from "@shared/types";
 import { peerSummaryLabel, summarizePeerEvents } from "@shared/types";
-import { useStore } from "@/lib/store";
+import { isRetired, useStore } from "@/lib/store";
 import * as composerDom from "@/lib/composerDom";
 import { Autocomplete, type Suggestion } from "./Autocomplete";
 import { LocalAskCard } from "./LocalAsk";
@@ -310,6 +310,8 @@ export function Conversation(): ReactNode {
   const agent = agents.find((a) => a.id === activeAgentId);
   const rooms = useStore((s) => s.rooms);
   const sessions = useStore((s) => s.sessions);
+  const threadIndex = useStore((s) => s.threadIndex);
+  const startConversation = useStore((s) => s.startConversation);
   const openOrb = (): void => {
     if (!agent?.url) return;
     void window.studio.toggleOrb({
@@ -863,6 +865,20 @@ export function Conversation(): ReactNode {
         </div>
       </div>
 
+      {/* A thread the agent reports ended or failed opens to READ (KYB-649):
+          it cannot be continued, so the composer is not offered at all. */}
+      {!room && agent && sessions[agent.id] && isRetired(threadIndex[agent.id]?.[sessions[agent.id] as string]) ? (
+        <div className="composer composer--retired" role="status">
+          <div className="card stack-row">
+            <span style={{ flex: 1 }} className="muted">
+              This conversation has ended. You can read it, but it cannot be continued.
+            </span>
+            <button className="btn btn--primary" onClick={() => startConversation(agent.id)}>
+              New conversation
+            </button>
+          </div>
+        </div>
+      ) : (
       <div className="composer">
         <LocalAskCard />
         {suggestions.length > 0 ? (
@@ -1100,6 +1116,7 @@ export function Conversation(): ReactNode {
           </div>
         ) : null}
       </div>
+      )}
     </div>
   );
 }
