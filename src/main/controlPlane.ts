@@ -9,6 +9,7 @@ import type { RemoteAgent,
   RemoteRoom, Session } from "@shared/ipc";
 import { isCredentialStoreAvailable } from "./credentialStorage";
 import { readPeerEvents, type PeerState } from "./peerEvents";
+import { isHeldForInput } from "./turnBoundary";
 
 /**
  * Control-plane identity for KYBER Studio.
@@ -726,6 +727,20 @@ function activityLabel(
         : { label: "Delegating", specific: true };
     case "subagent.completed":
       return { label: "Subagent finished", specific: true };
+    // eve ≥0.69: delegations and long tools run as tasks; subagent.* is gone.
+    case "task.started":
+      if (data.kind !== "agent") return null;
+      return typeof data.name === "string"
+        ? { label: `Delegating to ${data.name}`, specific: true }
+        : { label: "Delegating", specific: true };
+    case "task.settled":
+      return data.kind === "agent" && typeof data.name === "string"
+        ? { label: `${data.name} finished`, specific: true }
+        : null;
+    case "turn.waiting":
+      return data.on === "input"
+        ? { label: "Waiting for your input", specific: true }
+        : { label: "Waiting for delegated work to finish", specific: true };
     case "compaction.requested":
       return { label: "Compacting context", specific: true };
     case "authorization.required":
@@ -1401,7 +1416,7 @@ export async function sendTurn(input: {
         const message = typeof data.message === "string" ? data.message : "the turn failed";
         throw new Error(`Agent error: ${message}`);
       }
-      if (isTurnBoundary(type) && (!staleBoundaryFirst || sawTurnStart)) {
+      if ((isTurnBoundary(type) || isHeldForInput(type, data)) && (!staleBoundaryFirst || sawTurnStart)) {
         endedAtOwnBoundary = true;
         return true;
       }
@@ -1561,7 +1576,7 @@ export async function watchSession(input: {
           const options = Array.isArray(r.options) ? r.options : Array.isArray(inner.options) ? inner.options : undefined;
           input.onQuestion({ requestId, prompt, options: options as never, allowFreeform: r.allowFreeform === true || inner.allowFreeform === true });
         }
-      } else if (type === "session.waiting" || type === "session.completed" || type === "session.failed" || type === "turn.failed") {
+      } else if (type === "session.waiting" || type === "session.completed" || type === "session.failed" || type === "turn.failed" || isHeldForInput(type, data)) {
         input.onActivity(null);
         input.onLive("boundary");
       }
