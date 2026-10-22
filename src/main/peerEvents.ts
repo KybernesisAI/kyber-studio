@@ -11,6 +11,11 @@
 export interface PeerState {
   pending: Map<string, string>;
   last: string | null;
+  /**
+   * Peer calls that run as tasks (eve ≥0.69). Their `action.result` is only a
+   * receipt ("Started task …"); the answer arrives later in `task.settled`.
+   */
+  tasks?: Set<string>;
 }
 
 /**
@@ -86,6 +91,21 @@ export function readPeerEvents(
     return out;
   }
 
+  if (type === "task.started" && typeof data.callId === "string" && state.pending.has(data.callId)) {
+    (state.tasks ??= new Set()).add(data.callId);
+    return out;
+  }
+
+  if (type === "task.settled" && typeof data.callId === "string" && state.tasks?.has(data.callId)) {
+    const peer = state.pending.get(data.callId);
+    state.tasks.delete(data.callId);
+    state.pending.delete(data.callId);
+    if (data.callId === state.last) state.last = null;
+    const answered = data.status === "completed" ? peerReplyText(data.output) : "";
+    if (peer && answered) out.push({ direction: "inbound", peer, text: answered });
+    return out;
+  }
+
   if (type === "action.result" && state.pending.size > 0) {
     const result = (data.result ?? {}) as Record<string, unknown>;
     const callId =
@@ -101,6 +121,8 @@ export function readPeerEvents(
         : null
       : state.last;
     const peer = key ? state.pending.get(key) : undefined;
+    // A task's receipt, not the peer's answer: keep waiting for task.settled.
+    if (key && state.tasks?.has(key)) return out;
     if (key && peer) {
       state.pending.delete(key);
       if (key === state.last) state.last = null;

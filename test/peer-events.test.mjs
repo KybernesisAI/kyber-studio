@@ -188,3 +188,22 @@ test("a replayed stream still yields the exchange, grouped by turn", () => {
     ["outbound", "inbound"],
   );
 });
+
+/**
+ * The same hop on eve ≥0.69, recorded and anonymised. A peer call is a task
+ * there: `action.result` carries only a receipt ("Started task …") and the
+ * answer arrives in `task.settled`. Reading the receipt as the answer captioned
+ * the peer as saying "Started task …".
+ */
+test("eve 0.81: a peer call that runs as a task answers from task.settled, not its receipt", () => {
+  const events = readFileSync(join(here, "fixtures/agent-to-agent-tasks.jsonl"), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+  const { seen, state } = replay(events);
+  assert.deepEqual(seen, [
+    { direction: "outbound", peer: "field-ops", text: "What is on the schedule today?" },
+    { direction: "inbound", peer: "field-ops", text: "Two site visits: 10:00 north depot, 14:30 south yard." },
+  ]);
+  assert.equal(state.pending.size, 0);
+});
