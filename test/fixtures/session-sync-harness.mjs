@@ -129,9 +129,15 @@ export function installBridge({
       live.emit.turn = cb;
     },
     agentInfo: async () => (live.agentSessions ? { agent: { name: "agent" } } : undefined),
+    // Every management call is recorded as `manage:<path>`: archiving must make
+    // none, and a list on screen must ask again when it should (KYB-649).
     manage: async ({ path }) => {
+      calls.push(`manage:${path}`);
       if (live.agentSessions && path.startsWith("/sessions")) {
-        return { ok: true, status: 200, data: { sessions: live.agentSessions, routines: null } };
+        // `alive=1` is the drawer's Active filter; the agent answers it with
+        // live threads only.
+        const sessions = path.includes("alive=1") ? live.agentSessions.filter((s) => s.status === "alive") : live.agentSessions;
+        return { ok: true, status: 200, data: { sessions, routines: null } };
       }
       return { ok: false, status: 404 };
     },
