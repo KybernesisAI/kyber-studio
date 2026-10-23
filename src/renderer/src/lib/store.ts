@@ -812,7 +812,7 @@ function flushQueue(get: () => State, agentId: string): void {
   setTimeout(() => get().send(agentId, next, true), 0);
 }
 
-export type PanelView = "none" | "overview" | "routine" | "settings" | "vault" | "conversations";
+export type PanelView = "none" | "overview" | "routine" | "settings" | "vault" | "conversations" | "artifacts";
 
 /**
  * Which of an agent's conversations the Conversations drawer asks for (KYB-646).

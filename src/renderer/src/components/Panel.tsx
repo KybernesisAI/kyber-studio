@@ -13,6 +13,7 @@ import {
   toCron,
 } from "@/lib/schedule";
 import { threadFilterFor, useStore, type PanelView, type ThreadFilter } from "@/lib/store";
+import type { ArtifactSummary } from "@shared/artifacts";
 import type { LocalAction, LocalPermission } from "@shared/ipc";
 import { Avatar, Icon, Toggle } from "./primitives";
 
@@ -179,6 +180,84 @@ function ConversationsEntry(): ReactNode {
         onClick={() => setPanel("conversations")}
       />
     </Section>
+  );
+}
+
+/**
+ * The door to the Artifacts drawer, under Conversations. It asks the agent
+ * nothing until opened: the list is per person and fetched fresh there.
+ */
+function ArtifactsEntry(): ReactNode {
+  const setPanel = useStore((s) => s.setPanel);
+  return (
+    <Section title="Artifacts">
+      <Row
+        icon={<Icon name="page" size={14} />}
+        title="Show artifacts"
+        detail="Pages and documents this agent made for you"
+        onClick={() => setPanel("artifacts")}
+      />
+    </Section>
+  );
+}
+
+/**
+ * Every artifact this agent made for the signed-in person, newest first.
+ *
+ * The agent answers only with that person's own (and, for someone who manages
+ * it, what its routines made), so this drawer shows exactly what its routes
+ * return. Opening one uses the same viewer as a card in the conversation, at
+ * its latest version.
+ */
+function ArtifactsView(): ReactNode {
+  const { activeAgentId, agents, setPanel, openArtifact } = useStore();
+  const agent = agents.find((a) => a.id === activeAgentId);
+  const [state, setState] = useState<{ list?: ArtifactSummary[]; error?: string } | null>(null);
+  const [round, setRound] = useState(0);
+  useEffect(() => {
+    let live = true;
+    setState(null);
+    if (!agent?.url) {
+      setState({ error: "This agent has no address yet." });
+      return;
+    }
+    void window.studio?.agentArtifacts({ url: agent.url }).then((r) => {
+      if (live) setState(r.ok ? { list: r.artifacts ?? [] } : { error: r.error });
+    });
+    return () => {
+      live = false;
+    };
+  }, [agent?.url, round]);
+
+  return (
+    <>
+      <Head title="Artifacts" onBack={() => setPanel("overview")} onClose={() => setPanel("none")} />
+      <div className="panel__body">
+        <div className="panel__section-head">
+          <span className="panel__section-title">Made for you</span>
+          {state?.list ? <span className="muted" style={{ marginRight: 8 }}>{state.list.length}</span> : null}
+          <button className="btn btn--small" disabled={!state} onClick={() => setRound((n) => n + 1)}>
+            Refresh
+          </button>
+        </div>
+        {!state ? <Empty loaded={false} none="" /> : null}
+        {state?.error ? <div className="muted" style={{ padding: "2px 8px 6px" }}>{state.error}</div> : null}
+        {state?.list && state.list.length === 0 ? (
+          <Empty loaded none="Nothing yet. Ask for a report, a dashboard or a plan, and it lands here." />
+        ) : null}
+        {state?.list?.map((a) => (
+          <Row
+            key={a.id}
+            icon={<Icon name="page" size={14} />}
+            title={a.title}
+            detail={[a.format === "markdown" ? "Document" : "Page", a.version > 1 ? `v${a.version}` : null, whenShort(a.updatedAt)]
+              .filter(Boolean)
+              .join(" · ")}
+            onClick={() => openArtifact(activeAgentId, a.id, a.title)}
+          />
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -589,6 +668,8 @@ function Overview(): ReactNode {
         <ComputerCard />
 
         <ConversationsEntry />
+
+        <ArtifactsEntry />
 
         <Section title="Routines" count={loaded ? schedules.length : undefined}>
           <NewRoutine />
@@ -1145,6 +1226,7 @@ export function Panel(): ReactNode {
       {shown === "settings" ? <Settings /> : null}
       {shown === "vault" ? <VaultView /> : null}
       {shown === "conversations" ? <ConversationsView /> : null}
+      {shown === "artifacts" ? <ArtifactsView /> : null}
     </aside>
   );
 }

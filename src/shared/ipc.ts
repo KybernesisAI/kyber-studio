@@ -1,4 +1,5 @@
 import type { Step } from "@kybernesis/cards";
+import type { ArtifactSummary } from "./artifacts";
 import type { Replayed } from "./sessionReplay";
 
 /**
@@ -339,6 +340,8 @@ export interface StudioApi {
     latest?: number;
     error?: string;
   }>;
+  /** The artifacts this agent made for the signed-in person, newest first. */
+  agentArtifacts(input: { url: string }): Promise<{ ok: boolean; artifacts?: ArtifactSummary[]; error?: string }>;
   cancelTurn(input: { url: string; sessionId: string; turnId?: string }): Promise<string>;
   resetSession(input: {
     url: string;
