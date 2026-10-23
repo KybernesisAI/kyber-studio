@@ -480,6 +480,13 @@ function roomPreamble(room: Room, members: Agent[], me: Agent, speaker?: string)
   ].join(" ");
 }
 
+/** How a conversation's steps read, in order: chip, line and status of each. */
+function stepsKey(blocks: Block[]): string {
+  return blocks
+    .flatMap((b) => (b.kind === "work" ? b.steps.map((s) => `${s.callId}|${s.chip}|${s.label}|${s.status}`) : []))
+    .join("\n");
+}
+
 /**
  * What was said in the room while this member was not being spoken to.
  *
@@ -1475,7 +1482,9 @@ export const useStore = create<State>((set, get) => ({
      * appears four times.
      */
     const next = reconcile(existing, fromAgent);
-    if (mode === "merge" && next.length === existing.length) return;
+    // Nothing new to add, unless a turn's steps read differently now: a newer
+    // steps reader can rename a chip or a label on a reply already on screen.
+    if (mode === "merge" && next.length === existing.length && stepsKey(next) === stepsKey(existing)) return;
 
 
     set((s) => ({
