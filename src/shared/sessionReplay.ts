@@ -56,6 +56,9 @@ export interface Replayed {
   truncated: boolean;
 }
 
+/** First line of a message the agent sent into the conversation to start background work. */
+export const BACKGROUND_TURN_MARKER = "[kyb:magic]";
+
 /** Turn recorded stream events into the bubbles a transcript is made of. */
 export function blocksFromEvents(lines: string[], limit = Number.POSITIVE_INFINITY): { blocks: ReplayedBlock[]; consumed: number } {
   const blocks: ReplayedBlock[] = [];
@@ -98,6 +101,9 @@ export function blocksFromEvents(lines: string[], limit = Number.POSITIVE_INFINI
       const text = typeof data.message === "string" ? data.message : "";
       if (!text || seen.has(id)) continue;
       seen.add(id);
+      // A background turn the agent started on its own speaks first as the
+      // person; nobody typed it, so only its reply is shown.
+      if (text.startsWith(BACKGROUND_TURN_MARKER)) continue;
       blocks.push({ role: "user", text, at, eventId: id });
     }
   }

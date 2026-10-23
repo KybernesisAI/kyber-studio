@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { reconcile, workFromEvents } from "../src/shared/sessionReplay.ts";
+import { blocksFromEvents, reconcile, workFromEvents } from "../src/shared/sessionReplay.ts";
 import { placeCards } from "@/lib/placeCards";
 import { Markdown } from "@/components/Markdown";
 import { CardView } from "@/components/Cards";
@@ -204,4 +204,13 @@ test("steps: live while running, folded to one line when done, stopped when the 
   // A turn that ended while a call was running is not spinning forever.
   const stopped = html(createElement(WorkSteps, { steps: running, live: false }));
   assert.match(stopped, /Used Memory and PostHog/);
+});
+
+test("a background turn the agent started shows only its reply", () => {
+  const { blocks } = blocksFromEvents([
+    line("message.received", { message: "[kyb:magic] check the inbox for anything urgent", turnId: "turn_9" }, 1),
+    line("message.completed", { message: "Nothing urgent this morning.", finishReason: "stop", turnId: "turn_9" }, 2),
+    line("message.received", { message: "thanks", turnId: "turn_10" }, 3),
+  ]);
+  assert.deepEqual(blocks.map((b) => [b.role, b.text]), [["agent", "Nothing urgent this morning."], ["user", "thanks"]]);
 });
