@@ -14,6 +14,7 @@ import {
 } from "./deliveredFile";
 import { listSessions, recordSession, replaySession } from "./sessionIndex";
 import { agentArtifact, agentImage } from "./agentContent";
+import { agentArtifacts } from "./agentArtifacts";
 import {
   ConfigUnreadableError,
   type LocalMcpServer,
@@ -243,6 +244,8 @@ export function registerIpc(): void {
     "studio:agentArtifact",
     (_e, input: { url: string; artifactId: string; version?: number }) => agentArtifact(input),
   );
+  // The person's own artifacts on an agent, for the Artifacts drawer.
+  ipcMain.handle("studio:agentArtifacts", (_e, input: { url: string }) => agentArtifacts(input));
 
   // Files the agent handed back. The renderer passes a location the USER
   // clicked; none of these take an instruction from the model.

@@ -105,6 +105,7 @@ const studio: StudioApi = {
   openExternal: (url) => ipcRenderer.invoke("studio:openExternal", url),
   agentImage: (input) => ipcRenderer.invoke("studio:agentImage", input),
   agentArtifact: (input) => ipcRenderer.invoke("studio:agentArtifact", input),
+  agentArtifacts: (input) => ipcRenderer.invoke("studio:agentArtifacts", input),
   onAuthorization: (handler) => {
     const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);
     ipcRenderer.on("studio:authorization", listener);
