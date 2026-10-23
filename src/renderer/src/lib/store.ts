@@ -199,6 +199,9 @@ function ensureListeners(
     }));
     // Our turn, our notifications: the phone stays quiet for it.
     if (first && sessionId) void window.studio?.claimDriver(sessionId);
+    // A new thread exists from its first turn, not from when the reply ends;
+    // a list on screen shows it now (KYB-649, AC9).
+    if (first && sessionId) refreshListIfShown(get, agentId);
   });
 
   window.studio.onReset(({ streamId }) => {
@@ -732,6 +735,47 @@ function retireGeneration(agentId: string): void {
   generation.set(agentId, currentGeneration(agentId) + 1);
 }
 
+/** A thread the agent reports as ended or failed: readable, not continuable. */
+export function isRetired(thread: Pick<AgentSession, "status"> | undefined): boolean {
+  return thread?.status === "ended" || thread?.status === "failed";
+}
+
+/**
+ * Fold a listing into what is known about an agent's threads (KYB-649).
+ *
+ * Retirement is terminal — eve has no route that brings a session back — so a
+ * thread known ended here stays ended even when a listing still calls it
+ * alive. That listing is the one asked for straight after this client's own
+ * End, and an agent that has not caught up yet would otherwise reopen the
+ * composer on the thread just ended.
+ */
+function mergeThreadIndex(
+  known: Record<string, AgentSession> | undefined,
+  listed: AgentSession[],
+): Record<string, AgentSession> {
+  const next = { ...known };
+  for (const x of listed) {
+    const before = known?.[x.id];
+    next[x.id] = isRetired(before) && !isRetired(x) ? { ...x, status: before!.status } : x;
+  }
+  return next;
+}
+
+/**
+ * Ask the agent for its thread list again, if one is on screen for it.
+ *
+ * Both the overview's "Show conversations" row and the drawer load their list
+ * once, when they mount; without this a list left open never changed — a new
+ * thread did not appear and the count did not move (KYB-649, AC9). Gated on
+ * the panel, so a hidden list costs nothing.
+ */
+function refreshListIfShown(get: () => State, agentId: string): void {
+  const { panel, activeAgentId } = get();
+  if (activeAgentId !== agentId) return;
+  if (panel !== "conversations" && panel !== "overview") return;
+  void get().loadSessions(agentId);
+}
+
 /**
  * Put the agent's chat on a new, empty conversation. LOCAL ONLY: nothing is
  * sent to the agent, and the thread being left is untouched there.
@@ -911,6 +955,13 @@ interface State {
        * for it.
        */
       threadFilter?: ThreadFilter;
+      /**
+       * Threads this person archived here (KYB-649). This machine's only, like
+       * `threadFilter`: never sent to the agent or the account directory. The
+       * directory has its own archive flag, but every write that omits it
+       * clears it, and Studio's three write sites all omit it.
+       */
+      archived?: string[];
     }
   >;
   /**
@@ -976,6 +1027,13 @@ interface State {
    * is never shown as "active", or the other way round.
    */
   agentSessions: Record<string, { filter: ThreadFilter; sessions: AgentSession[] } | undefined>;
+  /**
+   * Every thread the agent has described in ANY answer, whatever the filter,
+   * by id (KYB-649). What the chat knows about the thread it shows (is it
+   * still alive?) and what the archived list names, neither of which may
+   * depend on which filter the drawer last asked under.
+   */
+  threadIndex: Record<string, Record<string, AgentSession> | undefined>;
   /** The agent's routines conversation, when it has one. Shown as a feed, never adopted as the chat. */
   routinesSessions: Record<string, string | null | undefined>;
   /**
@@ -1100,6 +1158,10 @@ interface State {
    * and every later message queues behind it forever.
    */
   endConversation(agentId: string, sessionId: string): void;
+  /** Hide a thread from the drawer on this machine. Never calls the agent (KYB-649). */
+  archiveThread(agentId: string, sessionId: string): void;
+  /** Bring an archived thread back into the drawer. */
+  unarchiveThread(agentId: string, sessionId: string): void;
   answerQuestion(agentId: string, blockId: string, answer: { optionId?: string; text?: string; label?: string }): void;
   patchAgent(id: string, patch: Partial<Agent>): void;
 
@@ -1185,6 +1247,7 @@ export const useStore = create<State>((set, get) => ({
   account: null,
   sessions: {},
   agentSessions: {},
+  threadIndex: {},
   routinesSessions: {},
   sessionChoice: {},
   streamIndexes: {},
@@ -1592,6 +1655,9 @@ export const useStore = create<State>((set, get) => ({
     if (active && !isRoomId(active) && !get().inflight[active]) {
       await get().hydrate(active, "merge");
     }
+    // Threads started on another surface, and lifecycle changes, reach a list
+    // on screen within one tick (KYB-649, AC9).
+    if (active && !isRoomId(active)) refreshListIfShown(get, active);
   },
 
   setPanel: (panel) => set({ panel, activeRoutineId: null }),
@@ -1611,6 +1677,7 @@ export const useStore = create<State>((set, get) => ({
       const current = threadFilterFor(get().prefs, agentId) === filter;
       set((st) => ({
         ...(current ? { agentSessions: { ...st.agentSessions, [agentId]: { filter, sessions } } } : {}),
+        threadIndex: { ...st.threadIndex, [agentId]: mergeThreadIndex(st.threadIndex[agentId], sessions) },
         routinesSessions: { ...st.routinesSessions, [agentId]: data.routines ?? null },
       }));
       return sessions;
@@ -1760,6 +1827,13 @@ export const useStore = create<State>((set, get) => ({
   },
 
   send: (agentId, text, fromQueue, attachments) => {
+    // A retired thread cannot be continued (KYB-649). The composer is already
+    // closed on one; this is for every other way in — voice, a queued message.
+    const held = get().sessions[agentId];
+    if (held && isRetired(get().threadIndex[agentId]?.[held])) {
+      console.log(`[send] refused: ${agentId}'s open thread has ended`);
+      return;
+    }
     const at = Date.now();
     // A queued message was already shown when the user typed it. Adding it again
     // on flush is how one message becomes two identical bubbles.
@@ -1950,6 +2024,7 @@ export const useStore = create<State>((set, get) => ({
           lastMessageAt: Date.now(),
           lastMessagePreview: (res.reply ?? "").slice(0, 200),
         });
+        refreshListIfShown(get, agentId);
         if (res.reply) {
           if (!res.askedQuestion) retireStaleQuestions(get, set, agentId);
           upsertBlock(get, set, agentId, bubbleId, res.reply);
@@ -2076,9 +2151,36 @@ export const useStore = create<State>((set, get) => ({
     // — but it must not fail silently.
     void window.studio
       .resetSession({ url, sessionId })
+      .then(() => {
+        // Known ended from here, before the agent is asked again: a thread
+        // reopened in the meantime must already be read-only.
+        set((st) => {
+          const known = st.threadIndex[agentId]?.[sessionId];
+          if (!known) return {};
+          return {
+            threadIndex: { ...st.threadIndex, [agentId]: { ...st.threadIndex[agentId], [sessionId]: { ...known, status: "ended" } } },
+          };
+        });
+        refreshListIfShown(get, agentId);
+      })
       .catch((error: unknown) =>
         console.log(`[sessions] ending ${agentId} ${sessionId.slice(0, 18)} failed: ${(error as Error)?.message ?? String(error)}`),
       );
+  },
+
+  archiveThread: (agentId, sessionId) => {
+    const archived = get().prefs[agentId]?.archived ?? [];
+    if (archived.includes(sessionId)) return;
+    set((st) => ({ prefs: { ...st.prefs, [agentId]: { ...st.prefs[agentId], archived: [...archived, sessionId] } } }));
+    get().persist();
+  },
+  unarchiveThread: (agentId, sessionId) => {
+    const archived = get().prefs[agentId]?.archived ?? [];
+    if (!archived.includes(sessionId)) return;
+    set((st) => ({
+      prefs: { ...st.prefs, [agentId]: { ...st.prefs[agentId], archived: archived.filter((id) => id !== sessionId) } },
+    }));
+    get().persist();
   },
 
   answerQuestion: (agentId, blockId, answer) => {

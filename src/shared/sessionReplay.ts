@@ -148,6 +148,28 @@ export interface ReconcilableBlock {
 }
 
 /**
+ * A turn's steps, read back from the agent, laid over what this device holds.
+ *
+ * The agent's copy of a step wins, so a newer reader's chip or line shows on
+ * an old reply. But the replay reads only a window of the stream, so a long
+ * turn can come back missing its opening steps: those are kept from here.
+ */
+function mergeSteps<T extends ReconcilableBlock>(block: T, local: T[]): T {
+  const fresh = block.steps ?? [];
+  const calls = new Set(fresh.map((s) => s.callId));
+  const mine = local.find(
+    (b) => b.kind === "work" && (b.id === block.id || (b.steps ?? []).some((s) => calls.has(s.callId))),
+  );
+  const earlier = (mine?.steps ?? []).filter((s) => !calls.has(s.callId));
+  if (!earlier.length) return block;
+  const byCall = new Map(fresh.map((s) => [s.callId, s]));
+  // In this device's order, each step in its newest reading; then any it never saw.
+  const known = new Set((mine?.steps ?? []).map((s) => s.callId));
+  const steps = [...(mine?.steps ?? []).map((s) => byCall.get(s.callId) ?? s), ...fresh.filter((s) => !known.has(s.callId))];
+  return { ...block, steps };
+}
+
+/**
  * Merge what the agent remembers with what this device has, without saying
  * anything twice.
  *
@@ -167,7 +189,8 @@ export interface ReconcilableBlock {
  * Matching is one-to-one and in order, so someone who genuinely says "hi"
  * twice keeps both.
  */
-export function reconcile<T extends ReconcilableBlock>(local: T[], replayed: T[]): T[] {
+export function reconcile<T extends ReconcilableBlock>(local: T[], replayedIn: T[]): T[] {
+  const replayed = replayedIn.map((b) => (b.kind === "work" ? mergeSteps(b, local) : b));
   const replayedIds = new Set(replayed.map((b) => b.id));
   const unconsumed = replayed.filter((b) => b.kind === "text");
   const taken = new Set<number>();
