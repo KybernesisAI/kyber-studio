@@ -30,6 +30,15 @@ import { reconcile } from "@shared/sessionReplay";
  * by that. Nothing is torn down mid-flight because nothing is scoped to a turn.
  */
 const streamOwners = new Map<string, string>();
+/**
+ * Sessions whose replay runs before their live watch starts.
+ *
+ * Opening a thread clears its stream cursor, and a watch with no cursor reads
+ * the session from event 0. Started before the replay set the cursor, it took
+ * the whole history in as new turns, stamped with the time it arrived, so a
+ * thread's first answer showed up at the bottom with no question above it.
+ */
+const replayFirst = new Set<string>();
 
 /**
  * Which agent is behind a stream, when the conversation has more than one.
@@ -1621,6 +1630,17 @@ export const useStore = create<State>((set, get) => ({
     if (watching && wanted && watching.agentId === wanted.agentId && watching.sessionId === wanted.sessionId) return;
     get().stopWatching();
     if (!wanted || !agent?.url || !window.studio) return;
+    if (streamIndexes[agent.id] === undefined && !replayFirst.has(wanted.sessionId)) {
+      // No cursor yet: read what the agent holds first, then watch from where that read ended.
+      replayFirst.add(wanted.sessionId);
+      void get()
+        .hydrate(agent.id)
+        .finally(() => {
+          get().watchActive();
+          replayFirst.delete(wanted.sessionId);
+        });
+      return;
+    }
     const streamId = `w${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
     // The stream listeners were registered lazily by the first SEND from this
     // window. A watch started before any send had nobody listening, so a turn
