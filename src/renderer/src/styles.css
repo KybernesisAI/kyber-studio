@@ -4,8 +4,9 @@
  * Proportions, weights, and spacing are matched to the reference app because
  * that calm, mail-client density is the point — a customer should feel like
  * they are texting a colleague, not operating a console. The palette is
- * Kybernesis: near-black ink, a single teal accent, and grey surfaces that stay
- * out of the way.
+ * kybernesis.ai's: near-black ink on white and zinc greys, no colour accent.
+ * Green and red appear only where they mean good and bad. Inter for words,
+ * Space Mono for labels.
  */
 
 :root {
@@ -14,9 +15,13 @@
   --ink-tertiary: #8b91a0;
   --ink-inverse: #ffffff;
 
-  --accent: #2ec4a6;
-  --accent-deep: #1b8f78;
+  /* The accent is ink. It was teal; the site has none, and a second colour
+     competed with the green and red that carry meaning in cards. */
+  --accent: #16181d;
+  --accent-deep: #16181d;
   --danger: #e5484d;
+  --good: #15803d;
+  --bad: #dc2626;
 
   --surface: #ffffff;
   --surface-sidebar: #f6f6f7;
@@ -77,7 +82,13 @@
      macOS" and that the change "stops Linux falling through to whatever generic
      sans-serif happens to be". Both were wrong — the first inverts how the
      cascade works, the second is disproved by the fc-match results above. */
-  --font: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  /* Inter leads now, bundled with the app (the CSP allows no font CDN), so the
+     same face draws on every platform; the system stack below stays as the
+     fallback for scripts Inter's Latin subset does not cover. */
+  --font: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  /* Labels: chips, card sources, column heads. Not for code, which keeps the
+     narrower system monospace below. */
+  --font-label: "Space Mono", ui-monospace, monospace;
   --font-mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
 }
 
@@ -92,6 +103,10 @@
     --surface-raised: #23262c;
     --bubble-agent: #2a2e35;
     --bubble-user: #f2f3f5;
+    --accent: #f2f3f5;
+    --accent-deep: #f2f3f5;
+    --good: #4ade80;
+    --bad: #f87171;
     --hover: rgba(255, 255, 255, 0.06);
     --selected: rgba(255, 255, 255, 0.1);
     --stroke: rgba(255, 255, 255, 0.1);
@@ -262,7 +277,7 @@ input, textarea { font: inherit; color: inherit; }
 }
 .bubble--user code { background: rgba(255, 255, 255, 0.16); color: inherit; }
 .bubble a { color: var(--accent-deep); }
-.bubble--user a { color: #7fdccb; }
+.bubble--user a { color: inherit; text-decoration: underline; }
 
 /* Peer activity — collapsed agent-to-agent traffic. */
 /* A system line, not a message: centred, quiet, and the same weight as a
@@ -908,8 +923,8 @@ input, textarea { font: inherit; color: inherit; }
 
 /* An attributed turn. The name sits above the bubble rather than inside it, so
    the bubble stays the same object it is in a one-to-one conversation. */
-.said { display: flex; flex-direction: column; gap: 2px; align-self: flex-start; max-width: 92%; }
-.said__who { font-size: var(--fs-sm); color: var(--ink-secondary); padding-left: 32px; }
+.said { display: flex; flex-direction: column; gap: 4px; align-self: stretch; }
+.said__who { display: flex; align-items: center; gap: 7px; font-size: var(--fs-sm); font-weight: 560; color: var(--ink-secondary); }
 /* Avatar beside the bubble, both sitting on the bubble's bottom edge, so a run
    of turns from one agent reads as a column under its own mark. */
 .said__row { display: flex; align-items: flex-end; gap: 8px; }
@@ -1147,3 +1162,214 @@ input, textarea { font: inherit; color: inherit; }
    received focus programmatically; the panel toggle picked one up when the
    screen's canvas handed focus around. Mouse users never need it here. */
 .topbar__btn:focus { outline: none; }
+
+
+/* ── Replies, steps and cards ──────────────────────────────────────── */
+
+/* The agent's reply is the page: full width, no bubble. The person's own
+   messages keep theirs, so who said what still reads at a glance. */
+.reply {
+  align-self: stretch; padding: 2px 2px 4px;
+  font-size: var(--fs-lg); line-height: var(--lh-lg);
+  word-break: break-word;
+}
+.reply code {
+  font-family: var(--font-mono); font-size: 0.86em;
+  padding: 1px 5px; border-radius: 5px; background: var(--hover);
+}
+.reply a { color: inherit; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--stroke-strong); }
+.reply a:hover { text-decoration-color: currentColor; }
+.reply .md-p { white-space: normal; }
+/* Inline code gets a chip; code inside a block does not, or every line gets its own box. */
+.reply .code__body code { background: none; padding: 0; border-radius: 0; font-size: inherit; }
+
+.md > :first-child { margin-top: 0; }
+.md-ol { margin: 0 0 8px; padding-left: 22px; }
+.md-ol li, .md-ul li { margin: 3px 0; }
+.md-ol li::marker { color: var(--ink-tertiary); font-variant-numeric: tabular-nums; }
+.md-ul--tasks { list-style: none; padding-left: 2px; }
+.md-task { display: flex; gap: 8px; align-items: baseline; }
+.md-task__box {
+  flex: none; width: 14px; height: 14px; border: 1px solid var(--stroke-strong); border-radius: 3px;
+  display: inline-grid; place-items: center; font-size: 10px; line-height: 1; transform: translateY(2px);
+}
+.md-task--done > span:not(.md-task__box) { color: var(--ink-tertiary); text-decoration: line-through; }
+.md-quote {
+  margin: 0 0 8px; padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--stroke-strong); color: var(--ink-secondary);
+}
+.md-hr { border: 0; border-top: 1px solid var(--stroke); margin: 14px 0; }
+.md-table { overflow-x: auto; margin: 4px 0 10px; }
+.md-table table, .ktable table { border-collapse: collapse; font-size: var(--fs-base); font-variant-numeric: tabular-nums; }
+.md-table th, .ktable th {
+  font-family: var(--font-label); font-weight: 400; font-size: 10.5px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ink-tertiary); text-align: left;
+  padding: 6px 14px 6px 0; border-bottom: 1px solid var(--stroke-strong);
+}
+.md-table td, .ktable td { padding: 6px 14px 6px 0; border-bottom: 1px solid var(--stroke); vertical-align: top; }
+.md-table tr:last-child td, .ktable tr:last-child td { border-bottom: 0; }
+
+/* Steps: what the agent did, one line each while it works. */
+.turn-work { align-self: stretch; display: flex; flex-direction: column; gap: 8px; }
+.work { align-self: stretch; }
+.work__steps { display: flex; flex-direction: column; gap: 2px; padding: 2px 0; }
+.step { display: flex; align-items: center; gap: 9px; min-height: 24px; font-size: var(--fs-sm); color: var(--ink-secondary); }
+.step__chip {
+  flex: none; font-family: var(--font-label); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 2px 6px; border: 1px solid var(--stroke-strong); border-radius: 4px; color: var(--ink);
+}
+.step__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step__state { flex: none; color: var(--ink-tertiary); font-size: var(--fs-xs); display: inline-flex; align-items: center; }
+.step--running .step__label { color: var(--ink); }
+.work__toggle {
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 0;
+  font-size: var(--fs-sm); color: var(--ink-tertiary);
+}
+.work__toggle:hover { color: var(--ink-secondary); }
+.work__toggle svg { transition: transform 120ms ease; }
+.work__toggle--open svg { transform: rotate(90deg); }
+.work__steps + .work__toggle, .work__toggle + .work__steps { margin-top: 2px; }
+
+.is-good { color: var(--good); }
+.is-bad { color: var(--bad); }
+
+/* Cards: one frame for every type. */
+.kcards { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.kcard {
+  border: 1px solid var(--stroke-strong); border-radius: 12px; background: var(--surface);
+  padding: 13px 15px; font-size: var(--fs-base); line-height: var(--lh-base);
+}
+.kcard--compact { padding: 9px 13px; }
+.kcard__head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.kcard--compact .kcard__head { margin-bottom: 4px; }
+.kcard__title { flex: 1; min-width: 0; font-weight: 600; }
+.klabel {
+  font-family: var(--font-label); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.kcard__source { flex: none; }
+.kcard__text { white-space: pre-wrap; color: var(--ink-secondary); }
+.kcard__actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+
+.kstats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 1px; background: var(--stroke); border: 1px solid var(--stroke); border-radius: 8px; overflow: hidden; }
+.kstats__tile { background: var(--surface); padding: 10px 12px; }
+.kstats__value { font-size: 22px; line-height: 28px; font-weight: 500; font-variant-numeric: tabular-nums; margin-top: 3px; }
+.kstats__change { font-size: var(--fs-sm); color: var(--ink-secondary); font-variant-numeric: tabular-nums; }
+.kstats__change.is-good { color: var(--good); }
+.kstats__change.is-bad { color: var(--bad); }
+
+.kchart__legend { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 8px; font-size: var(--fs-sm); color: var(--ink-secondary); }
+.kchart__key { display: inline-flex; align-items: center; gap: 6px; }
+.kchart__swatch { width: 10px; height: 2px; background: currentColor; }
+.kchart__plot { display: flex; gap: 8px; }
+.kchart__y { display: flex; flex-direction: column; justify-content: space-between; font-family: var(--font-label); font-size: 10px; color: var(--ink-tertiary); text-align: right; padding-bottom: 20px; min-width: 32px; }
+.kchart__frame { position: relative; flex: 1; min-width: 0; }
+.kchart__svg { display: block; width: 100%; height: 160px; overflow: visible; }
+.kchart__line { fill: none; stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; }
+.kchart__area { stroke: none; opacity: 0.06; }
+.kchart__base { stroke: var(--stroke-strong); stroke-width: 1; }
+.kchart__rule { stroke: var(--stroke-strong); stroke-width: 1; }
+.kchart__s0 { stroke: var(--ink); fill: var(--ink); color: var(--ink); }
+.kchart__s1 { stroke: var(--ink-secondary); fill: var(--ink-secondary); color: var(--ink-secondary); }
+.kchart__s2 { stroke: var(--ink-tertiary); fill: var(--ink-tertiary); color: var(--ink-tertiary); }
+.kchart__s3 { stroke: var(--stroke-strong); fill: var(--stroke-strong); color: var(--stroke-strong); }
+.kchart__line.kchart__s0, .kchart__line.kchart__s1, .kchart__line.kchart__s2, .kchart__line.kchart__s3 { fill: none; }
+.kchart__x { display: flex; justify-content: space-between; margin-top: 6px; font-family: var(--font-label); font-size: 10px; color: var(--ink-tertiary); }
+.kchart__x--slots { display: grid; text-align: center; }
+.kchart__x--slots span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 2px; }
+.kchart__tip {
+  position: absolute; top: 0; transform: translateX(-50%); pointer-events: none; white-space: nowrap;
+  background: var(--surface-raised); border: 1px solid var(--stroke-strong); border-radius: 6px;
+  padding: 5px 8px; font-size: var(--fs-xs); box-shadow: var(--shadow-menu);
+}
+
+.ktable { overflow-x: auto; }
+.ktable__more { margin-top: 8px; font-size: var(--fs-sm); color: var(--ink-tertiary); }
+
+.kcheck { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.kcheck__item { display: flex; gap: 9px; align-items: baseline; }
+.kcheck__item--skipped, .kcheck__item--waiting { color: var(--ink-secondary); }
+.kcheck__detail { color: var(--ink-tertiary); }
+.kglyph { flex: none; width: 14px; text-align: center; color: var(--ink-tertiary); }
+.kglyph.is-good { color: var(--good); }
+.kglyph.is-bad { color: var(--bad); }
+
+.kbrief__head { display: flex; gap: 11px; align-items: center; }
+.kbrief__initial {
+  width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; flex: none;
+  background: var(--bubble-user); color: var(--ink-inverse); font-family: var(--font-label); font-size: 15px;
+}
+.kbrief__name { font-weight: 600; }
+.kbrief__sub { font-size: var(--fs-sm); color: var(--ink-secondary); }
+.kbrief__points { margin: 10px 0 0; padding-left: 18px; }
+.kbrief__facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 12px 0 0; }
+.kbrief__facts dd { margin: 2px 0 0; }
+.kbrief .kstats { margin-top: 12px; }
+
+.klink { display: block; width: 100%; text-align: left; padding: 0; }
+.klink__desc { color: var(--ink-secondary); margin-bottom: 4px; }
+.klink__url { font-size: var(--fs-sm); color: var(--ink-tertiary); text-decoration: underline; text-decoration-color: var(--stroke-strong); }
+
+.kshot__img { display: block; max-width: 100%; max-height: 320px; border-radius: 8px; border: 1px solid var(--stroke); cursor: zoom-in; }
+.kshot__img--big { max-height: none; cursor: zoom-out; }
+.kshot__wait, .kartifact__wait { display: grid; place-items: center; height: 120px; color: var(--ink-tertiary); }
+.kshot__missing, .kartifact__missing { display: flex; gap: 10px; align-items: center; color: var(--ink-secondary); font-size: var(--fs-sm); }
+.kshot__caption { margin-top: 8px; font-size: var(--fs-sm); color: var(--ink-secondary); display: flex; gap: 10px; }
+.kshot__site { margin-left: auto; font-family: var(--font-label); font-size: 10px; color: var(--ink-tertiary); }
+
+.kfile { display: flex; align-items: center; gap: 10px; }
+.kfile__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.kfile__size { margin-left: 8px; color: var(--ink-tertiary); font-size: var(--fs-sm); }
+
+.kartifact__frame { display: block; width: 100%; border: 1px solid var(--stroke); border-radius: 8px; background: #fff; }
+.kartifact--inline { height: 360px; margin-bottom: 10px; }
+.kartifact__doc.kartifact--inline { overflow: auto; padding: 4px 2px; }
+.kartifact__meta { font-size: var(--fs-sm); color: var(--ink-tertiary); }
+.kartifact__preview {
+  display: block; width: 100%; padding: 0; margin-bottom: 10px; border: 0; background: none; cursor: pointer; text-align: left;
+  position: relative; overflow: hidden; border-radius: 8px;
+}
+/* The top of the page, faded out, and not interactive: a click opens it. */
+.kartifact--preview { height: 200px; pointer-events: none; overflow: hidden; }
+.kartifact__preview::after {
+  content: ""; position: absolute; inset: auto 0 0 0; height: 64px; pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--surface));
+}
+/* A page is white in both themes, so it fades into its own white, inside its border. */
+.kartifact__preview:has(.kartifact__frame)::after {
+  inset: auto 1px 1px 1px; border-radius: 0 0 7px 7px;
+  background: linear-gradient(to bottom, rgb(255 255 255 / 0), #fff);
+}
+.kartifact__preview:hover .kartifact__frame, .kartifact__preview:hover .kartifact__doc { border-color: var(--stroke-strong); }
+.kartifact__doc.kartifact--preview { border: 1px solid var(--stroke); border-radius: 8px; padding: 10px 14px; }
+.kartifact__row + .kcard__actions { margin-top: 10px; }
+
+.kpr__summary { color: var(--ink-secondary); }
+.kpr__delta { margin: 8px 0; font-family: var(--font-label); font-size: 11px; }
+.kpr__meta { margin-top: 8px; font-size: var(--fs-sm); color: var(--ink-tertiary); }
+.kpr .kcheck { margin-top: 8px; }
+.kdiff { margin-top: 10px; border: 1px solid var(--stroke); border-radius: 8px; overflow: hidden; font-family: var(--font-mono); font-size: 12px; }
+.kdiff__file { padding: 5px 10px; background: var(--hover); color: var(--ink-secondary); border-bottom: 1px solid var(--stroke); }
+.kdiff__line { padding: 0 10px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.kdiff__line.is-good { background: color-mix(in srgb, var(--good) 9%, transparent); color: inherit; }
+.kdiff__line.is-bad { background: color-mix(in srgb, var(--bad) 9%, transparent); color: inherit; }
+
+.kreceipt__amount { font-size: 22px; line-height: 28px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.kreceipt__meta { font-family: var(--font-label); font-size: 11px; color: var(--ink-tertiary); margin-top: 2px; }
+.kreceipt__note { margin: 8px 0; color: var(--ink-secondary); }
+.kremember { color: var(--ink-secondary); }
+.kroutine__meta { font-size: var(--fs-sm); color: var(--ink-tertiary); margin-top: 3px; }
+
+/* An artifact opened from its card, over the conversation. */
+.artifact-view {
+  position: absolute; inset: 0; z-index: 45;
+  display: flex; flex-direction: column; background: var(--surface);
+}
+.artifact-view__head {
+  flex: none; display: flex; align-items: center; gap: 12px;
+  height: 46px; padding: 0 16px; border-bottom: 1px solid var(--stroke);
+}
+.artifact-view__title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-view__body { flex: 1; min-height: 0; border: 0; border-radius: 0; }
+.kartifact__doc.artifact-view__body { overflow: auto; padding: 24px max(24px, calc(50% - 360px)); font-size: var(--fs-lg); line-height: var(--lh-lg); }
+.kartifact__wait.artifact-view__body, .kartifact__missing.artifact-view__body { height: auto; justify-content: center; }

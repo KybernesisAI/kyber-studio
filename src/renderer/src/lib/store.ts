@@ -305,6 +305,44 @@ function ensureListeners(
     get().persist();
   });
 
+  /**
+   * The turn's tool calls, one work block per turn, updated in place.
+   *
+   * Placed where the first call arrives, which is above the reply: the agent
+   * narrates, acts, then answers, and the narration is cleared on reset. So the
+   * transcript reads question, what it did, answer, with the cards under the
+   * answer. Saved when a step settles rather than on every move.
+   */
+  window.studio.onStep(({ streamId, step }) => {
+    const agentId = streamOwners.get(streamId);
+    if (!agentId) return;
+    const id = `w${streamId.slice(1)}`;
+    set((s) => {
+      const conv = s.conversations[agentId] ?? [];
+      const existing = conv.find((b) => b.id === id);
+      if (existing && existing.kind === "work") {
+        const at = existing.steps.findIndex((x) => x.callId === step.callId);
+        const steps = at >= 0 ? existing.steps.map((x, n) => (n === at ? step : x)) : [...existing.steps, step];
+        return {
+          conversations: {
+            ...s.conversations,
+            [agentId]: conv.map((b) => (b.id === id ? { ...existing, steps, turnId: existing.turnId ?? step.turnId } : b)),
+          },
+        };
+      }
+      return {
+        conversations: {
+          ...s.conversations,
+          [agentId]: [
+            ...conv,
+            { kind: "work", id, at: Date.now(), turnId: step.turnId, speakerId: streamSpeakers.get(streamId)?.id, steps: [step] },
+          ],
+        },
+      };
+    });
+    if (step.status !== "running") get().persist();
+  });
+
   window.studio.onAuthorization(({ streamId, event }) => {
     const agentId = streamOwners.get(streamId);
     if (!agentId) return;
@@ -443,6 +481,13 @@ function roomPreamble(room: Room, members: Agent[], me: Agent, speaker?: string)
     `Only reply to what was sent to you; do not repeat another agent's answer back to the room.`,
     speaker ? `This message is from ${speaker}, not from the user.]` : `]`,
   ].join(" ");
+}
+
+/** How a conversation's steps read, in order: chip, line and status of each. */
+function stepsKey(blocks: Block[]): string {
+  return blocks
+    .flatMap((b) => (b.kind === "work" ? b.steps.map((s) => `${s.callId}|${s.chip}|${s.label}|${s.status}`) : []))
+    .join("\n");
 }
 
 /**
@@ -964,6 +1009,13 @@ interface State {
   exchange: { agentId: string; blockId: string } | null;
   openExchange: (agentId: string, blockId: string) => void;
   closeExchange: () => void;
+  /**
+   * The artifact being read, opened from its card. Over the conversation like
+   * an exchange, and closed back to it.
+   */
+  artifact: { agentId: string; artifactId: string; title?: string; version?: number } | null;
+  openArtifact: (agentId: string, artifactId: string, title?: string, version?: number) => void;
+  closeArtifact: () => void;
   /** Per-agent eve session id, so a conversation keeps its thread across turns. */
   sessions: Record<string, string | undefined>;
   /**
@@ -1203,6 +1255,7 @@ export const useStore = create<State>((set, get) => ({
   roomQueue: {},
   roomSeen: {},
   exchange: null,
+  artifact: null,
   prefs: {},
   activity: {},
   inflight: {},
@@ -1455,6 +1508,16 @@ export const useStore = create<State>((set, get) => ({
       ...replayed.blocks.map(
         (b): Block => ({ kind: "text", id: b.eventId, role: b.role, text: b.text, at: b.at }),
       ),
+      ...(replayed.workBlocks ?? []).map(
+        (w): Block => ({
+          kind: "work",
+          // Keyed on the turn, like the peer exchanges.
+          id: `work-${sessionId}-${w.turnId}`,
+          at: w.at,
+          turnId: w.turnId,
+          steps: w.steps,
+        }),
+      ),
       ...(replayed.peerBlocks ?? []).map(
         (p): Block => ({
           kind: "peer-activity",
@@ -1482,7 +1545,9 @@ export const useStore = create<State>((set, get) => ({
      * appears four times.
      */
     const next = reconcile(existing, fromAgent);
-    if (mode === "merge" && next.length === existing.length) return;
+    // Nothing new to add, unless a turn's steps read differently now: a newer
+    // steps reader can rename a chip or a label on a reply already on screen.
+    if (mode === "merge" && next.length === existing.length && stepsKey(next) === stepsKey(existing)) return;
 
 
     set((s) => ({
@@ -1694,6 +1759,8 @@ export const useStore = create<State>((set, get) => ({
     void window.studio?.saveRoom({ id: roomId, archived: true });
   },
   openExchange: (agentId, blockId) => set({ exchange: { agentId, blockId } }),
+  openArtifact: (agentId, artifactId, title, version) => set({ artifact: { agentId, artifactId, title, version } }),
+  closeArtifact: () => set({ artifact: null }),
   closeExchange: () => set({ exchange: null }),
 
   /**

@@ -8,6 +8,7 @@ import { app, safeStorage, shell } from "electron";
 import type { RemoteAgent,
   RemoteRoom, Session } from "@shared/ipc";
 import { isCredentialStoreAvailable } from "./credentialStorage";
+import { newStepState, readStep, type Step } from "@kybernesis/cards";
 import { readPeerEvents, type PeerState } from "./peerEvents";
 import { isHeldForInput } from "./turnBoundary";
 
@@ -1015,6 +1016,11 @@ export async function sendTurn(input: {
    * slow peer is visible while it is still thinking.
    */
   onPeer?(event: { direction: "inbound" | "outbound"; peer: string; text: string }): void;
+  /**
+   * A tool call started, moved or finished, with any cards it handed back.
+   * Every report is the whole step, so the latest one simply replaces the last.
+   */
+  onStep?(step: Step): void;
   onAuthorization(event: {
     name: string;
     description?: string;
@@ -1277,6 +1283,7 @@ export async function sendTurn(input: {
    */
   let seen = 0;
   let sawTurnStart = false;
+  const steps = newStepState();
   let staleBoundaryFirst = false;
   let endedAtOwnBoundary = false;
 
@@ -1324,6 +1331,10 @@ export async function sendTurn(input: {
 
       for (const peerEvent of readPeerEvents(type, data, peerState)) {
         input.onPeer?.(peerEvent);
+      }
+
+      for (const step of readStep(steps, type, data, (event as { meta?: { at?: unknown } }).meta)) {
+        input.onStep?.(step);
       }
 
       if (type === "authorization.required" || type === "authorization.completed") {
@@ -1505,6 +1516,7 @@ export async function watchSession(input: {
   onActivity: (label: string | null) => void;
   onCursor: (index: number) => void;
   onPeer: (event: { direction: "inbound" | "outbound"; peer: string; text: string }) => void;
+  onStep: (step: Step) => void;
   onAuthorization: (event: { name: string; description?: string; url?: string; userCode?: string; instructions?: string; expiresAt?: string; outcome?: string }) => void;
   onQuestion: (request: { requestId: string; prompt: string; options?: { id: string; label: string; description?: string; style?: string }[]; allowFreeform?: boolean }) => void;
   /** The other device's message landed, or its turn ended: time to re-read the thread. */
@@ -1515,6 +1527,7 @@ export async function watchSession(input: {
   let index = input.startIndex;
   const memo = { lastTool: null as string | null };
   const peerState: PeerState = { pending: new Map(), last: null };
+  const steps = newStepState();
   let sawSpecific = false;
   let seen = 0;
   console.log(`[watch] start ${input.sessionId.slice(0, 18)} at ${input.startIndex}`);
@@ -1536,6 +1549,7 @@ export async function watchSession(input: {
         }
       }
       for (const peerEvent of readPeerEvents(type, data, peerState)) input.onPeer(peerEvent);
+      for (const step of readStep(steps, type, data, (raw as { meta?: { at?: unknown } }).meta)) input.onStep(step);
 
       if (type === "message.received") {
         input.onLive("received");

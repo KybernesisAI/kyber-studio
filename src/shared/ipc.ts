@@ -1,3 +1,4 @@
+import type { Step } from "@kybernesis/cards";
 import type { Replayed } from "./sessionReplay";
 
 /**
@@ -327,6 +328,17 @@ export interface StudioApi {
   updaterInstall(): Promise<void>;
   onUpdater(handler: (state: UpdateState) => void): () => void;
   openExternal(url: string): Promise<void>;
+  /** A picture a card shows, fetched from the agent's own origin with the person's token. */
+  agentImage(input: { url: string; src: string }): Promise<{ ok: boolean; dataUrl?: string; error?: string }>;
+  /** An artifact's content, for the viewer. */
+  agentArtifact(input: { url: string; artifactId: string; version?: number }): Promise<{
+    ok: boolean;
+    content?: string;
+    format?: "html" | "markdown";
+    version?: number;
+    latest?: number;
+    error?: string;
+  }>;
   cancelTurn(input: { url: string; sessionId: string; turnId?: string }): Promise<string>;
   resetSession(input: {
     url: string;
@@ -361,6 +373,8 @@ export interface StudioApi {
       event: { direction: 'inbound' | 'outbound'; peer: string; text: string };
     }) => void,
   ): () => void;
+  /** A tool call in the running turn, with any cards it returned. The whole step each time. */
+  onStep(handler: (payload: { streamId: string; step: Step }) => void): () => void;
   onQuestion(
     handler: (payload: {
       streamId: string;

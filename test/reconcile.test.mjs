@@ -85,3 +85,23 @@ test("order follows time, not source", () => {
   );
   assert.deepEqual(out.map((b) => b.text), ["first", "second", "later local"]);
 });
+
+test("a turn's steps take the agent's newer reading, but keep steps the replay window cut off", () => {
+  const step = (callId, chip) => ({ callId, tool: "t", chip, label: callId, status: "done", cards: [] });
+  const stored = { kind: "work", id: "work-s-turn_1", at: 100, steps: [step("c1", "Workspace"), step("c2", "Googlecalendar"), step("c3", "Googlecalendar")] };
+  // The replay starts mid-turn: c1 fell before its window, and c4 is new.
+  const replay = { kind: "work", id: "work-s-turn_1", at: 100, steps: [step("c2", "Google Calendar"), step("c3", "Google Calendar"), step("c4", "Gmail")] };
+  const out = reconcile([stored], [replay]);
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].steps.map((s) => `${s.callId}:${s.chip}`), ["c1:Workspace", "c2:Google Calendar", "c3:Google Calendar", "c4:Gmail"]);
+});
+
+test("a full replay of a turn replaces its steps outright", () => {
+  const step = (callId, chip) => ({ callId, chip });
+  const out = reconcile(
+    [{ kind: "work", id: "live-1", at: 100, steps: [step("c1", "Old")] }],
+    [{ kind: "work", id: "work-s-turn_1", at: 100, steps: [step("c1", "New"), step("c2", "New")] }],
+  );
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].steps.map((s) => s.chip), ["New", "New"]);
+});
