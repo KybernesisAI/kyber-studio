@@ -52,7 +52,7 @@ export function WorkSteps({ steps, live }: { steps: Step[]; live: boolean }): Re
     return (
       <div className="work">
         {!running ? (
-          <button className="work__toggle" onClick={() => setOpen(false)}>
+          <button className="work__toggle work__toggle--open" onClick={() => setOpen(false)}>
             <Icon name="chevronRight" size={11} />
             <span>Hide steps</span>
           </button>

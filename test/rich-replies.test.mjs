@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { blocksFromEvents, reconcile, workFromEvents } from "../src/shared/sessionReplay.ts";
 import { placeCards } from "@/lib/placeCards";
 import { Markdown } from "@/components/Markdown";
-import { CardView } from "@/components/Cards";
+import { CardView, withUnit } from "@/components/Cards";
 import { WorkSteps } from "@/components/Work";
 
 /**
@@ -213,4 +213,25 @@ test("a background turn the agent started shows only its reply", () => {
     line("message.received", { message: "thanks", turnId: "turn_10" }, 3),
   ]);
   assert.deepEqual(blocks.map((b) => [b.role, b.text]), [["agent", "Nothing urgent this morning."], ["user", "thanks"]]);
+});
+
+test("chart units read as words, a week of bars labels every day, a document artifact shows a preview", () => {
+  assert.equal(withUnit("30", "emails"), "30 emails");
+  assert.equal(withUnit("2.5", "%"), "2.5%");
+  assert.equal(withUnit("12", undefined), "12");
+  const days = ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"];
+  const bars = draw({ kyb: 1, card: "chart", data: { kind: "bar", x: days, series: [{ name: "Inbox", values: [3, 5, 8, 2, 9, 4, 30] }], unit: "emails" } });
+  for (const d of days) assert.match(bars, new RegExp(`<span>${d}</span>`), `${d} is labelled`);
+  assert.match(bars, /30 emails/);
+  const doc = draw({ kyb: 1, card: "artifact", title: "Calendar", data: { artifactId: "a1", display: "document", format: "html" } });
+  assert.match(doc, /kartifact__preview/);
+  const inline = draw({ kyb: 1, card: "artifact", title: "Chart", data: { artifactId: "a2", display: "inline", format: "html" } });
+  assert.doesNotMatch(inline, /kartifact__preview/);
+});
+
+test("open steps turn their arrow", () => {
+  const steps = workFromEvents(turn)[0].steps;
+  const running = [{ ...steps[0] }, { ...steps[1], status: "running" }];
+  assert.doesNotMatch(html(createElement(WorkSteps, { steps, live: false })), /work__toggle--open/);
+  assert.doesNotMatch(html(createElement(WorkSteps, { steps: running, live: true })), /work__toggle--open/, "no toggle while it works");
 });

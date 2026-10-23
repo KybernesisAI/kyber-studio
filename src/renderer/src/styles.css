@@ -1180,6 +1180,8 @@ input, textarea { font: inherit; color: inherit; }
 .reply a { color: inherit; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--stroke-strong); }
 .reply a:hover { text-decoration-color: currentColor; }
 .reply .md-p { white-space: normal; }
+/* Inline code gets a chip; code inside a block does not, or every line gets its own box. */
+.reply .code__body code { background: none; padding: 0; border-radius: 0; font-size: inherit; }
 
 .md > :first-child { margin-top: 0; }
 .md-ol { margin: 0 0 8px; padding-left: 22px; }
@@ -1224,6 +1226,8 @@ input, textarea { font: inherit; color: inherit; }
   font-size: var(--fs-sm); color: var(--ink-tertiary);
 }
 .work__toggle:hover { color: var(--ink-secondary); }
+.work__toggle svg { transition: transform 120ms ease; }
+.work__toggle--open svg { transform: rotate(90deg); }
 .work__steps + .work__toggle, .work__toggle + .work__steps { margin-top: 2px; }
 
 .is-good { color: var(--good); }
@@ -1271,6 +1275,8 @@ input, textarea { font: inherit; color: inherit; }
 .kchart__s3 { stroke: var(--stroke-strong); fill: var(--stroke-strong); color: var(--stroke-strong); }
 .kchart__line.kchart__s0, .kchart__line.kchart__s1, .kchart__line.kchart__s2, .kchart__line.kchart__s3 { fill: none; }
 .kchart__x { display: flex; justify-content: space-between; margin-top: 6px; font-family: var(--font-label); font-size: 10px; color: var(--ink-tertiary); }
+.kchart__x--slots { display: grid; text-align: center; }
+.kchart__x--slots span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 2px; }
 .kchart__tip {
   position: absolute; top: 0; transform: translateX(-50%); pointer-events: none; white-space: nowrap;
   background: var(--surface-raised); border: 1px solid var(--stroke-strong); border-radius: 6px;
@@ -1319,6 +1325,18 @@ input, textarea { font: inherit; color: inherit; }
 .kartifact--inline { height: 360px; margin-bottom: 10px; }
 .kartifact__doc.kartifact--inline { overflow: auto; padding: 4px 2px; }
 .kartifact__meta { font-size: var(--fs-sm); color: var(--ink-tertiary); }
+.kartifact__preview {
+  display: block; width: 100%; padding: 0; margin-bottom: 10px; border: 0; background: none; cursor: pointer; text-align: left;
+  position: relative; overflow: hidden; border-radius: 8px;
+}
+/* The top of the page, faded out, and not interactive: a click opens it. */
+.kartifact--preview { height: 200px; pointer-events: none; overflow: hidden; }
+.kartifact__preview::after {
+  content: ""; position: absolute; inset: auto 0 0 0; height: 64px; pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--surface));
+}
+.kartifact__preview:hover .kartifact__frame, .kartifact__preview:hover .kartifact__doc { border-color: var(--stroke-strong); }
+.kartifact__doc.kartifact--preview { border: 1px solid var(--stroke); border-radius: 8px; padding: 10px 14px; }
 .kartifact__row + .kcard__actions { margin-top: 10px; }
 
 .kpr__summary { color: var(--ink-secondary); }

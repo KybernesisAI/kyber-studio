@@ -82,6 +82,12 @@ function Tiles({ tiles }: { tiles: StatTile[] }): ReactNode {
   );
 }
 
+/** "30" and "emails" → "30 emails"; "%" and "k" stay attached. */
+export function withUnit(value: string, unit?: string): string {
+  if (!unit) return value;
+  return /^[A-Za-z]/.test(unit) ? `${value} ${unit}` : `${value}${unit}`;
+}
+
 /** A line, area or bar chart as SVG, with the values under the pointer. */
 function Chart({ data }: { data: ChartData }): ReactNode {
   const W = 600;
@@ -94,8 +100,10 @@ function Chart({ data }: { data: ChartData }): ReactNode {
   const hi = Math.max(...all, lo + 1);
   const y = (v: number): number => H - 6 - ((v - lo) / (hi - lo)) * (H - 12);
   const x = (i: number): number => (n <= 1 ? W / 2 : (i / (n - 1)) * W);
-  const unit = data.unit ?? "";
-  const fmt = (v: number): string => `${v.toLocaleString()}${unit}`;
+  const fmt = (v: number): string => withUnit(v.toLocaleString(), data.unit);
+  const bars = data.kind === "bar";
+  // Where point i sits across the plot, as a share of its width: bars sit in the middle of their slot.
+  const across = (i: number): number => (bars ? (i + 0.5) / Math.max(1, n) : x(i) / W);
 
   const marks = data.series.map((s, si) => {
     if (data.kind === "bar") {
@@ -124,7 +132,8 @@ function Chart({ data }: { data: ChartData }): ReactNode {
   });
 
   const label = (i: number): string => data.x[i] ?? "";
-  const ticks = n > 2 ? [0, Math.floor((n - 1) / 2), n - 1] : n === 2 ? [0, 1] : [0];
+  // Every label while they fit (a week of days); otherwise the ends and the middle.
+  const ticks = n <= (bars ? 12 : 8) ? [...Array(n).keys()] : [0, Math.floor((n - 1) / 2), n - 1];
 
   return (
     <div className="kchart">
@@ -152,7 +161,8 @@ function Chart({ data }: { data: ChartData }): ReactNode {
             onMouseMove={(e) => {
               const box = ref.current?.getBoundingClientRect();
               if (!box || n === 0) return;
-              const at = Math.round(((e.clientX - box.left) / box.width) * (n - 1));
+              const share = (e.clientX - box.left) / box.width;
+              const at = bars ? Math.floor(share * n) : Math.round(share * (n - 1));
               setHover(Math.max(0, Math.min(n - 1, at)));
             }}
             onMouseLeave={() => setHover(null)}
@@ -160,11 +170,11 @@ function Chart({ data }: { data: ChartData }): ReactNode {
             <line className="kchart__base" x1={0} x2={W} y1={y(0)} y2={y(0)} vectorEffect="non-scaling-stroke" />
             {marks}
             {hover !== null ? (
-              <line className="kchart__rule" x1={x(hover)} x2={x(hover)} y1={0} y2={H} vectorEffect="non-scaling-stroke" />
+              <line className="kchart__rule" x1={across(hover) * W} x2={across(hover) * W} y1={0} y2={H} vectorEffect="non-scaling-stroke" />
             ) : null}
           </svg>
           {hover !== null ? (
-            <div className="kchart__tip" style={{ left: `${(x(hover) / W) * 100}%` }}>
+            <div className="kchart__tip" style={{ left: `${across(hover) * 100}%` }}>
               <div className="klabel">{label(hover)}</div>
               {data.series.map((s, si) => (
                 <div key={si}>
@@ -174,10 +184,10 @@ function Chart({ data }: { data: ChartData }): ReactNode {
               ))}
             </div>
           ) : null}
-          <div className="kchart__x">
-            {ticks.map((i) => (
-              <span key={i}>{label(i)}</span>
-            ))}
+          <div className={bars ? "kchart__x kchart__x--slots" : "kchart__x"} style={bars ? { gridTemplateColumns: `repeat(${n}, 1fr)` } : undefined}>
+            {bars
+              ? data.x.map((_, i) => <span key={i}>{ticks.includes(i) ? label(i) : ""}</span>)
+              : ticks.map((i) => <span key={i}>{label(i)}</span>)}
           </div>
         </div>
       </div>
@@ -313,7 +323,16 @@ function ArtifactBody({ data, title, ctx }: { data: ArtifactData; title?: string
     <>
       {data.display === "inline" ? (
         <ArtifactFrame agentUrl={ctx.agentUrl} artifactId={data.artifactId} version={data.version} className="kartifact--inline" />
-      ) : null}
+      ) : (
+        // A document shows its top as a preview; the whole thing opens on a click.
+        <button
+          className="kartifact__preview"
+          aria-label={`Open ${title ?? "artifact"}`}
+          onClick={() => ctx.onOpenArtifact(data.artifactId, title, data.version)}
+        >
+          <ArtifactFrame agentUrl={ctx.agentUrl} artifactId={data.artifactId} version={data.version} className="kartifact--preview" />
+        </button>
+      )}
       <div className="kartifact__row">
         <span className="kartifact__meta">{meta.join(" · ")}</span>
       </div>
