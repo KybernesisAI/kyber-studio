@@ -12,6 +12,8 @@
  * deploy a new agent from nothing — that stays with `kyb init` and the FDE.
  */
 
+import type { Step } from "@kybernesis/cards";
+
 /** A remote agent the user has a control-plane grant for. */
 export interface Agent {
   /** Agents this one may call, as granted in the control plane. */
@@ -103,6 +105,23 @@ export type Block =
       speaker?: { id: string; name: string; accent: string };
     }
   | { kind: "peer-activity"; id: string; at: number; events: PeerEvent[] }
+  | {
+      /**
+       * What the agent did in one turn: each tool call as a step, with the
+       * cards those tools handed back.
+       *
+       * Steps are shown while the turn runs and fold to one line when it ends;
+       * the cards are drawn under the reply they belong to. Both are read off
+       * the agent's own stream, so a reload or a second device rebuilds them.
+       */
+      kind: "work";
+      id: string;
+      at: number;
+      turnId?: string;
+      /** In a room, which member did the work, so its cards go under that member's reply. */
+      speakerId?: string;
+      steps: Step[];
+    }
   | {
       kind: "authorization";
       id: string;

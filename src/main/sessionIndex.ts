@@ -1,6 +1,7 @@
 import { activeSession, authHeaders, issuer } from "./controlPlane";
 import {
   blocksFromEvents,
+  workFromEvents,
   type Replayed,
   type ReplayedBlock,
   type ReplayedPeerBlock,
@@ -251,10 +252,13 @@ export async function replaySession(input: {
       else peerBlocks.push({ turnId, at: Number.isNaN(at) ? Date.now() : at, events: [...found] });
     }
 
-    console.log(`[replay] ${which} ${blocks.length} block(s), ${peerBlocks.length} peer exchange(s)`);
+    const workBlocks = workFromEvents(lines);
+
+    console.log(`[replay] ${which} ${blocks.length} block(s), ${peerBlocks.length} peer exchange(s), ${workBlocks.length} turn(s) with steps`);
     return {
       blocks,
       peerBlocks,
+      workBlocks,
       streamIndex: tail >= 0 ? tail + 1 : lines.length,
       truncated: tail >= 0 && tail + 1 > limit,
     };

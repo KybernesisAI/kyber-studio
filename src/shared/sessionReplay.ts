@@ -6,6 +6,8 @@
  * produced — and a module that reaches the app cannot be loaded by a test. The
  * same reason peerEvents lives apart.
  */
+import { newStepState, readStep, type Step } from "@kybernesis/cards";
+
 export interface ReplayedBlock {
   /** "agent" to match the app's own vocabulary — the stream says "assistant". */
   role: "user" | "agent";
@@ -32,10 +34,22 @@ export interface ReplayedPeerBlock {
   events: { direction: "inbound" | "outbound"; peer: string; text: string }[];
 }
 
+/**
+ * One turn's tool calls and the cards they returned, rebuilt from the stream
+ * with the same reader the live turn uses.
+ */
+export interface ReplayedWorkBlock {
+  turnId: string;
+  at: number;
+  steps: Step[];
+}
+
 export interface Replayed {
   blocks: ReplayedBlock[];
   /** Agent-to-agent exchanges, one entry per turn that had any. */
   peerBlocks: ReplayedPeerBlock[];
+  /** Tool steps and cards, one entry per turn that had any. Absent from an older main process. */
+  workBlocks?: ReplayedWorkBlock[];
   /** How many events were consumed, so streaming can resume after them. */
   streamIndex: number;
   /** True when older events were skipped to bound the read. */
@@ -91,6 +105,31 @@ export function blocksFromEvents(lines: string[], limit = Number.POSITIVE_INFINI
 }
 
 
+/**
+ * Each turn's steps, in order, from recorded stream events.
+ *
+ * A call whose request fell before the replay window still counts when its
+ * result is inside it: the reader builds a step from the result alone, so a
+ * card at the edge of the window is not lost.
+ */
+export function workFromEvents(lines: string[]): ReplayedWorkBlock[] {
+  const state = newStepState();
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let event: { type?: string; data?: unknown; meta?: { at?: unknown } };
+    try { event = JSON.parse(line); } catch { continue; }
+    readStep(state, event.type ?? "", event.data, event.meta);
+  }
+  const turns: ReplayedWorkBlock[] = [];
+  for (const step of state.steps.values()) {
+    const turnId = step.turnId ?? "turn";
+    const open = turns.find((t) => t.turnId === turnId);
+    if (open) open.steps.push(step);
+    else turns.push({ turnId, at: step.at ?? Date.now(), steps: [step] });
+  }
+  return turns;
+}
+
 /** The subset of a transcript block this reconciliation needs to reason about. */
 export interface ReconcilableBlock {
   kind: string;
@@ -99,6 +138,7 @@ export interface ReconcilableBlock {
   role?: string;
   text?: string;
   events?: { text: string }[];
+  steps?: { callId: string }[];
 }
 
 /**
@@ -148,6 +188,14 @@ export function reconcile<T extends ReconcilableBlock>(local: T[], replayed: T[]
     if (block.kind === "peer-activity") {
       const want = signature(block);
       return !replayed.some((r) => r.kind === "peer-activity" && signature(r) === want);
+    }
+
+    // The same turn's work, drawn live here and read back from the agent: the
+    // call ids come from the stream, so they match exactly. The agent's copy
+    // wins, because it holds every step even when this device joined late.
+    if (block.kind === "work") {
+      const calls = new Set((block.steps ?? []).map((s) => s.callId));
+      return !replayed.some((r) => r.kind === "work" && (r.steps ?? []).some((s) => calls.has(s.callId)));
     }
 
     // Cards, prompts, anything else this device drew: the stream never

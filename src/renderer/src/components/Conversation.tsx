@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   filesFromClipboard,
   formatSize,
@@ -19,6 +19,44 @@ import { approvalPrompt, parseSpendRequestAsk, parseVaultItemAsk } from "@shared
 import { deliveredFiles } from "../../../shared/deliveredFiles";
 import { Spinner } from "./Spinner";
 import { Avatar, Icon, RichText, timeLabel } from "./primitives";
+import { parseCardPrompt } from "@kybernesis/cards";
+import { placeCards } from "../lib/placeCards";
+import { ArtifactFrame, CardStack, CardView, type CardContext } from "./Cards";
+import { WorkSteps } from "./Work";
+
+/**
+ * An artifact, over the conversation, opened from its card.
+ *
+ * Fetched fresh on open, so an older card shows the latest version unless it
+ * named one. Closed with the button or Escape, back to where you were.
+ */
+function ArtifactView(): ReactNode {
+  const artifact = useStore((s) => s.artifact);
+  const closeArtifact = useStore((s) => s.closeArtifact);
+  const agents = useStore((s) => s.agents);
+  useEffect(() => {
+    if (!artifact) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") closeArtifact();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [artifact, closeArtifact]);
+  if (!artifact) return null;
+  const agent = agents.find((a) => a.id === artifact.agentId);
+  return (
+    <div className="artifact-view">
+      <div className="artifact-view__head">
+        <span className="artifact-view__title">{artifact.title ?? "Artifact"}</span>
+        {agent ? <span className="klabel">{agent.name}</span> : null}
+        <button className="btn" onClick={closeArtifact}>
+          Close
+        </button>
+      </div>
+      <ArtifactFrame agentUrl={agent?.url} artifactId={artifact.artifactId} version={artifact.version} className="artifact-view__body" />
+    </div>
+  );
+}
 
 /**
  * Agent-to-agent traffic, collapsed.
@@ -170,16 +208,19 @@ function ExchangeView(): ReactNode {
 function QuestionCard({
   block,
   onAnswer,
+  ctx,
 }: {
   block: Extract<Block, { kind: "question" }>;
   onAnswer(answer: { optionId?: string; text?: string; label?: string }): void;
+  ctx: CardContext;
 }): ReactNode {
   const [text, setText] = useState("");
   const vault = parseVaultItemAsk(block.prompt);
   const spend = parseSpendRequestAsk(block.prompt);
-  const approval = approvalPrompt(block.prompt);
+  const carded = vault || spend ? null : parseCardPrompt(block.prompt);
+  const approval = carded ? null : approvalPrompt(block.prompt);
   // What the transcript shows once answered: the sentence, not the marker line.
-  const shownPrompt = vault ? `Needed ${vault.ask.kind === "login" ? "a login" : vault.ask.kind === "card" ? "a card" : `an ${vault.ask.kind}`}${vault.ask.site ? ` for ${vault.ask.site}` : ""}` : spend ? `Purchase approval · ${spend.ask.merchant ?? spend.ask.merchant_url ?? ""}` : approval ? approval.title : block.prompt;
+  const shownPrompt = vault ? `Needed ${vault.ask.kind === "login" ? "a login" : vault.ask.kind === "card" ? "a card" : `an ${vault.ask.kind}`}${vault.ask.site ? ` for ${vault.ask.site}` : ""}` : spend ? `Purchase approval · ${spend.ask.merchant ?? spend.ask.merchant_url ?? ""}` : carded ? carded.text : approval ? approval.title : block.prompt;
 
   if (block.answered) {
     return (
@@ -197,7 +238,8 @@ function QuestionCard({
 
   return (
     <div className="ask">
-      <div className="ask__title" style={{ marginBottom: 10 }}>{approval ? approval.title : block.prompt}</div>
+      {carded ? <CardView card={carded.card} ctx={ctx} /> : null}
+      <div className="ask__title" style={{ marginBottom: 10 }}>{carded ? carded.text : approval ? approval.title : block.prompt}</div>
       {block.options?.length ? (
         <div className="ask__options">
           {block.options.map((o) => (
@@ -355,6 +397,27 @@ export function Conversation(): ReactNode {
         accent: agents.find((a) => a.id === peer.id || a.name === peer.name)?.accent,
       }));
   const blocks = conversations[activeAgentId] ?? [];
+  const placed = useMemo(() => placeCards(blocks), [blocks]);
+  const openArtifact = useStore((s) => s.openArtifact);
+  /** Cards act for the agent that made them: in a room, the member who answered. */
+  const cardContext = (speakerId?: string): CardContext => {
+    const owner = agents.find((a) => a.id === (speakerId ?? activeAgentId)) ?? agent ?? roomMembers[0];
+    return {
+      agentUrl: owner?.url,
+      onSay: (text) => (room ? sendToRoom(room.id, text) : send(activeAgentId, text)),
+      onOpenArtifact: (artifactId, title, version) => {
+        if (owner) openArtifact(owner.id, artifactId, title, version);
+      },
+    };
+  };
+  // The newest work block, while the agent is on it, is the one whose steps are live.
+  const lastWork = [...blocks].reverse().find((b) => b.kind === "work");
+  const lastWorkId = lastWork?.id;
+  // A running step already says what is happening; the activity line would say it twice.
+  const stepRunning =
+    blocks[blocks.length - 1]?.kind === "work" &&
+    lastWork?.kind === "work" &&
+    lastWork.steps.some((step) => step.status === "running");
   // KYB-643: right after signing in, the account's threads are still being
   // read. An empty chat may be about to receive one, so "No messages yet"
   // would be a guess, and usually a wrong one. Not conditioned on the chat
@@ -683,6 +746,7 @@ export function Conversation(): ReactNode {
   return (
     <div className="main" style={{ position: "relative" }}>
       <ExchangeView />
+      <ArtifactView />
       <div className="topbar">
         {room ? (
           <>
@@ -790,45 +854,58 @@ export function Conversation(): ReactNode {
               return (
                 <PeerActivity key={b.id} events={b.events} agentId={activeAgentId} blockId={b.id} />
               );
+            if (b.kind === "work") {
+              const cards = placed.atWork.get(b.id);
+              return (
+                <div key={b.id} className="turn-work">
+                  <WorkSteps steps={b.steps} live={running && b.id === lastWorkId} />
+                  {cards ? <CardStack cards={cards} ctx={cardContext(b.speakerId)} /> : null}
+                </div>
+              );
+            }
             if (b.kind === "authorization") return <AuthorizationCard key={b.id} block={b} />;
             if (b.kind === "question")
               return (
                 <QuestionCard
                   key={b.id}
                   block={b}
+                  ctx={cardContext()}
                   onAnswer={(answer) => answerQuestion(activeAgentId, b.id, answer)}
                 />
               );
-              // In a room, every agent turn says who is speaking. Without it a
-              // run of replies from three agents is one anonymous wall.
-              // Who said it, above what they said, with their avatar beside the
-              // bubble. In a room this is not decoration: two grey bubbles in a
-              // row are unreadable when three agents can produce them.
-              return b.speaker ? (
-                <div key={b.id} className="said">
-                  <div className="said__who">{b.speaker.name}</div>
-                  <div className="said__row">
-                    <Avatar name={b.speaker.name} accent={b.speaker.accent} size={22} />
-                    <div className="bubble bubble--agent">
-                      <Markdown text={b.text} />
-                      <DeliveredFiles files={deliveredFiles(b.text)} />
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div key={b.id} className={`bubble bubble--${b.role}`}>
-                  {b.role === "agent" ? (
-                    <>
-                      <Markdown text={b.text} />
-                      {/* Under the words, never instead of them: the sentence
-                          explaining what the file is stays exactly as written. */}
-                      <DeliveredFiles files={deliveredFiles(b.text)} />
-                    </>
-                  ) : (
-                    <RichText text={b.text} mentions={mentionable} />
-                  )}
+            if (b.role === "user") {
+              return (
+                <div key={b.id} className="bubble bubble--user">
+                  <RichText text={b.text} mentions={mentionable} />
                 </div>
               );
+            }
+            // The agent's reply is the page, not a bubble: full width, with the
+            // cards its tools returned underneath. A bubble around a table or a
+            // chart is a box inside a box.
+            const cards = placed.under.get(b.id);
+            const reply = (
+              <div className="reply">
+                <Markdown text={b.text} />
+                {/* Under the words, never instead of them: the sentence
+                    explaining what the file is stays exactly as written. */}
+                <DeliveredFiles files={deliveredFiles(b.text)} />
+                {cards ? <CardStack cards={cards} ctx={cardContext(b.speaker?.id)} /> : null}
+              </div>
+            );
+            // In a room, every reply says who is speaking. Without it a run of
+            // replies from three agents is one anonymous wall.
+            return b.speaker ? (
+              <div key={b.id} className="said">
+                <div className="said__who">
+                  <Avatar name={b.speaker.name} accent={b.speaker.accent} size={18} />
+                  {b.speaker.name}
+                </div>
+                {reply}
+              </div>
+            ) : (
+              <Fragment key={b.id}>{reply}</Fragment>
+            );
             })();
 
             // A marker and its block travel together, so the label always sits
@@ -854,7 +931,7 @@ export function Conversation(): ReactNode {
                 : `No messages yet. Say hello to ${agent?.name}.`}
             </div>
           ) : null}
-          {busy ? (
+          {busy && !stepRunning ? (
             <div className="activity">
               <Spinner />
               <span className="activity__label">{busy}</span>
