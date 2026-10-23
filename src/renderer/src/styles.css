@@ -1335,6 +1335,11 @@ input, textarea { font: inherit; color: inherit; }
   content: ""; position: absolute; inset: auto 0 0 0; height: 64px; pointer-events: none;
   background: linear-gradient(to bottom, transparent, var(--surface));
 }
+/* A page is white in both themes, so it fades into its own white, inside its border. */
+.kartifact__preview:has(.kartifact__frame)::after {
+  inset: auto 1px 1px 1px; border-radius: 0 0 7px 7px;
+  background: linear-gradient(to bottom, rgb(255 255 255 / 0), #fff);
+}
 .kartifact__preview:hover .kartifact__frame, .kartifact__preview:hover .kartifact__doc { border-color: var(--stroke-strong); }
 .kartifact__doc.kartifact--preview { border: 1px solid var(--stroke); border-radius: 8px; padding: 10px 14px; }
 .kartifact__row + .kcard__actions { margin-top: 10px; }
