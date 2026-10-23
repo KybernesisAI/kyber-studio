@@ -131,6 +131,11 @@ test("a later card with the same id replaces the earlier one", () => {
 const html = (el) => renderToStaticMarkup(el);
 const md = (text) => html(createElement(Markdown, { text }));
 
+test("markdown: a block with no text draws nothing instead of crashing", () => {
+  // What an older Studio meets when a newer one saved a block kind it does not know.
+  assert.doesNotThrow(() => md(undefined));
+});
+
 test("markdown: tables, numbered lists that keep their start, quotes and task lists", () => {
   const out = md("| Page | Views |\n|:--|--:|\n| /pricing | 1,204 |\n\n3. third\n4. fourth\n\n> quoted\n\n- [x] done\n- [ ] open");
   assert.match(out, /<table>/);

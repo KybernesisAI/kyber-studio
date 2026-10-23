@@ -247,6 +247,7 @@ function blocks(nodes: TokenNode[]): ReactNode[] {
 }
 
 export function Markdown({ text }: { text: string }): ReactNode {
-  const nodes = useMemo(() => markTasks(tree(md.parse(text, {}))), [text]);
+  // A block saved by a newer Studio can reach an older reader with no text; draw nothing rather than crash the window.
+  const nodes = useMemo(() => markTasks(tree(md.parse(typeof text === "string" ? text : "", {}))), [text]);
   return <div className="md">{blocks(nodes)}</div>;
 }

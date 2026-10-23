@@ -878,6 +878,9 @@ export function Conversation(): ReactNode {
                   onAnswer={(answer) => answerQuestion(activeAgentId, b.id, answer)}
                 />
               );
+            // A kind this version does not know (saved by a newer Studio sharing
+            // this data folder) has no text to draw: skip it, never crash on it.
+            if (typeof b.text !== "string") return null;
             if (b.role === "user") {
               return (
                 <div key={b.id} className="bubble bubble--user">
