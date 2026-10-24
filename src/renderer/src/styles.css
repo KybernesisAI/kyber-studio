@@ -58,7 +58,10 @@
   --sp-4: 16px; --sp-5: 20px; --sp-6: 28px;
 
   --sidebar-w: 288px;
-  --panel-w: 340px;
+  /* The drawer is an overlay, not a column, so it can be wide enough for a
+     label and its control to sit on one line without the conversation paying
+     for it. Never wider than the window leaves room for. */
+  --panel-w: 640px;
 
   --shadow-menu: 0 10px 34px rgba(16, 18, 24, 0.18), 0 0 0 0.5px rgba(16, 18, 24, 0.1);
   --shadow-modal: 0 24px 70px rgba(16, 18, 24, 0.28), 0 0 0 0.5px rgba(16, 18, 24, 0.08);
@@ -457,9 +460,16 @@ input, textarea { font: inherit; color: inherit; }
 /* ── Right panel ───────────────────────────────────────────────────── */
 
 .panel {
-  width: var(--panel-w); flex: 0 0 var(--panel-w);
+  /* Over the conversation rather than beside it. As a column it had to be
+     narrow, or the chat shrank to nothing; narrow, every setting folded into a
+     cramped label-and-control pair. An overlay can be wide because it takes
+     nothing away while it is closed, and the conversation stays put under it
+     instead of reflowing every time the drawer opens. */
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 46;
+  width: min(var(--panel-w), calc(100vw - 48px));
   border-left: 0.5px solid var(--stroke);
   background: var(--surface);
+  box-shadow: var(--shadow-modal);
   display: flex; flex-direction: column;
   /* Slides from the edge it belongs to. Appearing instantly reads as a jump
      cut: the eye has to re-find where it was, because nothing showed it that
@@ -468,10 +478,23 @@ input, textarea { font: inherit; color: inherit; }
 }
 .panel--closing {
   animation: panel-out 150ms cubic-bezier(0.55, 0.06, 0.68, 0.19) forwards;
-  /* Out of the flow on the way out, so the conversation reclaims the width in
-     one movement instead of snapping wide after the drawer has gone. */
+  /* Clicks on the way out reach the conversation, not a drawer that is leaving. */
   pointer-events: none;
 }
+/* The rest of the window, dimmed just enough to read as behind the drawer.
+   A click on it closes the drawer: the conversation is one click away, as it
+   was when the drawer sat beside it. */
+.panel-scrim {
+  position: fixed; inset: 0; z-index: 46;
+  background: rgba(16, 18, 24, 0.16);
+  animation: scrim-in 180ms ease-out;
+}
+.panel-scrim--closing { animation: scrim-out 150ms ease-in forwards; pointer-events: none; }
+@media (prefers-color-scheme: dark) {
+  .panel-scrim { background: rgba(0, 0, 0, 0.36); }
+}
+@keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes scrim-out { from { opacity: 1; } to { opacity: 0; } }
 @keyframes panel-in {
   from { transform: translateX(100%); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
@@ -482,14 +505,14 @@ input, textarea { font: inherit; color: inherit; }
 }
 @media (prefers-reduced-motion: reduce) {
   /* Someone who has asked for less movement is asking for this too. */
-  .panel, .panel--closing { animation: none; }
+  .panel, .panel--closing, .panel-scrim, .panel-scrim--closing { animation: none; }
 }
 .panel__head {
   height: 52px; flex: none; display: flex; align-items: center; gap: 8px;
   padding: 0 10px 0 12px; -webkit-app-region: drag;
 }
 .panel__title { flex: 1; text-align: center; font-weight: 600; font-size: var(--fs-base); }
-.panel__body { flex: 1; overflow-y: auto; padding: var(--sp-1) var(--sp-4) var(--sp-5); }
+.panel__body { flex: 1; overflow-y: auto; padding: var(--sp-1) var(--sp-5) var(--sp-6); }
 .panel__section-head {
   display: flex; align-items: center; margin: 4px 0 8px;
 }
