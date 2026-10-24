@@ -1147,7 +1147,11 @@ export async function sendTurn(input: {
     // happen on a session we are already attached to — there is nothing to
     // answer in a conversation that does not exist yet.
     if (input.inputResponses?.length && session) {
-      return await session.respond(input.inputResponses, options);
+      // Answers go without clientContext. eve adds it as one more message after
+      // the parked turn, so the model is asked to continue from its own last
+      // reply, which current models refuse as prefill and the conversation
+      // ends. The context already went with the message that asked.
+      return await session.respond(input.inputResponses, { signal: abandon.signal });
     }
     if (session) return await session.send(message, options);
     const created = await clientFor(base).sessions.create({ message, ...options });
