@@ -2,6 +2,7 @@ import {
   cardTitle,
   isKnownCard,
   money,
+  type ApprovalData,
   type ArtifactData,
   type Card,
   type CardAction,
@@ -306,7 +307,7 @@ function withPolicy(html: string): string {
   return `<meta http-equiv="Content-Security-Policy" content="${csp}">${html}`;
 }
 
-function dateLabel(iso?: string): string | undefined {
+export function dateLabel(iso?: string): string | undefined {
   if (!iso) return undefined;
   const at = Date.parse(iso);
   if (Number.isNaN(at)) return undefined;
@@ -343,6 +344,63 @@ function ArtifactBody({ data, title, ctx }: { data: ArtifactData; title?: string
         </button>
       </div>
     </>
+  );
+}
+
+/** An event's time as a person reads it: "Thu 29 Oct, 2:00 PM – 3:00 PM". A date alone stays a date. */
+export function whenLabel(when?: string, until?: string): string | undefined {
+  if (!when) return undefined;
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/;
+  const at = Date.parse(when);
+  if (Number.isNaN(at)) return until ? `${when} – ${until}` : when;
+  if (dateOnly.test(when)) {
+    return new Date(`${when}T00:00:00`).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+  }
+  const start = new Date(at);
+  const head = start.toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+  const end = until ? Date.parse(until) : NaN;
+  if (Number.isNaN(end)) return head;
+  const sameDay = new Date(end).toDateString() === start.toDateString();
+  const tail = new Date(end).toLocaleString([], sameDay ? { hour: "numeric", minute: "2-digit" } : { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+  return `${head} – ${tail}`;
+}
+
+/**
+ * What an approval would do, as the thing itself: the email with its
+ * recipients and body, the event with its time and people. Read-only; the
+ * buttons belong to the question that holds it.
+ */
+export function ApprovalBody({ data }: { data: ApprovalData }): ReactNode {
+  const rows: [string, string][] = [];
+  if (data.kind === "email") {
+    if (data.to?.length) rows.push(["To", data.to.join(", ")]);
+    if (data.cc?.length) rows.push(["Cc", data.cc.join(", ")]);
+    if (data.subject) rows.push(["Subject", data.subject]);
+  } else if (data.kind === "event") {
+    if (data.subject) rows.push(["Event", data.subject]);
+    const when = whenLabel(data.when, data.until);
+    if (when) rows.push(["When", when]);
+    if (data.where) rows.push(["Where", data.where]);
+    if (data.people?.length) rows.push(["With", data.people.join(", ")]);
+  } else if (data.kind === "message") {
+    if (data.channel) rows.push(["In", data.channel]);
+    if (data.to?.length) rows.push(["To", data.to.join(", ")]);
+  }
+  for (const f of data.fields ?? []) rows.push([f.label, f.value]);
+  return (
+    <div className="kapproval">
+      {rows.length ? (
+        <dl className="kapproval__rows">
+          {rows.map(([label, value], i) => (
+            <div key={i} className="kapproval__row">
+              <dt className="klabel">{label}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {data.body ? <div className="kapproval__body">{data.body}</div> : null}
+    </div>
   );
 }
 
@@ -547,6 +605,17 @@ function Body({ card, ctx }: { card: KnownCard; ctx: CardContext }): ReactNode {
     }
     case "remembered":
       return <div className="kremember">{card.data.fact}</div>;
+    case "approval":
+      return <ApprovalBody data={card.data} />;
+    case "form":
+      // A form is answered where it was asked; shown anywhere else, it lists what it asks.
+      return (
+        <ol className="kform__list">
+          {card.data.fields.map((f) => (
+            <li key={f.id}>{f.label}</li>
+          ))}
+        </ol>
+      );
     case "routine": {
       const d = card.data;
       return (
@@ -567,6 +636,7 @@ const SOURCE_DEFAULTS: Partial<Record<string, string>> = {
   receipt: "Payments",
   "pull-request": "GitHub",
   routine: "Routine",
+  form: "Question",
 };
 
 export function CardView({ card, ctx }: { card: Card; ctx: CardContext }): ReactNode {

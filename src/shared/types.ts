@@ -146,8 +146,12 @@ export type Block =
       prompt: string;
       options?: { id: string; label: string; description?: string; style?: string }[];
       allowFreeform?: boolean;
+      /** For a tool approval: the call it holds, so the card can show the email or event itself. */
+      approval?: { tool: string; input: Record<string, unknown> };
       /** Set once answered, so the transcript keeps what was chosen. */
       answered?: string;
+      /** The option chosen, so an answered card can show its outcome (Approved, Cancelled). */
+      answeredOption?: string;
     };
 
 /** One agent-to-agent hop, as reported by the dispatch layer. */

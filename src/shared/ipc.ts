@@ -1,6 +1,7 @@
 import type { Step } from "@kybernesis/cards";
 import type { ArtifactSummary } from "./artifacts";
 import type { Replayed } from "./sessionReplay";
+import type { QuestionRequest } from "./asks";
 
 /**
  * One of this person's threads, as the control-plane directory knows it.
@@ -381,12 +382,7 @@ export interface StudioApi {
   onQuestion(
     handler: (payload: {
       streamId: string;
-      request: {
-        requestId: string;
-        prompt: string;
-        options?: { id: string; label: string; description?: string; style?: string }[];
-        allowFreeform?: boolean;
-      };
+      request: QuestionRequest;
     }) => void,
   ): () => void;
   /**
