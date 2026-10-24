@@ -2,6 +2,7 @@ import {
   cardTitle,
   isKnownCard,
   money,
+  routineSchedule,
   type ApprovalData,
   type ArtifactData,
   type Card,
@@ -620,7 +621,7 @@ function Body({ card, ctx }: { card: KnownCard; ctx: CardContext }): ReactNode {
       const d = card.data;
       return (
         <div className="kroutine">
-          <div>{d.schedule}</div>
+          <div>{routineSchedule(d)}</div>
           {d.nextRun ? <div className="kroutine__meta">Next run {dateLabel(d.nextRun)}</div> : null}
           {d.posts?.length ? <div className="kroutine__meta">Posts to {d.posts.join(", ")}</div> : null}
         </div>
