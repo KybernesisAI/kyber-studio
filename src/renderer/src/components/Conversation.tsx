@@ -14,12 +14,12 @@ import { LocalAskCard } from "./LocalAsk";
 import { Markdown } from "./Markdown";
 import { record, type Recorder } from "../lib/dictation";
 import { DeliveredFiles } from "./DeliveredFiles";
-import { SpendRequestCard, VaultAskCard } from "./Asks";
+import { ApprovalAskCard, FormAskCard, SpendRequestCard, VaultAskCard } from "./Asks";
 import { approvalPrompt, parseSpendRequestAsk, parseVaultItemAsk } from "@shared/asks";
 import { deliveredFiles } from "../../../shared/deliveredFiles";
 import { Spinner } from "./Spinner";
 import { Avatar, Icon, RichText, timeLabel } from "./primitives";
-import { parseCardPrompt } from "@kybernesis/cards";
+import { approvalCard, isKnownCard, parseCardPrompt } from "@kybernesis/cards";
 import { placeCards } from "../lib/placeCards";
 import { ArtifactFrame, CardStack, CardView, type CardContext } from "./Cards";
 import { WorkSteps } from "./Work";
@@ -222,6 +222,11 @@ function QuestionCard({
   // What the transcript shows once answered: the sentence, not the marker line.
   const shownPrompt = vault ? `Needed ${vault.ask.kind === "login" ? "a login" : vault.ask.kind === "card" ? "a card" : `an ${vault.ask.kind}`}${vault.ask.site ? ` for ${vault.ask.site}` : ""}` : spend ? `Purchase approval · ${spend.ask.merchant ?? spend.ask.merchant_url ?? ""}` : carded ? carded.text : approval ? approval.title : block.prompt;
 
+  const approvalCardOf = block.approval && !carded && !vault && !spend ? approvalCard(block.approval.tool, block.approval.input, block.requestId) : null;
+  if (approvalCardOf && isKnownCard(approvalCardOf) && approvalCardOf.card === "approval") return <ApprovalAskCard block={block} card={approvalCardOf} onAnswer={onAnswer} />;
+  if (carded && isKnownCard(carded.card) && carded.card.card === "form") return <FormAskCard block={block} card={carded.card} text={carded.text} onAnswer={onAnswer} />;
+  if (spend) return <SpendRequestCard block={block} ask={spend.ask} text={spend.text} onAnswer={onAnswer} />;
+
   if (block.answered) {
     return (
       <div className="ask ask--done">
@@ -234,7 +239,6 @@ function QuestionCard({
   }
 
   if (vault) return <VaultAskCard block={block} ask={vault.ask} text={vault.text} onAnswer={onAnswer} />;
-  if (spend) return <SpendRequestCard block={block} ask={spend.ask} text={spend.text} onAnswer={onAnswer} />;
 
   return (
     <div className="ask">
@@ -296,9 +300,10 @@ function AuthorizationCard({
 
   if (settled) {
     return (
-      <div className="ask ask--done">
-        <div className="ask__title" style={{ fontWeight: 500 }}>
-          {good ? `${block.name} connected` : `${block.name} was not connected`}
+      <div className="kcard kcard--signin is-done">
+        <div className="kcard__head">
+          <span className="kcard__title">{block.name}</span>
+          <span className={`kpill${good ? " is-good" : ""}`}>{good ? "Connected" : "Not connected"}</span>
         </div>
         {!good ? <div className="muted">{block.outcome}</div> : null}
       </div>
@@ -306,14 +311,13 @@ function AuthorizationCard({
   }
 
   return (
-    <div className="ask">
-      <div className="ask__title" style={{ marginBottom: 4 }}>
-        Sign in to {block.name}
+    <div className="kcard kcard--signin">
+      <div className="kcard__head">
+        <span className="kcard__title">Sign in to {block.name}</span>
+        <span className="klabel kcard__source">Sign-in</span>
       </div>
-      <div className="muted" style={{ marginBottom: 10 }}>
-        {block.instructions ?? block.description ?? "The agent needs access before it can continue."}
-      </div>
-      <div className="ask__options">
+      <div className="kcard__text">{block.instructions ?? block.description ?? "The agent needs access before it can continue."}</div>
+      <div className="kcard__actions" style={{ alignItems: "center" }}>
         <button
           className="btn btn--primary"
           disabled={!block.url}
@@ -321,7 +325,7 @@ function AuthorizationCard({
         >
           Open sign-in
         </button>
-        {block.userCode ? <span className="ask__code">{block.userCode}</span> : null}
+        {block.userCode ? <span className="ksignin__code">{block.userCode}</span> : null}
       </div>
     </div>
   );

@@ -431,6 +431,7 @@ function ensureListeners(
               prompt: request.prompt,
               options: request.options,
               allowFreeform: request.allowFreeform,
+              ...(request.approval ? { approval: request.approval } : {}),
             },
           ],
         },
@@ -2220,7 +2221,9 @@ export const useStore = create<State>((set, get) => ({
       conversations: {
         ...s.conversations,
         [agentId]: (s.conversations[agentId] ?? []).map((b) =>
-          b.id === blockId && b.kind === "question" ? { ...b, answered: label } : b,
+          b.id === blockId && b.kind === "question"
+            ? { ...b, answered: label, ...(answer.optionId ? { answeredOption: answer.optionId } : {}) }
+            : b,
         ),
       },
     }));
