@@ -167,7 +167,10 @@ function ConversationsEntry(): ReactNode {
           title="Routines feed"
           detail={`${routines.routine ? `Last: ${routines.routine} · ` : ""}${whenShort(routines.updatedAt)}`}
           active={current === routines.id}
-          onClick={() => void openSession(activeAgentId, routines.id)}
+          onClick={() => {
+            void openSession(activeAgentId, routines.id);
+            setPanel("none");
+          }}
         />
       ) : null}
       <Row
@@ -254,7 +257,11 @@ function ArtifactsView(): ReactNode {
             detail={[a.format === "markdown" ? "Document" : "Page", a.version > 1 ? `v${a.version}` : null, whenShort(a.updatedAt)]
               .filter(Boolean)
               .join(" · ")}
-            onClick={() => openArtifact(activeAgentId, a.id, a.title)}
+            onClick={() => {
+              // The page opens over the conversation, which is under the drawer.
+              openArtifact(activeAgentId, a.id, a.title);
+              setPanel("none");
+            }}
           />
         ))}
       </div>
@@ -319,9 +326,11 @@ function ConversationsView(): ReactNode {
     });
   };
   const busy = Boolean(inflight[activeAgentId]);
+  // The drawer lies over the conversation, so it gets out of the way of the
+  // thread just picked rather than stepping back to the overview on top of it.
   const pick = (id: string) => {
     void openSession(activeAgentId, id);
-    setPanel("overview");
+    setPanel("none");
   };
   return (
     <>
@@ -1282,7 +1291,7 @@ function Settings(): ReactNode {
           </div>
           <select
             className="input"
-            style={{ maxWidth: 130 }}
+            style={{ maxWidth: 220 }}
             value={agent.voice ?? "marin"}
             onChange={(e) => patchAgent(agent.id, { voice: e.target.value })}
           >
@@ -1328,6 +1337,7 @@ function Settings(): ReactNode {
 
 export function Panel(): ReactNode {
   const panel = useStore((s) => s.panel);
+  const setPanel = useStore((s) => s.setPanel);
   /**
    * The view being shown, which lags the store while the drawer closes.
    *
@@ -1354,18 +1364,36 @@ export function Panel(): ReactNode {
     return () => clearTimeout(timer);
   }, [panel, shown]);
 
+  // Escape closes the drawer, as it closes every other thing laid over the
+  // conversation. Anything above the drawer (a modal, the palette, the
+  // computer) has the key first, so it is left alone while one is open.
+  useEffect(() => {
+    if (panel === "none") return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (useStore.getState().paletteOpen) return;
+      if (document.querySelector(".scrim, .computer-view")) return;
+      setPanel("none");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [panel, setPanel]);
+
   if (shown === "none") return null;
   return (
-    <aside className={`panel${closing ? " panel--closing" : ""}`}>
-      {/* Gated on `shown`, not `panel`: `panel` is already "none" while the
-          drawer animates out, so gating on it blanked the contents instantly
-          and slid an empty box off screen — defeating the very hold above. */}
-      {shown === "overview" ? <Overview /> : null}
-      {shown === "routine" ? <RoutineView /> : null}
-      {shown === "settings" ? <Settings /> : null}
-      {shown === "vault" ? <VaultView /> : null}
-      {shown === "conversations" ? <ConversationsView /> : null}
-      {shown === "artifacts" ? <ArtifactsView /> : null}
-    </aside>
+    <>
+      <div className={`panel-scrim${closing ? " panel-scrim--closing" : ""}`} onClick={() => setPanel("none")} />
+      <aside className={`panel${closing ? " panel--closing" : ""}`}>
+        {/* Gated on `shown`, not `panel`: `panel` is already "none" while the
+            drawer animates out, so gating on it blanked the contents instantly
+            and slid an empty box off screen — defeating the very hold above. */}
+        {shown === "overview" ? <Overview /> : null}
+        {shown === "routine" ? <RoutineView /> : null}
+        {shown === "settings" ? <Settings /> : null}
+        {shown === "vault" ? <VaultView /> : null}
+        {shown === "conversations" ? <ConversationsView /> : null}
+        {shown === "artifacts" ? <ArtifactsView /> : null}
+      </aside>
+    </>
   );
 }
