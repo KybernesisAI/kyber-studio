@@ -1,6 +1,7 @@
 import { Client, ClientError, type MessageResponse } from "eve/client";
 import type { Attachment } from "../shared/ipc";
 import { buildMessage } from "../shared/message";
+import { readInputRequests, type QuestionRequest } from "../shared/asks";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -1031,12 +1032,7 @@ export async function sendTurn(input: {
     /** Present on the completed event: authorized | declined | failed | timed-out. */
     outcome?: string;
   }): void;
-  onQuestion(request: {
-    requestId: string;
-    prompt: string;
-    options?: { id: string; label: string; description?: string; style?: string }[];
-    allowFreeform?: boolean;
-  }): void;
+  onQuestion(request: QuestionRequest): void;
 }): Promise<{
   reply: string;
   sessionId?: string;
@@ -1151,7 +1147,11 @@ export async function sendTurn(input: {
     // happen on a session we are already attached to — there is nothing to
     // answer in a conversation that does not exist yet.
     if (input.inputResponses?.length && session) {
-      return await session.respond(input.inputResponses, options);
+      // Answers go without clientContext. eve adds it as one more message after
+      // the parked turn, so the model is asked to continue from its own last
+      // reply, which current models refuse as prefill and the conversation
+      // ends. The context already went with the message that asked.
+      return await session.respond(input.inputResponses, { signal: abandon.signal });
     }
     if (session) return await session.send(message, options);
     const created = await clientFor(base).sessions.create({ message, ...options });
@@ -1359,38 +1359,9 @@ export async function sendTurn(input: {
         if (process.env.KYBER_STUDIO_DEBUG_STREAM) {
           console.log(`[question] ${JSON.stringify(data)}`);
         }
-        for (const raw of Array.isArray(data.requests) ? data.requests : []) {
-          const r = raw as Record<string, unknown>;
-          // The request carries its fields at the top level, and the tool call
-          // that produced it carries the same shape under action.input. Read
-          // both: a question the user never sees because one field sat a level
-          // deeper is indistinguishable from a broken agent.
-          const action = (r.action ?? {}) as Record<string, unknown>;
-          const inner = (action.input ?? {}) as Record<string, unknown>;
-          const requestId =
-            (typeof r.requestId === "string" && r.requestId) ||
-            (typeof action.callId === "string" && action.callId) ||
-            "";
-          const prompt =
-            (typeof r.prompt === "string" && r.prompt) ||
-            (typeof inner.prompt === "string" && inner.prompt) ||
-            (typeof inner.question === "string" && inner.question) ||
-            "";
-          if (!requestId || !prompt) continue;
-          const options = Array.isArray(r.options)
-            ? r.options
-            : Array.isArray(inner.options)
-              ? inner.options
-              : undefined;
+        for (const request of readInputRequests(data)) {
           askedQuestion = true;
-          input.onQuestion({
-            requestId,
-            prompt,
-            options: options as
-              | { id: string; label: string; description?: string; style?: string }[]
-              | undefined,
-            allowFreeform: r.allowFreeform === true || inner.allowFreeform === true,
-          });
+          input.onQuestion(request);
         }
       } else if (type === "message.appended" && typeof data.messageDelta === "string") {
         sawSpecific = false;
@@ -1518,7 +1489,7 @@ export async function watchSession(input: {
   onPeer: (event: { direction: "inbound" | "outbound"; peer: string; text: string }) => void;
   onStep: (step: Step) => void;
   onAuthorization: (event: { name: string; description?: string; url?: string; userCode?: string; instructions?: string; expiresAt?: string; outcome?: string }) => void;
-  onQuestion: (request: { requestId: string; prompt: string; options?: { id: string; label: string; description?: string; style?: string }[]; allowFreeform?: boolean }) => void;
+  onQuestion: (request: QuestionRequest) => void;
   /** The other device's message landed, or its turn ended: time to re-read the thread. */
   onLive: (kind: "received" | "boundary") => void;
 }): Promise<void> {
@@ -1579,17 +1550,7 @@ export async function watchSession(input: {
           outcome: typeof data.outcome === "string" ? data.outcome : undefined,
         });
       } else if (type === "input.requested") {
-        for (const r0 of Array.isArray(data.requests) ? data.requests : []) {
-          // Both shapes, as the turn reader reads them.
-          const r = r0 as Record<string, unknown>;
-          const action = (r.action ?? {}) as Record<string, unknown>;
-          const inner = (action.input ?? {}) as Record<string, unknown>;
-          const requestId = (typeof r.requestId === "string" && r.requestId) || (typeof action.callId === "string" && action.callId) || "";
-          const prompt = (typeof r.prompt === "string" && r.prompt) || (typeof inner.prompt === "string" && inner.prompt) || (typeof inner.question === "string" && inner.question) || "";
-          if (!requestId || !prompt) continue;
-          const options = Array.isArray(r.options) ? r.options : Array.isArray(inner.options) ? inner.options : undefined;
-          input.onQuestion({ requestId, prompt, options: options as never, allowFreeform: r.allowFreeform === true || inner.allowFreeform === true });
-        }
+        for (const request of readInputRequests(data)) input.onQuestion(request);
       } else if (type === "session.waiting" || type === "session.completed" || type === "session.failed" || type === "turn.failed" || isHeldForInput(type, data)) {
         input.onActivity(null);
         input.onLive("boundary");

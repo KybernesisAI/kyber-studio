@@ -64,3 +64,58 @@ export function money(amount: number, currency: string): string {
     return `${(amount / 100).toFixed(2)} ${currency.toUpperCase()}`;
   }
 }
+
+/** One question from eve's `input.requested`, as Studio keeps it. */
+export interface QuestionRequest {
+  requestId: string;
+  prompt: string;
+  options?: { id: string; label: string; description?: string; style?: string }[];
+  allowFreeform?: boolean;
+  /** For a tool approval: the call waiting on it, so the card can show the real email or event. */
+  approval?: { tool: string; input: Record<string, unknown> };
+}
+
+/** The largest tool input kept with an approval. A long email body is fine; a pasted file is cut to the prompt alone. */
+const APPROVAL_INPUT_MAX = 40_000;
+
+/**
+ * The questions in one `input.requested` event.
+ *
+ * The request carries its fields at the top level, and the tool call that
+ * produced it carries the same shape under action.input. Read both: a question
+ * the user never sees because one field sat a level deeper is
+ * indistinguishable from a broken agent.
+ */
+export function readInputRequests(data: Record<string, unknown>): QuestionRequest[] {
+  const out: QuestionRequest[] = [];
+  for (const raw of Array.isArray(data.requests) ? data.requests : []) {
+    const r = (raw ?? {}) as Record<string, unknown>;
+    const action = (r.action ?? {}) as Record<string, unknown>;
+    const inner = (action.input && typeof action.input === "object" && !Array.isArray(action.input) ? action.input : {}) as Record<string, unknown>;
+    const requestId = (typeof r.requestId === "string" && r.requestId) || (typeof action.callId === "string" && action.callId) || "";
+    const prompt =
+      (typeof r.prompt === "string" && r.prompt) ||
+      (typeof inner.prompt === "string" && inner.prompt) ||
+      (typeof inner.question === "string" && inner.question) ||
+      "";
+    if (!requestId || !prompt) continue;
+    const options = Array.isArray(r.options) ? r.options : Array.isArray(inner.options) ? inner.options : undefined;
+    const request: QuestionRequest = {
+      requestId,
+      prompt,
+      options: options as QuestionRequest["options"],
+      allowFreeform: r.allowFreeform === true || inner.allowFreeform === true,
+    };
+    if (r.kind === "tool-approval" && typeof action.toolName === "string" && action.toolName) {
+      let size = Infinity;
+      try {
+        size = JSON.stringify(inner).length;
+      } catch {
+        // Not serialisable: keep the prompt alone.
+      }
+      if (size <= APPROVAL_INPUT_MAX) request.approval = { tool: action.toolName, input: inner };
+    }
+    out.push(request);
+  }
+  return out;
+}
