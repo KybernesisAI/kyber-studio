@@ -921,6 +921,22 @@ input, textarea { font: inherit; color: inherit; }
 }
 .thread__when:first-child { margin-top: var(--sp-2); }
 
+/* A routine's report in the person's thread: the agent speaking unprompted. */
+.report {
+  align-self: stretch; padding: 10px 12px 8px;
+  border-left: 2px solid var(--stroke); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--surface-raised);
+  font-size: var(--fs-lg); line-height: var(--lh-lg); word-break: break-word;
+}
+.report__head { margin-bottom: 4px; }
+
+/* Where the person started fresh: everything above stays, the agent let go of it. */
+.thread-divider {
+  align-self: stretch; display: flex; align-items: center; gap: 10px;
+  margin: var(--sp-4) 0; font-size: var(--fs-xs); color: var(--ink-tertiary); user-select: none;
+}
+.thread-divider::before, .thread-divider::after { content: ""; flex: 1; border-top: 0.5px solid var(--stroke); }
+
 .ask__code {
   font-family: var(--font-mono); font-size: var(--fs-lg); letter-spacing: 0.08em;
   padding: 6px 10px; border-radius: var(--radius-sm); background: var(--surface-raised);

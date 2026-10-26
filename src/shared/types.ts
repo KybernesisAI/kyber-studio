@@ -12,7 +12,7 @@
  * deploy a new agent from nothing — that stays with `kyb init` and the FDE.
  */
 
-import type { Step } from "@kybernesis/cards";
+import type { Card, Step } from "@kybernesis/cards";
 
 /** A remote agent the user has a control-plane grant for. */
 export interface Agent {
@@ -152,6 +152,33 @@ export type Block =
       answered?: string;
       /** The option chosen, so an answered card can show its outcome (Approved, Cancelled). */
       answeredOption?: string;
+      /**
+       * A routine's question, asked from its own background run rather than
+       * this conversation. The answer goes to that run, not to the thread.
+       */
+      runSessionId?: string;
+    }
+  | {
+      /**
+       * What a routine or heads-up produced, added to the person's thread by
+       * the agent. The routine ran in the background; nobody typed its
+       * instruction, so only its answer is shown, labelled as a report.
+       */
+      kind: "report";
+      id: string;
+      at: number;
+      /** The routine's name; "magic" for a heads-up. */
+      routine: string;
+      text: string;
+      cards?: Card[];
+      runSessionId: string;
+    }
+  | {
+      /** A line across the thread: the person started fresh here. */
+      kind: "divider";
+      id: string;
+      at: number;
+      label: string;
     };
 
 /** One agent-to-agent hop, as reported by the dispatch layer. */
