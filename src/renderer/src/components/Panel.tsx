@@ -14,6 +14,7 @@ import {
 } from "@/lib/schedule";
 import { isRetired, threadFilterFor, useStore, type AgentSession, type PanelView, type ThreadFilter } from "@/lib/store";
 import type { ArtifactSummary } from "@shared/artifacts";
+import type { ThreadView } from "@shared/thread";
 import type { LocalAction, LocalPermission } from "@shared/ipc";
 import { Avatar, Icon, Toggle } from "./primitives";
 
@@ -148,7 +149,7 @@ function whenShort(iso: string): string {
  * its own drawer so the overview stays an overview.
  */
 function ConversationsEntry(): ReactNode {
-  const { activeAgentId, sessions, agentSessions, threadIndex, routinesSessions, openSession, loadSessions, setPanel, prefs } = useStore();
+  const { activeAgentId, sessions, agentSessions, threadIndex, routinesSessions, openSession, loadSessions, setPanel, prefs, threads } = useStore();
   const filter = threadFilterFor(prefs, activeAgentId);
   const list = asKnown(heldUnder(agentSessions[activeAgentId], filter), threadIndex[activeAgentId], filter);
   const current = sessions[activeAgentId];
@@ -159,6 +160,8 @@ function ConversationsEntry(): ReactNode {
   const routines = list?.find((s) => s.id === routinesId || s.surface === "routines");
   const archived = new Set(prefs[activeAgentId]?.archived ?? []);
   const others = (list ?? []).filter((s) => s.id !== routines?.id && !archived.has(s.id));
+  const thread = threads[activeAgentId];
+  if (thread) return <ThreadEntry thread={thread} current={current} pastCount={list ? others.length : undefined} />;
   return (
     <Section title="Conversations">
       {routines ? (
@@ -269,6 +272,56 @@ function ArtifactsView(): ReactNode {
   );
 }
 
+/** Whether the conversation on screen is the person's thread, not a past one opened to read. */
+function onThread(thread: ThreadView, current: string | undefined): boolean {
+  return !current || current === thread.current || thread.sessions.some((x) => x.id === current);
+}
+
+/**
+ * The agent keeps one thread for this person: it is the conversation, on this
+ * app and the phone, and routines report into it. Everything else (earlier
+ * conversations, iMessage, Buzz) is there to read.
+ */
+function ThreadEntry({ thread, current, pastCount }: { thread: ThreadView; current: string | undefined; pastCount: number | undefined }): ReactNode {
+  const { activeAgentId, agents, openThread, startConversation, inflight, setPanel } = useStore();
+  const name = agents.find((a) => a.id === activeAgentId)?.name ?? "this agent";
+  const here = onThread(thread, current);
+  const busy = Boolean(inflight[activeAgentId]);
+  return (
+    <Section title="Conversation">
+      <Row
+        icon={<Icon name="pin" size={14} />}
+        title={`Your thread with ${name}`}
+        detail={here ? "Open now. The same conversation on your phone; routines report here." : "Go back to it. Your next message goes there anyway."}
+        active={here}
+        onClick={() => {
+          if (!here) void openThread(activeAgentId);
+          setPanel("none");
+        }}
+      />
+      <Row
+        icon={<Icon name="plus" size={14} />}
+        title="Start fresh"
+        detail={busy ? "Wait for the current turn to finish" : "The agent sets aside what it was holding in mind. Everything said stays in your thread."}
+        onClick={
+          busy
+            ? undefined
+            : () => {
+                startConversation(activeAgentId);
+                setPanel("none");
+              }
+        }
+      />
+      <Row
+        icon={<Icon name="chevronRight" size={14} />}
+        title="Other conversations"
+        detail={pastCount === undefined ? "Loading…" : `${pastCount} from before the thread, plus iMessage and Buzz, to read`}
+        onClick={() => setPanel("conversations")}
+      />
+    </Section>
+  );
+}
+
 /**
  * Every conversation this agent has had — this app's, the phone's, iMessage,
  * Buzz — in its own drawer. The chat shows one at a time; this is how you get
@@ -292,6 +345,7 @@ function ConversationsView(): ReactNode {
     archiveThread,
     unarchiveThread,
     threads,
+    openThread,
   } = useStore();
   // The agent keeps one thread for this person: there is no new one to start,
   // only a fresh start inside it.
@@ -312,7 +366,8 @@ function ConversationsView(): ReactNode {
   const archived = new Set(archivedIds);
   // Archived is the person's choice, held here; ended is the agent's report.
   // Archiving hides a thread whatever its status, and ending never archives.
-  const others = (list ?? []).filter((s) => s.id !== routinesId && s.surface !== "routines" && !archived.has(s.id));
+  const threadIds = new Set(threads[activeAgentId]?.sessions.map((x) => x.id) ?? []);
+  const others = (list ?? []).filter((s) => s.id !== routinesId && s.surface !== "routines" && !archived.has(s.id) && !threadIds.has(s.id));
   const known = threadIndex[activeAgentId] ?? {};
   const toggleArchived = (): void => {
     // The archived list must name threads the current filter does not fetch —
@@ -338,29 +393,36 @@ function ConversationsView(): ReactNode {
   };
   return (
     <>
-      <Head title="Conversations" onBack={() => setPanel("overview")} onClose={() => setPanel("none")} />
+      <Head title={oneThread ? "Other conversations" : "Conversations"} onBack={() => setPanel("overview")} onClose={() => setPanel("none")} />
       <div className="panel__body">
-        <Row
-          icon={<Icon name="plus" size={14} />}
-          title={oneThread ? "Start fresh" : "New conversation"}
-          detail={
-            busy
-              ? "Wait for the current turn to finish"
-              : oneThread
-                ? "The agent sets aside what it was holding in mind. Everything said stays in your thread."
-                : "Leaves this thread where it is; the next message starts a fresh one."
-          }
-          onClick={
-            busy
-              ? undefined
-              : () => {
-                  startConversation(activeAgentId);
-                  setPanel("none");
-                }
-          }
-        />
+        {oneThread ? (
+          <Row
+            icon={<Icon name="pin" size={14} />}
+            title="Back to your thread"
+            detail="Reading one of these leaves your thread as it is. Your next message goes to your thread."
+            active={onThread(threads[activeAgentId]!, current)}
+            onClick={() => {
+              void openThread(activeAgentId);
+              setPanel("none");
+            }}
+          />
+        ) : (
+          <Row
+            icon={<Icon name="plus" size={14} />}
+            title="New conversation"
+            detail={busy ? "Wait for the current turn to finish" : "Leaves this thread where it is; the next message starts a fresh one."}
+            onClick={
+              busy
+                ? undefined
+                : () => {
+                    startConversation(activeAgentId);
+                    setPanel("none");
+                  }
+            }
+          />
+        )}
         <div className="panel__section-head" style={{ marginTop: 16 }}>
-          <span className="panel__section-title">Threads</span>
+          <span className="panel__section-title">{oneThread ? "Conversations" : "Threads"}</span>
           {list ? <span className="muted" style={{ marginRight: 8 }}>{others.length}</span> : null}
           <div className="thread-filter" role="group" aria-label="Which threads to show">
             {THREAD_FILTERS.map(([value, label]) => (

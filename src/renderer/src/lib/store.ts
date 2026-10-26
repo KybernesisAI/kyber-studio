@@ -1146,6 +1146,8 @@ interface State {
   setThreadFilter(agentId: string, filter: ThreadFilter): void;
   /** Switch the chat to one of the agent's conversations and read it. */
   openSession(agentId: string, sessionId: string): Promise<void>;
+  /** Back to the person's one thread, from a past conversation opened to read. */
+  openThread(agentId: string): Promise<void>;
   /**
    * Leave the current thread and start fresh, with an empty transcript.
    *
@@ -1810,6 +1812,31 @@ export const useStore = create<State>((set, get) => ({
     });
     get().persist();
     await get().hydrate(agentId);
+  },
+  openThread: async (agentId) => {
+    const thread = get().threads[agentId];
+    if (!thread || get().inflight[agentId]) return;
+    if (thread.current) {
+      await get().openSession(agentId, thread.current);
+    } else {
+      // No message yet: the thread starts with the next one.
+      retireGeneration(agentId);
+      set((st) => {
+        const streamIndexes = { ...st.streamIndexes };
+        delete streamIndexes[agentId];
+        const sessionChoice = { ...st.sessionChoice };
+        delete sessionChoice[agentId];
+        return {
+          sessions: { ...st.sessions, [agentId]: undefined },
+          conversations: { ...st.conversations, [agentId]: [] },
+          sessionChoice,
+          streamIndexes,
+          activity: { ...st.activity, [agentId]: null },
+        };
+      });
+      get().persist();
+    }
+    await get().loadThread(agentId);
   },
   startConversation: (agentId) => {
     // A turn is running in the current thread; let it finish (as openSession).
