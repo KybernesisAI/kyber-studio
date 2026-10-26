@@ -291,7 +291,11 @@ function ConversationsView(): ReactNode {
     setThreadFilter,
     archiveThread,
     unarchiveThread,
+    threads,
   } = useStore();
+  // The agent keeps one thread for this person: there is no new one to start,
+  // only a fresh start inside it.
+  const oneThread = Boolean(threads[activeAgentId]);
   const filter = threadFilterFor(prefs, activeAgentId);
   const list = asKnown(heldUnder(agentSessions[activeAgentId], filter), threadIndex[activeAgentId], filter);
   const current = sessions[activeAgentId];
@@ -338,8 +342,14 @@ function ConversationsView(): ReactNode {
       <div className="panel__body">
         <Row
           icon={<Icon name="plus" size={14} />}
-          title="New conversation"
-          detail={busy ? "Wait for the current turn to finish" : "Leaves this thread where it is; the next message starts a fresh one."}
+          title={oneThread ? "Start fresh" : "New conversation"}
+          detail={
+            busy
+              ? "Wait for the current turn to finish"
+              : oneThread
+                ? "The agent sets aside what it was holding in mind. Everything said stays in your thread."
+                : "Leaves this thread where it is; the next message starts a fresh one."
+          }
           onClick={
             busy
               ? undefined

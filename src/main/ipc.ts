@@ -379,6 +379,8 @@ export function registerIpc(): void {
         streamIndex?: number;
         inputResponses?: { requestId: string; optionId?: string; text?: string }[];
         clientContext?: Record<string, unknown>;
+        /** Send through the person's thread on the agent (manage 0.30+). */
+        thread?: boolean;
         streamId: string;
       },
     ) => {

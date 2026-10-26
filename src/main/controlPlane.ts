@@ -1,4 +1,4 @@
-import { Client, ClientError, type MessageResponse } from "eve/client";
+import { Client, ClientError } from "eve/client";
 import type { Attachment } from "../shared/ipc";
 import { buildMessage } from "../shared/message";
 import { readInputRequests, type QuestionRequest } from "../shared/asks";
@@ -983,6 +983,11 @@ export async function sendTurn(input: {
   /** Answers to questions the agent asked, resuming a parked turn. */
   inputResponses?: { requestId: string; optionId?: string; text?: string }[];
   clientContext?: Record<string, unknown>;
+  /**
+   * The agent keeps one thread per person (@kybernesis/manage 0.30+): the
+   * message goes to the person's thread address, and eve picks the session.
+   */
+  thread?: boolean;
   onDelta(text: string): void;
   /** Clear what has been streamed so far: the block just ended was narration. */
   onReset?(): void;
@@ -1142,7 +1147,49 @@ export async function sendTurn(input: {
   // covered by a test instead of by whoever reads this next.
   const message = buildMessage(input.text, input.attachments);
 
-  const dispatch = async (): Promise<MessageResponse> => {
+  /**
+   * Into the person's thread. The agent's thread route sends as the person to
+   * their own address, so the desktop and the phone land in the same session
+   * without either one choosing it. The stream is then read like any other.
+   * Null when the agent has no thread route (manage before 0.30).
+   */
+  const threadDispatch = async (): Promise<AsyncIterable<unknown> | null> => {
+    const post = async (): Promise<Response> => {
+      const live = await activeSession();
+      if (!live?.bundle) throw new Error("Not signed in.");
+      return fetch(`${base}/eve/v1/kyb/thread/messages`, {
+        method: "POST",
+        headers: authHeaders(live, { bundle: true, json: true }),
+        body: JSON.stringify({
+          message,
+          ...(input.clientContext ? { clientContext: JSON.stringify(input.clientContext) } : {}),
+        }),
+        signal: abandon.signal,
+      });
+    };
+    let res = await post();
+    // As below: a refused credential is renewed once, silently.
+    if ((res.status === 401 || res.status === 403) && (await forceRefresh())) res = await post();
+    if (res.status === 404) return null;
+    const data = (await res.json().catch(() => null)) as { sessionId?: unknown; error?: unknown } | null;
+    if (!res.ok || typeof data?.sessionId !== "string") {
+      throw new Error(
+        typeof data?.error === "string" ? data.error : `${base} did not take the message (${res.status}).`,
+      );
+    }
+    // The same session as last time resumes after its tail; a new one (the
+    // thread moved on, or this is the first message) is read from the start.
+    const start = data.sessionId === input.sessionId ? resumeAt : 0;
+    session = clientFor(base).sessions.attach(data.sessionId, { streamIndex: start });
+    return session.stream({ follow: true, startIndex: start, signal: abandon.signal });
+  };
+
+  const dispatch = async (): Promise<AsyncIterable<unknown>> => {
+    if (input.thread && !input.inputResponses?.length) {
+      const sent = await threadDispatch();
+      if (sent) return sent;
+      console.log("[send] the agent has no thread route; sending to the session directly");
+    }
     // A resumed turn may carry only answers, with no new message. That can only
     // happen on a session we are already attached to — there is nothing to
     // answer in a conversation that does not exist yet.

@@ -23,6 +23,7 @@ import { approvalCard, isKnownCard, parseCardPrompt } from "@kybernesis/cards";
 import { placeCards } from "../lib/placeCards";
 import { ArtifactFrame, CardStack, CardView, type CardContext } from "./Cards";
 import { WorkSteps } from "./Work";
+import { reportLabel } from "@shared/thread";
 
 /**
  * An artifact, over the conversation, opened from its card.
@@ -873,6 +874,24 @@ export function Conversation(): ReactNode {
               );
             }
             if (b.kind === "authorization") return <AuthorizationCard key={b.id} block={b} />;
+            // What a routine or heads-up produced. It ran in the background and
+            // nobody typed its instruction, so only its answer is here, labelled.
+            if (b.kind === "report")
+              return (
+                <div key={b.id} className="report">
+                  <div className="report__head">
+                    <span className="klabel">{reportLabel(b.routine)}</span>
+                  </div>
+                  {b.text ? <Markdown text={b.text} /> : null}
+                  {b.cards?.length ? <CardStack cards={b.cards} ctx={cardContext()} /> : null}
+                </div>
+              );
+            if (b.kind === "divider")
+              return (
+                <div key={b.id} className="thread-divider" role="separator">
+                  <span>{b.label}</span>
+                </div>
+              );
             if (b.kind === "question")
               return (
                 <QuestionCard
