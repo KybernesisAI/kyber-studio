@@ -1149,6 +1149,12 @@ interface State {
   /** Back to the person's one thread, from a past conversation opened to read. */
   openThread(agentId: string): Promise<void>;
   /**
+   * Run a routine now, in the background, as its schedule would. Its answer
+   * arrives in the thread as a report. An agent without the route gets `say`
+   * as a message instead, as before.
+   */
+  runRoutine(agentId: string, routine: string, say?: string): void;
+  /**
    * Leave the current thread and start fresh, with an empty transcript.
    *
    * Local only: the thread being left is NOT retired and stays in the drawer.
@@ -1837,6 +1843,43 @@ export const useStore = create<State>((set, get) => ({
       get().persist();
     }
     await get().loadThread(agentId);
+  },
+  runRoutine: (agentId, routine, say) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (!window.studio || !agent?.url) return;
+    const fallback = (): void => {
+      if (say) void get().send(agentId, say);
+    };
+    if (!get().threads[agentId]) return fallback();
+    const note = (label: string): void =>
+      set((st) => ({
+        conversations: {
+          ...st.conversations,
+          [agentId]: [...(st.conversations[agentId] ?? []), { kind: "divider", id: `run:${routine}:${Date.now()}`, at: Date.now(), label }],
+        },
+      }));
+    void window.studio
+      .manage({ url: agent.url, path: "/thread/run", body: { routine } })
+      .then((res) => {
+        if (res.status === 404 && !res.ok) {
+          // An agent that predates the route, or a routine it no longer has.
+          const missing = (res.data as { error?: unknown } | undefined)?.error === "No such routine.";
+          if (missing) note(`${routine} isn't a routine on this agent any more`);
+          else fallback();
+          return;
+        }
+        if (!res.ok) {
+          const error = (res.data as { error?: unknown } | undefined)?.error;
+          note(typeof error === "string" ? error : `${routine} could not start`);
+          return;
+        }
+        note(`Running ${routine} in the background. Its answer will appear here.`);
+        // Look for the report sooner than the usual beat, for a few minutes.
+        for (const after of [10_000, 20_000, 40_000, 60_000, 90_000, 120_000, 180_000]) {
+          setTimeout(() => void get().loadThread(agentId), after);
+        }
+      })
+      .catch(() => note(`${routine} could not start`));
   },
   startConversation: (agentId) => {
     // A turn is running in the current thread; let it finish (as openSession).

@@ -34,6 +34,8 @@ export interface CardContext {
   agentUrl?: string;
   /** A `say` action: sent as the person's next message, only when pressed. */
   onSay(text: string): void;
+  /** A `routine` action: run that routine now, in the background. `say` is the fallback for an agent that cannot. */
+  onRunRoutine?(routine: string, say?: string): void;
   onOpenArtifact(artifactId: string, title?: string, version?: number): void;
 }
 
@@ -44,6 +46,9 @@ function openUrl(url: string, ctx: CardContext): void {
   const target = isHttp(url) ? url : ctx.agentUrl ? new URL(url, ctx.agentUrl).toString() : null;
   if (target) void window.studio?.openExternal(target);
 }
+
+/** The routine an action runs (@kybernesis/cards 0.8+). */
+const routineOf = (a: CardAction): string | undefined => (a as CardAction & { routine?: string }).routine;
 
 function Actions({ actions, ctx }: { actions?: CardAction[]; ctx: CardContext }): ReactNode {
   if (!actions?.length) return null;
@@ -56,6 +61,7 @@ function Actions({ actions, ctx }: { actions?: CardAction[]; ctx: CardContext })
           onClick={() => {
             if (a.artifact) ctx.onOpenArtifact(a.artifact);
             else if (a.url) openUrl(a.url, ctx);
+            else if (routineOf(a) && ctx.onRunRoutine) ctx.onRunRoutine(routineOf(a)!, a.say);
             else if (a.say) ctx.onSay(a.say);
           }}
         >

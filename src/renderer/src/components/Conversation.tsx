@@ -409,12 +409,16 @@ export function Conversation(): ReactNode {
   const blocks = conversations[activeAgentId] ?? [];
   const placed = useMemo(() => placeCards(blocks), [blocks]);
   const openArtifact = useStore((s) => s.openArtifact);
+  const runRoutine = useStore((s) => s.runRoutine);
   /** Cards act for the agent that made them: in a room, the member who answered. */
   const cardContext = (speakerId?: string): CardContext => {
     const owner = agents.find((a) => a.id === (speakerId ?? activeAgentId)) ?? agent ?? roomMembers[0];
     return {
       agentUrl: owner?.url,
       onSay: (text) => (room ? sendToRoom(room.id, text) : send(activeAgentId, text)),
+      onRunRoutine: (routine, say) => {
+        if (owner) runRoutine(owner.id, routine, say);
+      },
       onOpenArtifact: (artifactId, title, version) => {
         if (owner) openArtifact(owner.id, artifactId, title, version);
       },
