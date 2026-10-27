@@ -182,7 +182,7 @@ export function registerIpc(): void {
   );
   ipcMain.handle(
     "studio:manage",
-    (_e, input: { url: string; path: string; body?: unknown }) => manageCall(input),
+    (_e, input: { url: string; path: string; body?: unknown; timeoutMs?: number }) => manageCall(input),
   );
   ipcMain.handle(
     "studio:setLocalPermission",

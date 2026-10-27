@@ -1673,6 +1673,23 @@ export function currentSession(): Session | null {
 }
 
 /**
+ * The bound on one management call. Installs run npm and a full rebuild, so
+ * the default stays long: a short one would report a failure for work that is
+ * actually still going. A read that a person is waiting on (the thread list)
+ * asks for less, so an agent that never answers is reported as unreachable
+ * instead of leaving "Loading…" up for seven minutes (KYB-647).
+ *
+ * A caller can only shorten the bound, never lengthen it, and anything that is
+ * not a positive finite number gets the default.
+ */
+export const MANAGE_TIMEOUT_MS = 420_000;
+export function manageTimeoutMs(requested: unknown): number {
+  return typeof requested === "number" && Number.isFinite(requested) && requested > 0
+    ? Math.min(requested, MANAGE_TIMEOUT_MS)
+    : MANAGE_TIMEOUT_MS;
+}
+
+/**
  * Management calls against an agent's own /eve/v1/kyb routes.
  *
  * These carry the SAME identity and policy bundle as every other call to the
@@ -1684,6 +1701,7 @@ export async function manageCall(input: {
   url: string;
   path: string;
   body?: unknown;
+  timeoutMs?: number;
 }): Promise<{ ok: boolean; status: number; data: unknown }> {
   const s = await activeSession();
   if (!s?.bundle) {
@@ -1697,9 +1715,7 @@ export async function manageCall(input: {
     method: input.body === undefined ? "GET" : "POST",
     headers: authHeaders(s, { bundle: true, json: input.body !== undefined }),
     body: input.body === undefined ? undefined : JSON.stringify(input.body),
-    // Installs run npm and a full rebuild; a short timeout here would report a
-    // failure for work that is actually still going.
-    signal: AbortSignal.timeout(420_000),
+    signal: AbortSignal.timeout(manageTimeoutMs(input.timeoutMs)),
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) {
