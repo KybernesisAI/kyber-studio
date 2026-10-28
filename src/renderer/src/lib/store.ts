@@ -944,10 +944,44 @@ function conversationGone(
  * saved before this was recorded counts as the thread: its conversation, if
  * gone, is let go of quietly, and the chat follows the thread from there.
  */
+export function isDrawerPick(
+  s: Pick<State, "sessionChoice" | "threads">,
+  agentId: string,
+  sessionId: string | undefined,
+): boolean {
+  const choice = s.sessionChoice[agentId];
+  return Boolean(sessionId) && choice?.sessionId === sessionId && choice?.fromDrawer === true && sessionId !== s.threads[agentId]?.current;
+}
+
 function readingFromDrawer(get: () => State, agentId: string, sessionId: string | undefined): boolean {
-  const choice = get().sessionChoice[agentId];
-  const thread = get().threads[agentId];
-  return Boolean(sessionId) && choice?.sessionId === sessionId && choice?.fromDrawer === true && sessionId !== thread?.current;
+  return isDrawerPick(get(), agentId, sessionId);
+}
+
+/**
+ * Why the conversation on screen can only be read, or null when it can be
+ * continued. One rule for the composer and for `send`, so they cannot drift.
+ *
+ * - "gone": the agent no longer has it (KYB-657). Only a drawer pick is held
+ *   once gone; anything else is let go of, or is mid-turn and left to the send.
+ * - "ended": the agent's list reports it ended or failed (KYB-649). On an agent
+ *   that keeps one thread this applies to drawer picks only: the thread's own
+ *   conversation ending does not end the thread, whose next message goes to
+ *   the thread's address and continues it.
+ *
+ * A drawer pick implies an agent that keeps one thread, even before the
+ * thread has been read this launch: only those agents record one.
+ */
+export function readOnlyReason(
+  s: Pick<State, "sessions" | "sessionChoice" | "threads" | "threadIndex" | "goneSessions">,
+  agentId: string,
+): "gone" | "ended" | null {
+  const held = s.sessions[agentId];
+  if (!held) return null;
+  const pick = isDrawerPick(s, agentId, held);
+  if (pick && (s.goneSessions[agentId] ?? []).includes(held)) return "gone";
+  const oneThread = Boolean(s.threads[agentId]) || pick;
+  if (isRetired(s.threadIndex[agentId]?.[held]) && (!oneThread || pick)) return "ended";
+  return null;
 }
 
 /** What each agent's thread last named, so the log says it once per change (KYB-657, AC6). */
@@ -2106,9 +2140,9 @@ export const useStore = create<State>((set, get) => ({
     if (view.current && held !== view.current && isGone(get, agentId, view.current)) {
       // The thread still names a conversation the agent no longer has.
       // Following it would only be refused again (KYB-657).
-      console.log(`[thread] ${agentId}: not following the thread to ${view.current.slice(0, 18)}, which has gone`);
+      console.log(`[thread] ${agentId}: not following the thread to ${view.current}, which has gone`);
     } else if (view.current && held !== view.current && !get().inflight[agentId] && !picked && !(isGone(get, agentId, held) && readingFromDrawer(get, agentId, held))) {
-      console.log(`[thread] ${agentId}: following the thread to ${view.current.slice(0, 18)}`);
+      console.log(`[thread] ${agentId}: following the thread to ${view.current}`);
       set((st) => {
         const streamIndexes = { ...st.streamIndexes };
         delete streamIndexes[agentId];
@@ -2145,6 +2179,12 @@ export const useStore = create<State>((set, get) => ({
     // A drawer pick on an agent that keeps one thread, other than the
     // conversation the thread names now (KYB-657).
     const thread = get().threads[agentId];
+    // The thread's own conversation, already gone: going to it is going to the
+    // thread, which keeps what is on screen rather than emptying it (KYB-657).
+    if (thread && sessionId === thread.current && isGone(get, agentId, sessionId)) {
+      if (!opts?.thread) await get().openThread(agentId);
+      return;
+    }
     const fromDrawer = !opts?.thread && Boolean(thread) && sessionId !== thread?.current;
     retireGeneration(agentId);
     set((st) => {
@@ -2174,8 +2214,11 @@ export const useStore = create<State>((set, get) => ({
       // emptied only when it shows another conversation: on the thread, what
       // is on screen is the thread's own copy, and may be the only one left
       // (KYB-657).
+      // Decided from the recorded choice, not the thread view, which after an
+      // upgrade can name nothing and so cannot tell the two apart. A choice
+      // saved before drawer picks were recorded keeps the screen: the safe side.
       const held = get().sessions[agentId];
-      const elsewhere = held !== thread.current && !thread.sessions.some((x) => x.id === held);
+      const elsewhere = readingFromDrawer(get, agentId, held);
       retireGeneration(agentId);
       set((st) => {
         const streamIndexes = { ...st.streamIndexes };
@@ -2361,9 +2404,9 @@ export const useStore = create<State>((set, get) => ({
     // A retired thread cannot be continued (KYB-649). The composer is already
     // closed on one; this is for every other way in — voice, a queued message.
     const held = get().sessions[agentId];
-    // Nor one the agent no longer has (KYB-657): it stays on screen only as a
-    // drawer pick on an agent that keeps a thread, to read.
-    if (held && (isRetired(get().threadIndex[agentId]?.[held]) || isGone(get, agentId, held))) {
+    // Nor a drawer pick the agent no longer has (KYB-657). One rule with the
+    // composer: `readOnlyReason`.
+    if (readOnlyReason(get(), agentId)) {
       console.log(`[send] refused: ${agentId}'s open thread has ended`);
       return;
     }
@@ -2500,6 +2543,10 @@ export const useStore = create<State>((set, get) => ({
     if (thread) {
       const held = get().sessions[agentId];
       if (thread.current && held && held !== thread.current && !thread.sessions.some((x) => x.id === held)) {
+        // Only a drawer pick's copy is left behind. The thread's own copy, held
+        // after the thread moved on (an upgrade, the phone), stays on screen:
+        // it may be the only one (KYB-657).
+        const keep = !readingFromDrawer(get, agentId, held);
         const bubble = (get().conversations[agentId] ?? []).filter((b) => b.kind === "text" && b.role === "user" && b.text === text).at(-1);
         retireGeneration(agentId);
         set((st) => {
@@ -2507,7 +2554,7 @@ export const useStore = create<State>((set, get) => ({
           delete streamIndexes[agentId];
           return {
             sessions: { ...st.sessions, [agentId]: thread.current ?? undefined },
-            conversations: { ...st.conversations, [agentId]: bubble ? [bubble] : [] },
+            conversations: keep ? st.conversations : { ...st.conversations, [agentId]: bubble ? [bubble] : [] },
             sessionChoice: { ...st.sessionChoice, [agentId]: { sessionId: thread.current, at: Date.now() } },
             streamIndexes,
           };

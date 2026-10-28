@@ -46,7 +46,7 @@ window.studio = new Proxy(bridge, {
     return target[key];
   },
 });
-const { useStore, rewatchDelay } = await import("@/lib/store");
+const { useStore, rewatchDelay, readOnlyReason } = await import("@/lib/store");
 
 after(() => window.close());
 
@@ -393,18 +393,101 @@ test("AC2/AC4, one thread: a gone drawer pick is read-only, so its copy is not t
   useStore.setState({ threads: {} });
 });
 
-test("AC2, one thread: leaving a gone drawer pick for a thread that names nothing leaves an empty chat", async () => {
-  // Opening the drawer pick already replaced what was on screen (KYB-657
-  // leaves that as it was); going back must not carry the notice along.
-  holding(undefined, { threads: { [ID]: EMPTY_THREAD } });
-  gone.set(DEAD, "expired");
-  await useStore.getState().openSession(ID, DEAD);
-  await sleep(50);
-  assert.equal(useStore.getState().sessions[ID], DEAD);
+test("AC2, one thread: leaving a gone drawer pick for a thread that names nothing carries nothing of it along", async () => {
+  holding(DEAD, { threads: { [ID]: EMPTY_THREAD }, sessionChoice: { [ID]: { sessionId: DEAD, at: 1, fromDrawer: true } } });
+  await refuseByWatch(DEAD);
+  assert.equal(lastBlock().kind, "gone");
   await useStore.getState().openThread(ID);
   const st = useStore.getState();
   assert.equal(st.sessions[ID], undefined, "on the thread");
-  assert.deepEqual(st.conversations[ID], [], "with nothing of the other conversation");
+  assert.ok(!st.conversations[ID].some((b) => b.kind === "gone" || b.text === "hello"), "nothing of the drawer pick");
+  useStore.setState({ threads: {} });
+});
+
+// ---- Round 2 review findings ------------------------------------------------
+
+test("R2-B1: the thread's own conversation listed as ended keeps the composer, sends to the thread, and keeps its copy", async () => {
+  // After an upgrade: the list reports the thread's conversation ended before
+  // any read was refused, and the thread names nothing.
+  const OWN = "wrun_OWN_ENDED";
+  holding(undefined, { threads: { [ID]: { ...EMPTY_THREAD, current: OWN } } });
+  thread = { ...EMPTY_THREAD, current: OWN };
+  await useStore.getState().openThread(ID);
+  thread = EMPTY_THREAD;
+  useStore.setState({ threads: { [ID]: EMPTY_THREAD }, threadIndex: { [ID]: { [OWN]: { id: OWN, status: "ended" } } } });
+  assert.equal(readOnlyReason(useStore.getState(), ID), null, "not read-only: the thread carries on");
+
+  await useStore.getState().openThread(ID);
+  assert.ok(merged(OWN), "Back to your thread keeps the thread's own copy");
+
+  useStore.setState({ sessions: { [ID]: OWN }, sessionChoice: { [ID]: { sessionId: OWN, at: 1 } } });
+  sends.length = 0;
+  useStore.getState().send(ID, "carry on");
+  await sleep(100);
+  assert.equal(sends.length, 1, "the message is sent");
+  assert.equal(sends[0].thread, true, "to the thread");
+  assert.ok(merged(OWN), "and what was on screen stays");
+  thread = null;
+  useStore.setState({ threads: {}, threadIndex: {} });
+});
+
+test("R2-B1: from a drawer pick the thread view lists, Back to your thread leaves it even when the thread names nothing", async () => {
+  // The drawer pick was read while live, so its copy ("hello") is on screen.
+  const listed = { ...EMPTY_THREAD, sessions: [{ id: DEAD, at: "2026-10-27T10:00:00.000Z" }] };
+  holding(DEAD, { threads: { [ID]: listed }, sessionChoice: { [ID]: { sessionId: DEAD, at: 1, fromDrawer: true } } });
+  await refuseByWatch(DEAD);
+  await useStore.getState().openThread(ID);
+  const st = useStore.getState();
+  assert.equal(st.sessions[ID], undefined);
+  assert.ok(!st.conversations[ID].some((b) => b.kind === "gone" || b.text === "hello"), "nothing of the drawer pick is left");
+  useStore.setState({ threads: {} });
+});
+
+test("R2-B1: sending from the thread's own copy after the thread moved on does not throw that copy away", async () => {
+  const OWN = "wrun_OWN_MOVED";
+  holding(undefined, { threads: { [ID]: { ...EMPTY_THREAD, current: OWN } } });
+  await useStore.getState().openThread(ID);
+  useStore.setState({ threads: { [ID]: LIVE_THREAD } });
+  sends.length = 0;
+  useStore.getState().send(ID, "and now?");
+  await sleep(100);
+  assert.equal(sends.length, 1);
+  assert.ok(merged(OWN), "the thread's earlier copy stays on screen");
+  useStore.setState({ threads: {} });
+});
+
+test("R2-B2: a conversation refused while a turn runs in it never makes the composer read-only, and the next send goes", async () => {
+  holding(DEAD, { threads: { [ID]: EMPTY_THREAD } });
+  gone.set(DEAD, "expired");
+  useStore.getState().stopWatching();
+  watches.length = 0;
+  useStore.getState().watchActive();
+  // A turn of ours starts in it, and then the watch is refused.
+  useStore.setState({ inflight: { [ID]: "turn" } });
+  emitLive({ streamId: watches[0].streamId, kind: "gone" });
+  await sleep(50);
+  assert.equal(useStore.getState().sessions[ID], DEAD, "left to the send while the turn runs");
+  assert.equal(readOnlyReason(useStore.getState(), ID), null, "but not read-only");
+  useStore.setState({ inflight: {} });
+  sends.length = 0;
+  useStore.getState().send(ID, "next");
+  await sleep(100);
+  assert.equal(sends.length, 1, "the next message is sent");
+  useStore.setState({ threads: {}, inflight: {} });
+});
+
+test("R2-B2: on an agent with many conversations, a gone id held mid-turn is not read-only either", async () => {
+  holding(DEAD, { threads: { [ID]: null }, goneSessions: { [ID]: [DEAD] } });
+  assert.equal(readOnlyReason(useStore.getState(), ID), null);
+  useStore.setState({ threads: {} });
+});
+
+test("S3: going to the thread's own conversation, already gone, from the drawer keeps what is on screen", async () => {
+  holding(undefined, { threads: { [ID]: { ...EMPTY_THREAD, current: DEAD } }, goneSessions: { [ID]: [DEAD] } });
+  await useStore.getState().openSession(ID, DEAD);
+  const st = useStore.getState();
+  assert.equal(st.conversations[ID][0]?.text, "hello", "not emptied");
+  assert.equal(st.sessions[ID], undefined, "and the dead id is not held");
   useStore.setState({ threads: {} });
 });
 

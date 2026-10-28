@@ -7,7 +7,7 @@ import {
 } from "../lib/attachments";
 import type { Block, PeerEvent } from "@shared/types";
 import { peerSummaryLabel, summarizePeerEvents } from "@shared/types";
-import { isRetired, useStore } from "@/lib/store";
+import { isDrawerPick, readOnlyReason, useStore } from "@/lib/store";
 import { GoneNotice } from "./GoneNotice";
 import * as composerDom from "@/lib/composerDom";
 import { Autocomplete, type Suggestion } from "./Autocomplete";
@@ -358,7 +358,6 @@ export function Conversation(): ReactNode {
   const agent = agents.find((a) => a.id === activeAgentId);
   const rooms = useStore((s) => s.rooms);
   const sessions = useStore((s) => s.sessions);
-  const threadIndex = useStore((s) => s.threadIndex);
   const startConversation = useStore((s) => s.startConversation);
   const openThread = useStore((s) => s.openThread);
   const threads = useStore((s) => s.threads);
@@ -392,13 +391,15 @@ export function Conversation(): ReactNode {
   const roomQueue = useStore((s) => s.roomQueue);
   const setRoomPolicy = useStore((s) => s.setRoomPolicy);
   const room = rooms.find((r) => r.id === activeAgentId);
-  // The open thread is one the agent reports ended or failed (KYB-649).
-  const held = agent ? sessions[agent.id] : undefined;
-  // Or one the agent no longer has (KYB-657), which stays on screen only as a
-  // drawer pick on an agent that keeps one thread: read-only too.
-  const goneHere = useStore((s) => (agent ? s.goneSessions[agent.id] : undefined));
-  const retired =
-    !room && Boolean(agent && held && (isRetired(threadIndex[agent.id]?.[held]) || goneHere?.includes(held)));
+  // The open thread is one the agent reports ended or failed (KYB-649), or a
+  // drawer pick the agent no longer has (KYB-657). The same rule `send`
+  // applies, so the composer and the send cannot disagree.
+  const readOnly = useStore((s) => (agent && !room ? readOnlyReason(s, agent.id) : null));
+  const retired = Boolean(readOnly);
+  // A drawer pick implies an agent that keeps one thread, before its thread
+  // has been read this launch (KYB-657).
+  const pickHere = useStore((s) => Boolean(agent && isDrawerPick(s, agent.id, s.sessions[agent.id])));
+  const oneThreadHere = Boolean(agent && threads[agent.id]) || pickHere;
   const roomMembers = (room?.memberIds ?? [])
     .map((id) => agents.find((a) => a.id === id))
     .filter((a): a is NonNullable<typeof a> => Boolean(a));
@@ -902,7 +903,7 @@ export function Conversation(): ReactNode {
                 <GoneNotice
                   key={b.id}
                   agentName={agent?.name ?? "the agent"}
-                  oneThread={Boolean(agent && threads[agent.id])}
+                  oneThread={oneThreadHere}
                   hasCopy={blocks.slice(0, i).some((x) => x.kind === "text")}
                   showAction={i === blocks.length - 1 && Boolean(agent) && !inflight[activeAgentId]}
                   onNewConversation={() => agent && startConversation(agent.id)}
@@ -1003,14 +1004,20 @@ export function Conversation(): ReactNode {
         {retired && agent ? (
           <div className="card stack-row" role="status">
             <span style={{ flex: 1 }} className="muted">
-              This conversation has ended. You can read it, but it cannot be continued.
+              {readOnly === "gone"
+                ? "It cannot be continued."
+                : "This conversation has ended. You can read it, but it cannot be continued."}
             </span>
             {/* On an agent that keeps one thread, the way on is that thread:
-                a new conversation there would be Start fresh (KYB-657). */}
-            {threads[agent.id] ? (
-              <button className="btn btn--primary" onClick={() => void openThread(agent.id)}>
-                Back to your thread
-              </button>
+                a new conversation there would be Start fresh (KYB-657). Until
+                the thread has been read this launch, there is nowhere to go
+                back to yet, so nothing is offered rather than the wrong thing. */}
+            {oneThreadHere ? (
+              threads[agent.id] ? (
+                <button className="btn btn--primary" onClick={() => void openThread(agent.id)}>
+                  Back to your thread
+                </button>
+              ) : null
             ) : (
               <button className="btn btn--primary" onClick={() => startConversation(agent.id)}>
                 New conversation

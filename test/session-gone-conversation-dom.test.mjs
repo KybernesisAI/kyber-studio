@@ -87,6 +87,8 @@ test("one thread: a gone drawer pick is read-only, says this device's copy is ab
   const view = await mount();
   assert.ok(!view.host.querySelector('[role="textbox"]'), "no composer on a conversation the agent no longer has");
   assert.match(view.text(), /What is above is this device's copy/);
+  assert.match(view.text(), /It cannot be continued\./);
+  assert.doesNotMatch(view.text(), /You can read it/, "not said under a notice that may say there is no copy");
   assert.doesNotMatch(view.text(), /Anything you send/);
   assert.equal(view.button("New conversation"), undefined, "no Start fresh in disguise");
   const back = view.button("Back to your thread");
@@ -111,4 +113,29 @@ test("many conversations: the notice keeps its New conversation, and the compose
   assert.ok(view.button("New conversation"));
   assert.match(view.text(), /starts a new conversation/);
   await view.unmount();
+});
+
+test("R2-B3: before the thread is read, a gone drawer pick reads as one thread and offers nothing wrong", async () => {
+  reset({ thread: undefined, conversation: [hello, notice] });
+  useStore.setState({ threads: {} });
+  const view = await mount();
+  try {
+    assert.ok(!view.host.querySelector('[role="textbox"]'), "still read-only");
+    assert.equal(view.button("New conversation"), undefined, "no Start fresh offered");
+    assert.doesNotMatch(view.text(), /starts a new conversation/);
+    assert.equal(view.button("Back to your thread"), undefined, "and no way back until the thread is known");
+    assert.match(view.text(), /What is above is this device's copy/);
+  } finally {
+    await view.unmount();
+  }
+});
+
+test("R2-B2: a gone conversation held mid-turn on the thread keeps the composer", async () => {
+  reset({ thread: { current: null, sessions: [], reports: [], fresh: [] }, conversation: [hello] });
+  useStore.setState({ sessionChoice: { [A.id]: { sessionId: DEAD, at: 1 } }, inflight: { [A.id]: "turn" } });
+  const view = await mount();
+  assert.ok(view.host.querySelector('[role="textbox"]'), view.text());
+  assert.doesNotMatch(view.text(), /cannot be continued/);
+  await view.unmount();
+  useStore.setState({ inflight: {} });
 });
