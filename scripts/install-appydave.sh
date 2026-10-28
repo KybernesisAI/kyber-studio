@@ -10,7 +10,10 @@
 #   nothing and never offers Ian's release over this build.
 # - Ad-hoc signed: macOS asks once per install for the login keychain password
 #   ("kyber-studio Safe Storage"). Click "Always Allow".
-# - The replaced app is moved to ~/dev/kybernesis/_backup/, never deleted.
+# - The replaced app is zipped into ~/dev/kybernesis/_backup/, never deleted.
+#   Zipped, and the dist/ build copy removed, so Alfred/Spotlight find ONE
+#   KYBER Studio: an .app left in _backup/ or dist/ shows up as a second and
+#   third "KYBER Studio" and opens an old version.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -40,5 +43,12 @@ if [ -d "/Applications/KYBER Studio.app" ]; then
   mv "/Applications/KYBER Studio.app" "$BACKUP/KYBER Studio ($(date +%Y%m%d-%H%M)).app"
 fi
 ditto "$APP" "/Applications/KYBER Studio.app"
+rm -rf "dist/appydave"
+
+# Zip every unzipped backup (this run's, and any left by older runs of this script).
+for old in "$BACKUP"/*.app; do
+  [ -d "$old" ] || continue
+  ditto -c -k --keepParent "$old" "$old.zip" && rm -rf "$old"
+done
 open "/Applications/KYBER Studio.app"
 echo "Installed appydave build $(git rev-parse --short HEAD) as /Applications/KYBER Studio.app"
