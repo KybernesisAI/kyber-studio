@@ -99,36 +99,46 @@ test("a watch refused with 410 ends with ConversationGoneError", async (t) => {
   );
 });
 
-test("a watch answered by a platform's 404 is not taken as a gone conversation: it is tried again", async (t) => {
-  t.mock.method(console, "log", () => {});
-  // Stopped at the second request: reaching it at all is the point. Left to
-  // run, the existing reconnect gives up after about 40 s with an ordinary error.
-  const controller = new AbortController();
-  let calls = 0;
+/**
+ * Run a watch to its end with every request answered by `status` and `body`.
+ *
+ * eve's own client retries a 404 or 409 on opening the stream, twelve times
+ * over about 38 s, before it throws; only then does Studio classify the
+ * answer. The waits are cut to nothing here so the classification is what is
+ * tested, not that retry.
+ */
+async function watchToEnd(status, body) {
   const realFetch = globalThis.fetch;
+  const realSetTimeout = globalThis.setTimeout;
+  let calls = 0;
   globalThis.fetch = async () => {
     calls += 1;
-    if (calls >= 2) controller.abort();
-    return new Response("Not Found", { status: 404, headers: { "content-type": "text/plain" } });
+    return new Response(body, { status, headers: { "content-type": "application/json" } });
   };
+  globalThis.setTimeout = (fn, _ms, ...args) => realSetTimeout(fn, 0, ...args);
   try {
-    await watchSession({
-      url: "https://a.example",
-      sessionId: "wrun_ALIVE",
-      startIndex: 107,
-      signal: controller.signal,
-      onDelta: () => {},
-      onReset: () => {},
-      onActivity: () => {},
-      onCursor: () => {},
-      onPeer: () => {},
-      onStep: () => {},
-      onLive: () => {},
-    });
+    await watch();
+    return { error: null, calls };
   } catch (error) {
-    assert.ok(!(error instanceof ConversationGoneError), "not gone");
+    return { error, calls };
   } finally {
     globalThis.fetch = realFetch;
+    globalThis.setTimeout = realSetTimeout;
   }
-  assert.ok(calls >= 2, `asked again (${calls} request(s))`);
+}
+
+test("a watch that ends on eve's own 404 ends with ConversationGoneError", async (t) => {
+  t.mock.method(console, "log", () => {});
+  const { error } = await watchToEnd(404, JSON.stringify({ error: "Session not found.", ok: false }));
+  assert.ok(error instanceof ConversationGoneError, `ended with ${error}`);
+  assert.equal(error.reason, "missing");
+});
+
+test("a watch that ends on a platform's 404 is an ordinary ending, not a gone conversation", async (t) => {
+  t.mock.method(console, "log", () => {});
+  for (const body of ["Not Found", "The deployment could not be found on Vercel.\n\nDEPLOYMENT_NOT_FOUND\n"]) {
+    const { error } = await watchToEnd(404, body);
+    assert.ok(error, "it ends");
+    assert.ok(!(error instanceof ConversationGoneError), `not gone for ${JSON.stringify(body)}`);
+  }
 });

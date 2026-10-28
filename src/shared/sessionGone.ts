@@ -13,8 +13,10 @@
  * already starts a fresh session for that.
  *
  * - 410 `session_expired`: the run ended and its history is past retention.
- * - 404: eve has no run for that id. Only eve's own answer counts, a JSON body
- *   whose `error` is a sentence (`{"error":"Session not found."}`). A hosting
+ * - 404: eve has no run for that id. Only an answer shaped like eve's counts:
+ *   a JSON body whose `error` is a string (`{"error":"Session not found."}`).
+ *   This checks the shape, not the words, so a server framework whose own 404
+ *   has a string `error` would also pass. A hosting
  *   platform in front of the agent also answers 404 when the deployment is not
  *   up or the URL is wrong (Vercel in plain text, or with an `error` object;
  *   Render in plain text; Railway with a `message`), and the conversation may
