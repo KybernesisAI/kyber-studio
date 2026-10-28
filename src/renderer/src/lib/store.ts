@@ -2067,7 +2067,9 @@ export const useStore = create<State>((set, get) => ({
   openThread: async (agentId) => {
     const thread = get().threads[agentId];
     if (!thread || get().inflight[agentId]) return;
-    if (thread.current) {
+    // A thread that still names a conversation the agent no longer has is
+    // gone back to as empty: the next message starts it again (KYB-657).
+    if (thread.current && !isGone(get, agentId, thread.current)) {
       await get().openSession(agentId, thread.current);
     } else {
       // No message yet: the thread starts with the next one.

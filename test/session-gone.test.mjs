@@ -16,6 +16,12 @@ test("404 is gone: eve has no run for that id", () => {
   assert.equal(sessionGoneReason(404, JSON.stringify({ error: "Session not found.", ok: false })), "missing");
 });
 
+test("a 404 web page is something in front of the agent, not the agent saying the conversation has gone", () => {
+  assert.equal(sessionGoneReason(404, "<!DOCTYPE html><html><body>The deployment could not be found</body></html>"), null);
+  assert.equal(sessionGoneReason(404, "  <html>Not Found</html>"), null);
+  assert.equal(sessionGoneReason(404, ""), "missing", "an empty body is still eve's answer");
+});
+
 test("409 is gone only when the session is stranded", () => {
   const stranded = JSON.stringify({ code: "session_stranded", error: "This session is no longer available.", ok: false });
   assert.equal(sessionGoneReason(409, stranded), "stranded");

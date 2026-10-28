@@ -170,6 +170,14 @@ test("AC2: a thread view still naming a gone conversation is not followed", asyn
   assert.ok(logs().some((l) => l.includes("not following the thread")));
 });
 
+test("AC2: going back to a thread that still names a gone conversation opens it empty, not on the dead id", async () => {
+  holding(undefined, { goneSessions: { [ID]: [DEAD] }, threads: { [ID]: { current: DEAD, sessions: [], reports: [], fresh: [] } } });
+  await useStore.getState().openThread(ID);
+  assert.equal(useStore.getState().sessions[ID], undefined);
+  assert.equal(replays.filter((id) => id === DEAD).length, 0, "and it is not read");
+  useStore.setState({ threads: {} });
+});
+
 test("AC2: the account's directory never adopts a gone conversation", async () => {
   holding(ALIVE, { goneSessions: { [ID]: [DEAD] } });
   // The person's own conversation is older than the directory's newest row.

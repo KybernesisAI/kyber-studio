@@ -29,7 +29,7 @@ export function GoneNotice({
   return (
     <div className="card stack-row" role="status" data-testid="gone-notice">
       <span style={{ flex: 1 }} className="muted">
-        {GONE_LINE} {agentName}. It ended there, and the agent deleted its history when it did. What is above is
+        {GONE_LINE} {agentName}. It has ended there, and the agent no longer keeps its history. What is above is
         this device's copy.{" "}
         {oneThread ? "Anything you send now goes to your thread." : "Anything you send now starts a new conversation."}
       </span>

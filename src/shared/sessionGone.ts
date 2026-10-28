@@ -13,7 +13,10 @@
  * already starts a fresh session for that.
  *
  * - 410 `session_expired`: the run ended and its history is past retention.
- * - 404: eve has no run for that id ("Session not found.").
+ * - 404: eve has no run for that id ("Session not found."). Not when the body
+ *   is a web page: that is something in front of the agent (a deployment that
+ *   is not up yet, a wrong URL) answering, not the agent saying it has no such
+ *   conversation, and clearing the conversation on its word would be wrong.
  * - 409 `session_stranded`: the session's durable owner is gone ("This session
  *   is no longer available."). Other 409s are not about the session being gone.
  */
@@ -21,9 +24,13 @@ export type GoneReason = "expired" | "missing" | "stranded";
 
 export function sessionGoneReason(status: number, body?: string, code?: string): GoneReason | null {
   if (status === 410) return "expired";
-  if (status === 404) return "missing";
+  if (status === 404) return isWebPage(body) ? null : "missing";
   if (status === 409) return (code ?? codeFrom(body)) === "session_stranded" ? "stranded" : null;
   return null;
+}
+
+function isWebPage(body: string | undefined): boolean {
+  return /^\s*<(!doctype|html)/i.test(body ?? "");
 }
 
 function codeFrom(body: string | undefined): string | undefined {
