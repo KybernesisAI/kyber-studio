@@ -13,10 +13,13 @@
  * already starts a fresh session for that.
  *
  * - 410 `session_expired`: the run ended and its history is past retention.
- * - 404: eve has no run for that id ("Session not found."). Not when the body
- *   is a web page: that is something in front of the agent (a deployment that
- *   is not up yet, a wrong URL) answering, not the agent saying it has no such
- *   conversation, and clearing the conversation on its word would be wrong.
+ * - 404: eve has no run for that id. Only eve's own answer counts, a JSON body
+ *   whose `error` is a sentence (`{"error":"Session not found."}`). A hosting
+ *   platform in front of the agent also answers 404 when the deployment is not
+ *   up or the URL is wrong (Vercel in plain text, or with an `error` object;
+ *   Render in plain text; Railway with a `message`), and the conversation may
+ *   be alive behind it. Being gone is saved and permanent, so anything that is
+ *   not plainly eve is left to the ordinary, backed-off retry.
  * - 409 `session_stranded`: the session's durable owner is gone ("This session
  *   is no longer available."). Other 409s are not about the session being gone.
  */
@@ -24,13 +27,19 @@ export type GoneReason = "expired" | "missing" | "stranded";
 
 export function sessionGoneReason(status: number, body?: string, code?: string): GoneReason | null {
   if (status === 410) return "expired";
-  if (status === 404) return isWebPage(body) ? null : "missing";
+  if (status === 404) return isEveNotFound(body) ? "missing" : null;
   if (status === 409) return (code ?? codeFrom(body)) === "session_stranded" ? "stranded" : null;
   return null;
 }
 
-function isWebPage(body: string | undefined): boolean {
-  return /^\s*<(!doctype|html)/i.test(body ?? "");
+function isEveNotFound(body: string | undefined): boolean {
+  if (!body) return false;
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    return typeof parsed?.error === "string";
+  } catch {
+    return false;
+  }
 }
 
 function codeFrom(body: string | undefined): string | undefined {

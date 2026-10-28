@@ -12,14 +12,23 @@ test("410 session_expired is gone: the run ended and its history was deleted", (
   assert.equal(sessionGoneReason(410, body), "expired");
 });
 
-test("404 is gone: eve has no run for that id", () => {
+test("eve's own 404 is gone: it has no run for that id", () => {
   assert.equal(sessionGoneReason(404, JSON.stringify({ error: "Session not found.", ok: false })), "missing");
 });
 
-test("a 404 web page is something in front of the agent, not the agent saying the conversation has gone", () => {
-  assert.equal(sessionGoneReason(404, "<!DOCTYPE html><html><body>The deployment could not be found</body></html>"), null);
-  assert.equal(sessionGoneReason(404, "  <html>Not Found</html>"), null);
-  assert.equal(sessionGoneReason(404, ""), "missing", "an empty body is still eve's answer");
+test("a 404 from a hosting platform in front of the agent is not the agent saying the conversation has gone", () => {
+  // The answers each platform gives for a deployment that is not there.
+  const platforms = {
+    "Vercel, plain text": "The deployment could not be found on Vercel.\n\nDEPLOYMENT_NOT_FOUND\n",
+    "Vercel, JSON": JSON.stringify({ error: { code: "404", message: "The deployment could not be found on Vercel." } }),
+    "Render": "Not Found",
+    "Railway": JSON.stringify({ status: "error", code: 404, message: "Application not found" }),
+    "a web page": "<!DOCTYPE html><html><body>Not Found</body></html>",
+    "no body": "",
+  };
+  for (const [who, body] of Object.entries(platforms)) {
+    assert.equal(sessionGoneReason(404, body), null, who);
+  }
 });
 
 test("409 is gone only when the session is stranded", () => {
