@@ -170,11 +170,30 @@ test("AC2: a thread view still naming a gone conversation is not followed", asyn
   assert.ok(logs().some((l) => l.includes("not following the thread")));
 });
 
-test("AC2: going back to a thread that still names a gone conversation opens it empty, not on the dead id", async () => {
+test("AC2: going back to a thread that still names a gone conversation does not open the dead id, and keeps the screen", async () => {
   holding(undefined, { goneSessions: { [ID]: [DEAD] }, threads: { [ID]: { current: DEAD, sessions: [], reports: [], fresh: [] } } });
   await useStore.getState().openThread(ID);
   assert.equal(useStore.getState().sessions[ID], undefined);
   assert.equal(replays.filter((id) => id === DEAD).length, 0, "and it is not read");
+  assert.equal(useStore.getState().conversations[ID][0]?.text, "hello", "what was on screen stays");
+  useStore.setState({ threads: {} });
+});
+
+test("AC2, one thread: Back to your thread after the thread's own conversation has gone keeps its only copy", async () => {
+  for (const current of [DEAD, null]) {
+    holding(DEAD, { threads: { [ID]: { current: DEAD, sessions: [], reports: [], fresh: [] } } });
+    gone.set(DEAD, "expired");
+    useStore.getState().watchActive();
+    emitLive({ streamId: watches[0].streamId, kind: "gone" });
+    await sleep(50);
+    assert.equal(lastBlock().kind, "gone", "the notice is shown");
+    useStore.setState({ threads: { [ID]: { current, sessions: [], reports: [], fresh: [] } } });
+    await useStore.getState().openThread(ID);
+    const conv = useStore.getState().conversations[ID];
+    assert.ok(conv.some((b) => b.text === "hello"), `the thread's copy stays (thread names ${current})`);
+    assert.deepEqual(saved().conversations[ID].filter((b) => b.text === "hello").length, 1, "and is what is saved");
+  }
+  gone.delete(DEAD);
   useStore.setState({ threads: {} });
 });
 

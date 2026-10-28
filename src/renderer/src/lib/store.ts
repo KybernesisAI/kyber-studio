@@ -2042,8 +2042,11 @@ export const useStore = create<State>((set, get) => ({
     // gone back to as empty: the next message starts it again (KYB-657).
     if (thread.current && !isGone(get, agentId, thread.current)) {
       await get().openSession(agentId, thread.current);
-    } else {
-      // No message yet: the thread starts with the next one.
+    } else if (get().sessions[agentId]) {
+      // No message yet: the thread starts with the next one. The screen is
+      // emptied only when it shows another conversation. With nothing held,
+      // what is on screen is the thread's own copy, which may be the only
+      // one left once its conversation has gone (KYB-657).
       retireGeneration(agentId);
       set((st) => {
         const streamIndexes = { ...st.streamIndexes };
