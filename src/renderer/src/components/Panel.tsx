@@ -149,9 +149,10 @@ function whenShort(iso: string): string {
  * its own drawer so the overview stays an overview.
  */
 function ConversationsEntry(): ReactNode {
-  const { activeAgentId, sessions, agentSessions, threadIndex, routinesSessions, openSession, loadSessions, setPanel, prefs, threads } = useStore();
+  const { activeAgentId, sessions, agentSessions, sessionsFailed, threadIndex, routinesSessions, openSession, loadSessions, setPanel, prefs, threads } = useStore();
   const filter = threadFilterFor(prefs, activeAgentId);
   const list = asKnown(heldUnder(agentSessions[activeAgentId], filter), threadIndex[activeAgentId], filter);
+  const failed = failedUnder(sessionsFailed[activeAgentId], filter);
   const current = sessions[activeAgentId];
   const routinesId = routinesSessions[activeAgentId];
   useEffect(() => {
@@ -161,7 +162,7 @@ function ConversationsEntry(): ReactNode {
   const archived = new Set(prefs[activeAgentId]?.archived ?? []);
   const others = (list ?? []).filter((s) => s.id !== routines?.id && !archived.has(s.id));
   const thread = threads[activeAgentId];
-  if (thread) return <ThreadEntry thread={thread} current={current} pastCount={list ? others.length : undefined} />;
+  if (thread) return <ThreadEntry thread={thread} current={current} pastCount={list ? others.length : undefined} failed={failed} />;
   return (
     <Section title="Conversations">
       {routines ? (
@@ -181,8 +182,10 @@ function ConversationsEntry(): ReactNode {
         title="Show conversations"
         detail={
           list
-            ? `${others.length} ${filter === "active" ? "active " : ""}thread${others.length === 1 ? "" : "s"} across this app, your phone and iMessage`
-            : "Loading…"
+            ? withStale(`${others.length} ${filter === "active" ? "active " : ""}thread${others.length === 1 ? "" : "s"} across this app, your phone and iMessage`, failed)
+            : failed
+              ? UNREACHABLE_ROW
+              : "Loading…"
         }
         onClick={() => setPanel("conversations")}
       />
@@ -282,7 +285,17 @@ function onThread(thread: ThreadView, current: string | undefined): boolean {
  * app and the phone, and routines report into it. Everything else (earlier
  * conversations, iMessage, Buzz) is there to read.
  */
-function ThreadEntry({ thread, current, pastCount }: { thread: ThreadView; current: string | undefined; pastCount: number | undefined }): ReactNode {
+function ThreadEntry({
+  thread,
+  current,
+  pastCount,
+  failed,
+}: {
+  thread: ThreadView;
+  current: string | undefined;
+  pastCount: number | undefined;
+  failed: boolean;
+}): ReactNode {
   const { activeAgentId, agents, openThread, startConversation, inflight, setPanel } = useStore();
   const name = agents.find((a) => a.id === activeAgentId)?.name ?? "this agent";
   const here = onThread(thread, current);
@@ -315,7 +328,13 @@ function ThreadEntry({ thread, current, pastCount }: { thread: ThreadView; curre
       <Row
         icon={<Icon name="chevronRight" size={14} />}
         title="Other conversations"
-        detail={pastCount === undefined ? "Loading…" : `${pastCount} from before the thread, plus iMessage and Buzz, to read`}
+        detail={
+          pastCount !== undefined
+            ? withStale(`${pastCount} from before the thread, plus iMessage and Buzz, to read`, failed)
+            : failed
+              ? UNREACHABLE_ROW
+              : "Loading…"
+        }
         onClick={() => setPanel("conversations")}
       />
     </Section>
@@ -333,6 +352,7 @@ function ConversationsView(): ReactNode {
     activeAgentId,
     sessions,
     agentSessions,
+    sessionsFailed,
     threadIndex,
     routinesSessions,
     openSession,
@@ -352,6 +372,7 @@ function ConversationsView(): ReactNode {
   const oneThread = Boolean(threads[activeAgentId]);
   const filter = threadFilterFor(prefs, activeAgentId);
   const list = asKnown(heldUnder(agentSessions[activeAgentId], filter), threadIndex[activeAgentId], filter);
+  const failed = failedUnder(sessionsFailed[activeAgentId], filter);
   const current = sessions[activeAgentId];
   const routinesId = routinesSessions[activeAgentId];
   const [showArchived, setShowArchived] = useState(false);
@@ -437,7 +458,8 @@ function ConversationsView(): ReactNode {
             ))}
           </div>
         </div>
-        {list === undefined ? <Empty loaded={false} none="" /> : null}
+        {failed ? <LoadFailed key={activeAgentId} agentId={activeAgentId} stale={list !== undefined} /> : null}
+        {list === undefined && !failed ? <Empty loaded={false} none="" /> : null}
         {list && others.length === 0 && filter === "all" ? <Empty loaded none="No conversations yet." /> : null}
         {list && others.length === 0 && filter === "active" ? (
           <>
@@ -544,6 +566,55 @@ function asKnown(
     return isRetired(k) && !isRetired(s) ? { ...s, status: k!.status } : s;
   });
   return filter === "active" ? out.filter((s) => !isRetired(s)) : out;
+}
+
+/** What a row that summarises the thread list says when no list is held and the last request failed (KYB-647). */
+const UNREACHABLE_ROW = "Couldn't reach this agent. Open to try again.";
+
+/**
+ * A row's count, with word that it may be out of date when the last request
+ * under this filter failed (KYB-647). The count is from the held list, which
+ * stays on screen; without this the row read as current while the drawer said
+ * it might not be.
+ */
+function withStale(count: string, failed: boolean): string {
+  return failed ? `${count}. Couldn't reach this agent just now, so this may be out of date.` : count;
+}
+
+/** Whether the last `/sessions` request under this filter failed (KYB-647). */
+function failedUnder(failed: { filter: ThreadFilter } | undefined, filter: ThreadFilter): boolean {
+  return failed?.filter === filter;
+}
+
+/**
+ * The thread list could not be fetched (KYB-647). Said in so many words, with
+ * a way to ask again: before this, a failure and a request still in flight
+ * both read "Loading…", and nothing on screen could retry. `stale` when an
+ * older list is still shown under it.
+ */
+function LoadFailed({ agentId, stale }: { agentId: string; stale: boolean }): ReactNode {
+  const loadSessions = useStore((s) => s.loadSessions);
+  const [trying, setTrying] = useState(false);
+  const retry = async (): Promise<void> => {
+    setTrying(true);
+    try {
+      await loadSessions(agentId);
+    } finally {
+      setTrying(false);
+    }
+  };
+  return (
+    <div className="muted" role="status" style={{ padding: "2px 8px 6px" }}>
+      <div>
+        {stale
+          ? "Couldn't reach this agent just now, so this list may be out of date."
+          : "Couldn't reach this agent to list its conversations."}
+      </div>
+      <button className="btn btn--small" style={{ marginTop: 6 }} disabled={trying} onClick={() => void retry()}>
+        {trying ? "Trying…" : "Try again"}
+      </button>
+    </div>
+  );
 }
 
 /** Distinguishes "not asked yet" from "the agent has none". */

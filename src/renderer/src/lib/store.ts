@@ -912,6 +912,48 @@ export function sessionsPath(filter: ThreadFilter): string {
   return filter === "active" ? "/sessions?limit=60&alive=1" : "/sessions?limit=60";
 }
 
+/**
+ * How long a `/sessions` read may take before it counts as failed (KYB-647).
+ * Every management call otherwise inherits the 420 s bound sized for installs,
+ * which left the drawer on "Loading…" for seven minutes against an agent that
+ * accepted the connection and never answered.
+ */
+export const SESSIONS_READ_TIMEOUT_MS = 15_000;
+
+/**
+ * Answers to `/sessions` are applied in the order their requests were SENT,
+ * not the order they arrive (KYB-647). The list is asked for from the drawer's
+ * mount, the Active / All switch, `loadAgentInfo`, and every refresh trigger,
+ * and nothing orders the answers; without this an old answer that arrives last
+ * replaces a newer list, and a slow old failure replaces a good list with
+ * "couldn't be reached".
+ *
+ * One counter per agent numbers every request. Two watermarks record the
+ * newest request whose answer has been applied:
+ *
+ * - per agent and FILTER, for the held list and the failed state, which are
+ *   both tagged with a filter.
+ * - per agent, for `threadIndex` and `routinesSessions`, which describe the
+ *   agent whatever the filter.
+ *
+ * An answer only claims the list watermark while its filter is the drawer's
+ * current one, so an answer under another filter (`loadAgentInfo`'s All under
+ * an Active drawer) never claims it at all. That check, not the per-filter
+ * key, is what keeps such an answer from making a pending Active answer stale.
+ * The per-filter key matters in one sequence: an Active request in flight,
+ * a switch to All whose answer lands, and a switch back to Active before the
+ * first Active answer lands. Keyed per filter, that answer is stored (a newer
+ * Active answer can still replace it); keyed per agent, the All answer's
+ * claim would drop it and the drawer would wait on the next request.
+ *
+ * The counter never resets, so a watermark left from an earlier request can
+ * only ever be lower than a later request's number.
+ */
+const sessionsSent = new Map<string, number>();
+const sessionsListApplied = new Map<string, number>();
+const sessionsIndexApplied = new Map<string, number>();
+const listKey = (agentId: string, filter: ThreadFilter): string => `${agentId}\u0000${filter}`;
+
 /** One conversation as the agent's management routes describe it (see @kybernesis/manage's /sessions). */
 export interface AgentSession {
   id: string;
@@ -1051,6 +1093,13 @@ interface State {
    */
   agentSessions: Record<string, { filter: ThreadFilter; sessions: AgentSession[] } | undefined>;
   /**
+   * The last `/sessions` request for this agent failed, under this filter
+   * (KYB-647). Absent once a request under the held filter succeeds. Without
+   * it a failure left nothing behind, and "no list held" read as "Loading…"
+   * for as long as the agent stayed unreachable.
+   */
+  sessionsFailed: Record<string, { filter: ThreadFilter; at: number } | undefined>;
+  /**
    * Every thread the agent has described in ANY answer, whatever the filter,
    * by id (KYB-649). What the chat knows about the thread it shows (is it
    * still alive?) and what the archived list names, neither of which may
@@ -1139,7 +1188,9 @@ interface State {
   /**
    * Ask the agent for its conversations, under the drawer's current filter
    * unless `filter` names one. A list fetched under any other filter than the
-   * drawer's is returned but not stored.
+   * drawer's is returned but not stored, and so is an answer that arrives
+   * after a newer request's. A failure is recorded in `sessionsFailed` and
+   * returns the held list only if it was fetched under the same filter.
    */
   loadSessions(agentId: string, filter?: ThreadFilter): Promise<AgentSession[]>;
   /** Choose active or all conversations for one agent, remember it here, and ask again. */
@@ -1286,6 +1337,7 @@ export const useStore = create<State>((set, get) => ({
   account: null,
   sessions: {},
   agentSessions: {},
+  sessionsFailed: {},
   threadIndex: {},
   routinesSessions: {},
   threads: {},
@@ -1720,25 +1772,68 @@ export const useStore = create<State>((set, get) => ({
     const agent = get().agents.find((a) => a.id === agentId);
     if (!window.studio || !agent?.url) return [];
     const filter = requested ?? threadFilterFor(get().prefs, agentId);
+    const seq = (sessionsSent.get(agentId) ?? 0) + 1;
+    sessionsSent.set(agentId, seq);
+    const key = listKey(agentId, filter);
+    // Whether this answer is still the newest word on the list for its
+    // filter, and on the agent as a whole. Asked when the answer lands, and
+    // claimed in the same breath, so a later request's answer always wins.
+    const claimList = (): boolean => {
+      if (seq <= (sessionsListApplied.get(key) ?? 0)) return false;
+      sessionsListApplied.set(key, seq);
+      return true;
+    };
+    const claimIndex = (): boolean => {
+      if (seq <= (sessionsIndexApplied.get(agentId) ?? 0)) return false;
+      sessionsIndexApplied.set(agentId, seq);
+      return true;
+    };
+    // Stored only under the drawer's filter as it is NOW. The switch may have
+    // moved while this was in flight, and a late "active" answer would
+    // otherwise land on top of "all" and look like the toggle had done
+    // nothing; a caller that named its own filter is not the drawer's.
+    const isCurrent = (): boolean => threadFilterFor(get().prefs, agentId) === filter;
+    const failed = (): AgentSession[] => {
+      if (isCurrent() && claimList()) {
+        set((st) => ({ sessionsFailed: { ...st.sessionsFailed, [agentId]: { filter, at: Date.now() } } }));
+      }
+      // Only a list fetched under the filter that was asked for. Whatever else
+      // is held may be the drawer's Active list, and `loadAgentInfo` adopts a
+      // thread from what this returns: an Active list there could offer a
+      // thread All never would.
+      const held = get().agentSessions[agentId];
+      return held?.filter === filter ? held.sessions : [];
+    };
+    let res: { ok: boolean; status: number; data: unknown };
     try {
-      const res = await window.studio.manage({ url: agent.url, path: sessionsPath(filter) });
-      if (!res.ok) return get().agentSessions[agentId]?.sessions ?? [];
-      const data = res.data as { sessions?: AgentSession[]; routines?: string | null };
-      const sessions = data.sessions ?? [];
-      // Stored only under the drawer's filter as it is NOW. The switch may
-      // have moved while this was in flight, and a late "active" answer would
-      // otherwise land on top of "all" and look like the toggle had done
-      // nothing; a caller that named its own filter is not the drawer's.
-      const current = threadFilterFor(get().prefs, agentId) === filter;
-      set((st) => ({
-        ...(current ? { agentSessions: { ...st.agentSessions, [agentId]: { filter, sessions } } } : {}),
-        threadIndex: { ...st.threadIndex, [agentId]: mergeThreadIndex(st.threadIndex[agentId], sessions) },
-        routinesSessions: { ...st.routinesSessions, [agentId]: data.routines ?? null },
-      }));
-      return sessions;
+      res = await window.studio.manage({ url: agent.url, path: sessionsPath(filter), timeoutMs: SESSIONS_READ_TIMEOUT_MS });
     } catch {
-      return get().agentSessions[agentId]?.sessions ?? [];
+      return failed();
     }
+    // An answer with no readable body is as good as none: storing it would
+    // show "No conversations" for an agent that has them.
+    if (!res.ok || !res.data || typeof res.data !== "object") return failed();
+    const data = res.data as { sessions?: AgentSession[]; routines?: string | null };
+    const sessions = data.sessions ?? [];
+    const list = isCurrent() && claimList();
+    const index = claimIndex();
+    if (list || index) {
+      set((st) => {
+        const next: Partial<State> = {};
+        if (list) {
+          next.agentSessions = { ...st.agentSessions, [agentId]: { filter, sessions } };
+          next.sessionsFailed = { ...st.sessionsFailed, [agentId]: undefined };
+        }
+        if (index) {
+          next.threadIndex = { ...st.threadIndex, [agentId]: mergeThreadIndex(st.threadIndex[agentId], sessions) };
+          next.routinesSessions = { ...st.routinesSessions, [agentId]: data.routines ?? null };
+        }
+        return next;
+      });
+    }
+    // Returned to its own caller even when it arrived too late to be stored:
+    // `loadAgentInfo` asked for All and gets All.
+    return sessions;
   },
   loadThread: async (agentId) => {
     const agent = get().agents.find((a) => a.id === agentId);

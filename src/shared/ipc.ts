@@ -429,7 +429,12 @@ export interface StudioApi {
   saveState(input: { name: string; value: unknown }): Promise<void>;
   /** Native folder picker; null when cancelled. */
   pickFolder(): Promise<string | null>;
-  manage(input: { url: string; path: string; body?: unknown }): Promise<{ ok: boolean; status: number; data: unknown }>;
+  /**
+   * One call to the agent's management routes. `timeoutMs` can only shorten
+   * the default bound (420 s, sized for installs); reads a person waits on
+   * pass less.
+   */
+  manage(input: { url: string; path: string; body?: unknown; timeoutMs?: number }): Promise<{ ok: boolean; status: number; data: unknown }>;
 
   /** One agent's vault for this person on the control plane: what it has, never the secrets. */
   vaultList(agent: string): Promise<VaultItem[]>;
