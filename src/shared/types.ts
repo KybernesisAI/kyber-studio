@@ -179,6 +179,18 @@ export type Block =
       id: string;
       at: number;
       label: string;
+    }
+  | {
+      /**
+       * The conversation above ended on the agent and no longer exists there
+       * (KYB-657). Since eve 0.80 its history is deleted when its run ends, so
+       * it can be neither read again nor continued. What is on screen is this
+       * device's own copy.
+       */
+      kind: "gone";
+      id: string;
+      at: number;
+      sessionId: string;
     };
 
 /** One agent-to-agent hop, as reported by the dispatch layer. */

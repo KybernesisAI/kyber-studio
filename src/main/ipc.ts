@@ -52,6 +52,7 @@ import {
   saveRoom,
   claimDriver,
   watchSession,
+  ConversationGoneError,
   pollDeviceAuth,
   resetSession,
   sendTurn,
@@ -323,6 +324,11 @@ export function registerIpc(): void {
         onLive: (kind) => send("studio:live", { streamId: input.streamId, kind }),
       })
         .catch((error: unknown) => {
+          if (error instanceof ConversationGoneError) {
+            console.log(`[watch] ${input.streamId} gone: ${error.message}`);
+            send("studio:live", { streamId: input.streamId, kind: "gone" });
+            return;
+          }
           console.log(`[watch] ${input.streamId} ended: ${(error as Error).message}`);
           send("studio:live", { streamId: input.streamId, kind: "ended" });
         })
