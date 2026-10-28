@@ -1,6 +1,7 @@
-import { Client, ClientError, type MessageResponse } from "eve/client";
+import { Client, ClientError } from "eve/client";
 import type { Attachment } from "../shared/ipc";
 import { buildMessage } from "../shared/message";
+import { readInputRequests, type QuestionRequest } from "../shared/asks";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -8,7 +9,9 @@ import { app, safeStorage, shell } from "electron";
 import type { RemoteAgent,
   RemoteRoom, Session } from "@shared/ipc";
 import { isCredentialStoreAvailable } from "./credentialStorage";
+import { newStepState, readStep, type Step } from "@kybernesis/cards";
 import { readPeerEvents, type PeerState } from "./peerEvents";
+import { isHeldForInput } from "./turnBoundary";
 
 /**
  * Control-plane identity for KYBER Studio.
@@ -726,6 +729,20 @@ function activityLabel(
         : { label: "Delegating", specific: true };
     case "subagent.completed":
       return { label: "Subagent finished", specific: true };
+    // eve ≥0.69: delegations and long tools run as tasks; subagent.* is gone.
+    case "task.started":
+      if (data.kind !== "agent") return null;
+      return typeof data.name === "string"
+        ? { label: `Delegating to ${data.name}`, specific: true }
+        : { label: "Delegating", specific: true };
+    case "task.settled":
+      return data.kind === "agent" && typeof data.name === "string"
+        ? { label: `${data.name} finished`, specific: true }
+        : null;
+    case "turn.waiting":
+      return data.on === "input"
+        ? { label: "Waiting for your input", specific: true }
+        : { label: "Waiting for delegated work to finish", specific: true };
     case "compaction.requested":
       return { label: "Compacting context", specific: true };
     case "authorization.required":
@@ -966,6 +983,11 @@ export async function sendTurn(input: {
   /** Answers to questions the agent asked, resuming a parked turn. */
   inputResponses?: { requestId: string; optionId?: string; text?: string }[];
   clientContext?: Record<string, unknown>;
+  /**
+   * The agent keeps one thread per person (@kybernesis/manage 0.30+): the
+   * message goes to the person's thread address, and eve picks the session.
+   */
+  thread?: boolean;
   onDelta(text: string): void;
   /** Clear what has been streamed so far: the block just ended was narration. */
   onReset?(): void;
@@ -1000,6 +1022,11 @@ export async function sendTurn(input: {
    * slow peer is visible while it is still thinking.
    */
   onPeer?(event: { direction: "inbound" | "outbound"; peer: string; text: string }): void;
+  /**
+   * A tool call started, moved or finished, with any cards it handed back.
+   * Every report is the whole step, so the latest one simply replaces the last.
+   */
+  onStep?(step: Step): void;
   onAuthorization(event: {
     name: string;
     description?: string;
@@ -1010,12 +1037,7 @@ export async function sendTurn(input: {
     /** Present on the completed event: authorized | declined | failed | timed-out. */
     outcome?: string;
   }): void;
-  onQuestion(request: {
-    requestId: string;
-    prompt: string;
-    options?: { id: string; label: string; description?: string; style?: string }[];
-    allowFreeform?: boolean;
-  }): void;
+  onQuestion(request: QuestionRequest): void;
 }): Promise<{
   reply: string;
   sessionId?: string;
@@ -1125,12 +1147,58 @@ export async function sendTurn(input: {
   // covered by a test instead of by whoever reads this next.
   const message = buildMessage(input.text, input.attachments);
 
-  const dispatch = async (): Promise<MessageResponse> => {
+  /**
+   * Into the person's thread. The agent's thread route sends as the person to
+   * their own address, so the desktop and the phone land in the same session
+   * without either one choosing it. The stream is then read like any other.
+   * Null when the agent has no thread route (manage before 0.30).
+   */
+  const threadDispatch = async (): Promise<AsyncIterable<unknown> | null> => {
+    const post = async (): Promise<Response> => {
+      const live = await activeSession();
+      if (!live?.bundle) throw new Error("Not signed in.");
+      return fetch(`${base}/eve/v1/kyb/thread/messages`, {
+        method: "POST",
+        headers: authHeaders(live, { bundle: true, json: true }),
+        body: JSON.stringify({
+          message,
+          ...(input.clientContext ? { clientContext: JSON.stringify(input.clientContext) } : {}),
+        }),
+        signal: abandon.signal,
+      });
+    };
+    let res = await post();
+    // As below: a refused credential is renewed once, silently.
+    if ((res.status === 401 || res.status === 403) && (await forceRefresh())) res = await post();
+    if (res.status === 404) return null;
+    const data = (await res.json().catch(() => null)) as { sessionId?: unknown; error?: unknown } | null;
+    if (!res.ok || typeof data?.sessionId !== "string") {
+      throw new Error(
+        typeof data?.error === "string" ? data.error : `${base} did not take the message (${res.status}).`,
+      );
+    }
+    // The same session as last time resumes after its tail; a new one (the
+    // thread moved on, or this is the first message) is read from the start.
+    const start = data.sessionId === input.sessionId ? resumeAt : 0;
+    session = clientFor(base).sessions.attach(data.sessionId, { streamIndex: start });
+    return session.stream({ follow: true, startIndex: start, signal: abandon.signal });
+  };
+
+  const dispatch = async (): Promise<AsyncIterable<unknown>> => {
+    if (input.thread && !input.inputResponses?.length) {
+      const sent = await threadDispatch();
+      if (sent) return sent;
+      console.log("[send] the agent has no thread route; sending to the session directly");
+    }
     // A resumed turn may carry only answers, with no new message. That can only
     // happen on a session we are already attached to — there is nothing to
     // answer in a conversation that does not exist yet.
     if (input.inputResponses?.length && session) {
-      return await session.respond(input.inputResponses, options);
+      // Answers go without clientContext. eve adds it as one more message after
+      // the parked turn, so the model is asked to continue from its own last
+      // reply, which current models refuse as prefill and the conversation
+      // ends. The context already went with the message that asked.
+      return await session.respond(input.inputResponses, { signal: abandon.signal });
     }
     if (session) return await session.send(message, options);
     const created = await clientFor(base).sessions.create({ message, ...options });
@@ -1262,6 +1330,7 @@ export async function sendTurn(input: {
    */
   let seen = 0;
   let sawTurnStart = false;
+  const steps = newStepState();
   let staleBoundaryFirst = false;
   let endedAtOwnBoundary = false;
 
@@ -1311,6 +1380,10 @@ export async function sendTurn(input: {
         input.onPeer?.(peerEvent);
       }
 
+      for (const step of readStep(steps, type, data, (event as { meta?: { at?: unknown } }).meta)) {
+        input.onStep?.(step);
+      }
+
       if (type === "authorization.required" || type === "authorization.completed") {
         const challenge = (data.authorization ?? {}) as Record<string, unknown>;
         const name =
@@ -1333,38 +1406,9 @@ export async function sendTurn(input: {
         if (process.env.KYBER_STUDIO_DEBUG_STREAM) {
           console.log(`[question] ${JSON.stringify(data)}`);
         }
-        for (const raw of Array.isArray(data.requests) ? data.requests : []) {
-          const r = raw as Record<string, unknown>;
-          // The request carries its fields at the top level, and the tool call
-          // that produced it carries the same shape under action.input. Read
-          // both: a question the user never sees because one field sat a level
-          // deeper is indistinguishable from a broken agent.
-          const action = (r.action ?? {}) as Record<string, unknown>;
-          const inner = (action.input ?? {}) as Record<string, unknown>;
-          const requestId =
-            (typeof r.requestId === "string" && r.requestId) ||
-            (typeof action.callId === "string" && action.callId) ||
-            "";
-          const prompt =
-            (typeof r.prompt === "string" && r.prompt) ||
-            (typeof inner.prompt === "string" && inner.prompt) ||
-            (typeof inner.question === "string" && inner.question) ||
-            "";
-          if (!requestId || !prompt) continue;
-          const options = Array.isArray(r.options)
-            ? r.options
-            : Array.isArray(inner.options)
-              ? inner.options
-              : undefined;
+        for (const request of readInputRequests(data)) {
           askedQuestion = true;
-          input.onQuestion({
-            requestId,
-            prompt,
-            options: options as
-              | { id: string; label: string; description?: string; style?: string }[]
-              | undefined,
-            allowFreeform: r.allowFreeform === true || inner.allowFreeform === true,
-          });
+          input.onQuestion(request);
         }
       } else if (type === "message.appended" && typeof data.messageDelta === "string") {
         sawSpecific = false;
@@ -1401,7 +1445,7 @@ export async function sendTurn(input: {
         const message = typeof data.message === "string" ? data.message : "the turn failed";
         throw new Error(`Agent error: ${message}`);
       }
-      if (isTurnBoundary(type) && (!staleBoundaryFirst || sawTurnStart)) {
+      if ((isTurnBoundary(type) || isHeldForInput(type, data)) && (!staleBoundaryFirst || sawTurnStart)) {
         endedAtOwnBoundary = true;
         return true;
       }
@@ -1490,8 +1534,9 @@ export async function watchSession(input: {
   onActivity: (label: string | null) => void;
   onCursor: (index: number) => void;
   onPeer: (event: { direction: "inbound" | "outbound"; peer: string; text: string }) => void;
+  onStep: (step: Step) => void;
   onAuthorization: (event: { name: string; description?: string; url?: string; userCode?: string; instructions?: string; expiresAt?: string; outcome?: string }) => void;
-  onQuestion: (request: { requestId: string; prompt: string; options?: { id: string; label: string; description?: string; style?: string }[]; allowFreeform?: boolean }) => void;
+  onQuestion: (request: QuestionRequest) => void;
   /** The other device's message landed, or its turn ended: time to re-read the thread. */
   onLive: (kind: "received" | "boundary") => void;
 }): Promise<void> {
@@ -1500,6 +1545,7 @@ export async function watchSession(input: {
   let index = input.startIndex;
   const memo = { lastTool: null as string | null };
   const peerState: PeerState = { pending: new Map(), last: null };
+  const steps = newStepState();
   let sawSpecific = false;
   let seen = 0;
   console.log(`[watch] start ${input.sessionId.slice(0, 18)} at ${input.startIndex}`);
@@ -1521,6 +1567,7 @@ export async function watchSession(input: {
         }
       }
       for (const peerEvent of readPeerEvents(type, data, peerState)) input.onPeer(peerEvent);
+      for (const step of readStep(steps, type, data, (raw as { meta?: { at?: unknown } }).meta)) input.onStep(step);
 
       if (type === "message.received") {
         input.onLive("received");
@@ -1550,18 +1597,8 @@ export async function watchSession(input: {
           outcome: typeof data.outcome === "string" ? data.outcome : undefined,
         });
       } else if (type === "input.requested") {
-        for (const r0 of Array.isArray(data.requests) ? data.requests : []) {
-          // Both shapes, as the turn reader reads them.
-          const r = r0 as Record<string, unknown>;
-          const action = (r.action ?? {}) as Record<string, unknown>;
-          const inner = (action.input ?? {}) as Record<string, unknown>;
-          const requestId = (typeof r.requestId === "string" && r.requestId) || (typeof action.callId === "string" && action.callId) || "";
-          const prompt = (typeof r.prompt === "string" && r.prompt) || (typeof inner.prompt === "string" && inner.prompt) || (typeof inner.question === "string" && inner.question) || "";
-          if (!requestId || !prompt) continue;
-          const options = Array.isArray(r.options) ? r.options : Array.isArray(inner.options) ? inner.options : undefined;
-          input.onQuestion({ requestId, prompt, options: options as never, allowFreeform: r.allowFreeform === true || inner.allowFreeform === true });
-        }
-      } else if (type === "session.waiting" || type === "session.completed" || type === "session.failed" || type === "turn.failed") {
+        for (const request of readInputRequests(data)) input.onQuestion(request);
+      } else if (type === "session.waiting" || type === "session.completed" || type === "session.failed" || type === "turn.failed" || isHeldForInput(type, data)) {
         input.onActivity(null);
         input.onLive("boundary");
       }
@@ -1636,6 +1673,23 @@ export function currentSession(): Session | null {
 }
 
 /**
+ * The bound on one management call. Installs run npm and a full rebuild, so
+ * the default stays long: a short one would report a failure for work that is
+ * actually still going. A read that a person is waiting on (the thread list)
+ * asks for less, so an agent that never answers is reported as unreachable
+ * instead of leaving "Loading…" up for seven minutes (KYB-647).
+ *
+ * A caller can only shorten the bound, never lengthen it, and anything that is
+ * not a positive finite number gets the default.
+ */
+export const MANAGE_TIMEOUT_MS = 420_000;
+export function manageTimeoutMs(requested: unknown): number {
+  return typeof requested === "number" && Number.isFinite(requested) && requested > 0
+    ? Math.min(requested, MANAGE_TIMEOUT_MS)
+    : MANAGE_TIMEOUT_MS;
+}
+
+/**
  * Management calls against an agent's own /eve/v1/kyb routes.
  *
  * These carry the SAME identity and policy bundle as every other call to the
@@ -1647,6 +1701,7 @@ export async function manageCall(input: {
   url: string;
   path: string;
   body?: unknown;
+  timeoutMs?: number;
 }): Promise<{ ok: boolean; status: number; data: unknown }> {
   const s = await activeSession();
   if (!s?.bundle) {
@@ -1660,9 +1715,7 @@ export async function manageCall(input: {
     method: input.body === undefined ? "GET" : "POST",
     headers: authHeaders(s, { bundle: true, json: input.body !== undefined }),
     body: input.body === undefined ? undefined : JSON.stringify(input.body),
-    // Installs run npm and a full rebuild; a short timeout here would report a
-    // failure for work that is actually still going.
-    signal: AbortSignal.timeout(420_000),
+    signal: AbortSignal.timeout(manageTimeoutMs(input.timeoutMs)),
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) {

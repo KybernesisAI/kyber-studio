@@ -14,6 +14,8 @@ import {
   saveRemoteFile,
 } from "./deliveredFile";
 import { listSessions, recordSession, replaySession } from "./sessionIndex";
+import { agentArtifact, agentImage } from "./agentContent";
+import { agentArtifacts } from "./agentArtifacts";
 import {
   ConfigUnreadableError,
   type LocalMcpServer,
@@ -203,7 +205,7 @@ export function registerIpc(): void {
   );
   ipcMain.handle(
     "studio:manage",
-    (_e, input: { url: string; path: string; body?: unknown }) => manageCall(input),
+    (_e, input: { url: string; path: string; body?: unknown; timeoutMs?: number }) => manageCall(input),
   );
   ipcMain.handle(
     "studio:setLocalPermission",
@@ -258,6 +260,15 @@ export function registerIpc(): void {
   );
 
   ipcMain.handle("studio:openExternal", (_e, url: string) => shell.openExternal(url));
+
+  // What a card points at, from the agent's own origin only (see agentContent.ts).
+  ipcMain.handle("studio:agentImage", (_e, input: { url: string; src: string }) => agentImage(input));
+  ipcMain.handle(
+    "studio:agentArtifact",
+    (_e, input: { url: string; artifactId: string; version?: number }) => agentArtifact(input),
+  );
+  // The person's own artifacts on an agent, for the Artifacts drawer.
+  ipcMain.handle("studio:agentArtifacts", (_e, input: { url: string }) => agentArtifacts(input));
 
   // Files the agent handed back. The renderer passes a location the USER
   // clicked; none of these take an instruction from the model.
@@ -329,6 +340,7 @@ export function registerIpc(): void {
         onActivity: (label) => send("studio:activity", { streamId: input.streamId, label }),
         onCursor: (index) => send("studio:cursor", { streamId: input.streamId, index }),
         onPeer: (event) => send("studio:peer", { streamId: input.streamId, event }),
+        onStep: (step) => send("studio:step", { streamId: input.streamId, step }),
         onAuthorization: (event) => send("studio:authorization", { streamId: input.streamId, event }),
         onQuestion: (request) => send("studio:question", { streamId: input.streamId, request }),
         onLive: (kind) => send("studio:live", { streamId: input.streamId, kind }),
@@ -390,6 +402,8 @@ export function registerIpc(): void {
         streamIndex?: number;
         inputResponses?: { requestId: string; optionId?: string; text?: string }[];
         clientContext?: Record<string, unknown>;
+        /** Send through the person's thread on the agent (manage 0.30+). */
+        thread?: boolean;
         streamId: string;
       },
     ) => {
@@ -422,6 +436,9 @@ export function registerIpc(): void {
           if (!sender.isDestroyed()) {
             sender.send('studio:peer', { streamId: input.streamId, event });
           }
+        },
+        onStep: (step) => {
+          if (!sender.isDestroyed()) sender.send("studio:step", { streamId: input.streamId, step });
         },
         onAuthorization: (event) => {
           if (!sender.isDestroyed()) {

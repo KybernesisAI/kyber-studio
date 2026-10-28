@@ -137,6 +137,7 @@ export function Palette(): ReactNode {
     // Channels are a section of Overview; "channels" opened Settings, which has none.
     out.push(action("Channels", "Current agent", () => setPanel("overview")));
     out.push(action("Plugins", "Marketplace", () => setPluginsOpen(true), "plug"));
+    out.push(action("Artifacts", "Current agent", () => setPanel("artifacts"), "page"));
     out.push(action("Agent panel", "Show or hide", () => setPanel("overview"), "monitor"));
 
     return out;

@@ -12,6 +12,8 @@
  * deploy a new agent from nothing — that stays with `kyb init` and the FDE.
  */
 
+import type { Card, Step } from "@kybernesis/cards";
+
 /** A remote agent the user has a control-plane grant for. */
 export interface Agent {
   /** Agents this one may call, as granted in the control plane. */
@@ -112,12 +114,23 @@ export type Block =
       scheduled?: string;
     }
   | { kind: "peer-activity"; id: string; at: number; events: PeerEvent[] }
-  /**
-   * Where a new conversation began. Everything before it is the previous
-   * conversation — kept in storage, not deleted, and not shown in the chat.
-   * `retiredSessionId` names the session that was retired at this point.
-   */
-  | { kind: "divider"; id: string; at: number; retiredSessionId?: string }
+  | {
+      /**
+       * What the agent did in one turn: each tool call as a step, with the
+       * cards those tools handed back.
+       *
+       * Steps are shown while the turn runs and fold to one line when it ends;
+       * the cards are drawn under the reply they belong to. Both are read off
+       * the agent's own stream, so a reload or a second device rebuilds them.
+       */
+      kind: "work";
+      id: string;
+      at: number;
+      turnId?: string;
+      /** In a room, which member did the work, so its cards go under that member's reply. */
+      speakerId?: string;
+      steps: Step[];
+    }
   | {
       kind: "authorization";
       id: string;
@@ -142,8 +155,39 @@ export type Block =
       prompt: string;
       options?: { id: string; label: string; description?: string; style?: string }[];
       allowFreeform?: boolean;
+      /** For a tool approval: the call it holds, so the card can show the email or event itself. */
+      approval?: { tool: string; input: Record<string, unknown> };
       /** Set once answered, so the transcript keeps what was chosen. */
       answered?: string;
+      /** The option chosen, so an answered card can show its outcome (Approved, Cancelled). */
+      answeredOption?: string;
+      /**
+       * A routine's question, asked from its own background run rather than
+       * this conversation. The answer goes to that run, not to the thread.
+       */
+      runSessionId?: string;
+    }
+  | {
+      /**
+       * What a routine or heads-up produced, added to the person's thread by
+       * the agent. The routine ran in the background; nobody typed its
+       * instruction, so only its answer is shown, labelled as a report.
+       */
+      kind: "report";
+      id: string;
+      at: number;
+      /** The routine's name; "magic" for a heads-up. */
+      routine: string;
+      text: string;
+      cards?: Card[];
+      runSessionId: string;
+    }
+  | {
+      /** A line across the thread: the person started fresh here. */
+      kind: "divider";
+      id: string;
+      at: number;
+      label: string;
     };
 
 /** One agent-to-agent hop, as reported by the dispatch layer. */

@@ -35,6 +35,7 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }): Reac
     more: <><circle cx="3.5" cy="8" r="1.3" fill="currentColor" stroke="none" /><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none" /><circle cx="12.5" cy="8" r="1.3" fill="currentColor" stroke="none" /></>,
     stop: <rect x="5" y="5" width="6" height="6" rx="1.2" fill="currentColor" stroke="none" />,
     folder: <><path d="M2 4.5h4l1.2 1.5H14v6.5H2z" /></>,
+    page: <><path d="M4 1.8h5.2L12.5 5v9.2H4z" /><path d="M9 1.8V5h3.5M6 8.5h4.5M6 11h4.5" /></>,
     alert: <><path d="M8 2.6l6 10.8H2z" /><path d="M8 6.6v3.2M8 11.6v.01" /></>,
     package: <><path d="M8 1.8l5.5 3v6.4L8 14.2 2.5 11.2V4.8z" /><path d="M2.5 4.8L8 7.9l5.5-3.1M8 7.9v6.3" /></>,
   };

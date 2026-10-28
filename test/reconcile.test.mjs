@@ -86,18 +86,22 @@ test("order follows time, not source", () => {
   assert.deepEqual(out.map((b) => b.text), ["first", "second", "later local"]);
 });
 
-test("a New-conversation divider survives the new session's replay, and the old conversation stays above it", () => {
-  // The archive promise: pressing "New conversation" appends a divider and
-  // keeps every earlier block. When the NEW session is replayed and merged, the
-  // replay knows nothing of the old session — so if reconcile dropped local
-  // blocks it could not match, the archive would vanish on the first refresh.
-  const archived = [local("u1", "user", "old question", 100), local("a1", "agent", "old answer", 101)];
-  const divider = { kind: "divider", id: "new-200", at: 200, retiredSessionId: "sess_old" };
-  const fresh = [local("u2", "user", "hello again", 300)];
-  const out = reconcile([...archived, divider, ...fresh], [fromAgent("evt_9", "user", "hello again", 300)]);
-  assert.deepEqual(
-    out.map((b) => b.id),
-    ["u1", "a1", "new-200", "evt_9"],
-    "old blocks kept, divider in place, the new session's message after it",
+test("a turn's steps take the agent's newer reading, but keep steps the replay window cut off", () => {
+  const step = (callId, chip) => ({ callId, tool: "t", chip, label: callId, status: "done", cards: [] });
+  const stored = { kind: "work", id: "work-s-turn_1", at: 100, steps: [step("c1", "Workspace"), step("c2", "Googlecalendar"), step("c3", "Googlecalendar")] };
+  // The replay starts mid-turn: c1 fell before its window, and c4 is new.
+  const replay = { kind: "work", id: "work-s-turn_1", at: 100, steps: [step("c2", "Google Calendar"), step("c3", "Google Calendar"), step("c4", "Gmail")] };
+  const out = reconcile([stored], [replay]);
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].steps.map((s) => `${s.callId}:${s.chip}`), ["c1:Workspace", "c2:Google Calendar", "c3:Google Calendar", "c4:Gmail"]);
+});
+
+test("a full replay of a turn replaces its steps outright", () => {
+  const step = (callId, chip) => ({ callId, chip });
+  const out = reconcile(
+    [{ kind: "work", id: "live-1", at: 100, steps: [step("c1", "Old")] }],
+    [{ kind: "work", id: "work-s-turn_1", at: 100, steps: [step("c1", "New"), step("c2", "New")] }],
   );
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].steps.map((s) => s.chip), ["New", "New"]);
 });

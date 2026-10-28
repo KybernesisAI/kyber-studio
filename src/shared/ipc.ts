@@ -1,5 +1,8 @@
 import type { LocalAgentConfig } from "./claudeStream";
+import type { Step } from "@kybernesis/cards";
+import type { ArtifactSummary } from "./artifacts";
 import type { Replayed } from "./sessionReplay";
+import type { QuestionRequest } from "./asks";
 
 /**
  * One of this person's threads, as the control-plane directory knows it.
@@ -249,6 +252,8 @@ export interface StudioApi {
     streamIndex?: number;
     inputResponses?: { requestId: string; optionId?: string; text?: string }[];
     clientContext?: Record<string, unknown>;
+    /** Send through the person's thread on the agent (manage 0.30+). */
+    thread?: boolean;
     streamId: string;
   }): Promise<{
     reply: string;
@@ -341,6 +346,19 @@ export interface StudioApi {
   updaterInstall(): Promise<void>;
   onUpdater(handler: (state: UpdateState) => void): () => void;
   openExternal(url: string): Promise<void>;
+  /** A picture a card shows, fetched from the agent's own origin with the person's token. */
+  agentImage(input: { url: string; src: string }): Promise<{ ok: boolean; dataUrl?: string; error?: string }>;
+  /** An artifact's content, for the viewer. */
+  agentArtifact(input: { url: string; artifactId: string; version?: number }): Promise<{
+    ok: boolean;
+    content?: string;
+    format?: "html" | "markdown";
+    version?: number;
+    latest?: number;
+    error?: string;
+  }>;
+  /** The artifacts this agent made for the signed-in person, newest first. */
+  agentArtifacts(input: { url: string }): Promise<{ ok: boolean; artifacts?: ArtifactSummary[]; error?: string }>;
   cancelTurn(input: { url: string; sessionId: string; turnId?: string }): Promise<string>;
   resetSession(input: {
     url: string;
@@ -375,15 +393,12 @@ export interface StudioApi {
       event: { direction: 'inbound' | 'outbound'; peer: string; text: string };
     }) => void,
   ): () => void;
+  /** A tool call in the running turn, with any cards it returned. The whole step each time. */
+  onStep(handler: (payload: { streamId: string; step: Step }) => void): () => void;
   onQuestion(
     handler: (payload: {
       streamId: string;
-      request: {
-        requestId: string;
-        prompt: string;
-        options?: { id: string; label: string; description?: string; style?: string }[];
-        allowFreeform?: boolean;
-      };
+      request: QuestionRequest;
     }) => void,
   ): () => void;
   /**
@@ -428,7 +443,12 @@ export interface StudioApi {
   saveState(input: { name: string; value: unknown }): Promise<void>;
   /** Native folder picker; null when cancelled. */
   pickFolder(): Promise<string | null>;
-  manage(input: { url: string; path: string; body?: unknown }): Promise<{ ok: boolean; status: number; data: unknown }>;
+  /**
+   * One call to the agent's management routes. `timeoutMs` can only shorten
+   * the default bound (420 s, sized for installs); reads a person waits on
+   * pass less.
+   */
+  manage(input: { url: string; path: string; body?: unknown; timeoutMs?: number }): Promise<{ ok: boolean; status: number; data: unknown }>;
 
   /** One agent's vault for this person on the control plane: what it has, never the secrets. */
   vaultList(agent: string): Promise<VaultItem[]>;

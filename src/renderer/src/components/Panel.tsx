@@ -12,7 +12,9 @@ import {
   timeOptions,
   toCron,
 } from "@/lib/schedule";
-import { useStore, type PanelView } from "@/lib/store";
+import { isRetired, threadFilterFor, useStore, type AgentSession, type PanelView, type ThreadFilter } from "@/lib/store";
+import type { ArtifactSummary } from "@shared/artifacts";
+import type { ThreadView } from "@shared/thread";
 import type { LocalAction, LocalPermission } from "@shared/ipc";
 import { Avatar, Icon, Toggle } from "./primitives";
 
@@ -147,15 +149,20 @@ function whenShort(iso: string): string {
  * its own drawer so the overview stays an overview.
  */
 function ConversationsEntry(): ReactNode {
-  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, loadSessions, setPanel } = useStore();
-  const list = agentSessions[activeAgentId];
+  const { activeAgentId, sessions, agentSessions, sessionsFailed, threadIndex, routinesSessions, openSession, loadSessions, setPanel, prefs, threads } = useStore();
+  const filter = threadFilterFor(prefs, activeAgentId);
+  const list = asKnown(heldUnder(agentSessions[activeAgentId], filter), threadIndex[activeAgentId], filter);
+  const failed = failedUnder(sessionsFailed[activeAgentId], filter);
   const current = sessions[activeAgentId];
   const routinesId = routinesSessions[activeAgentId];
   useEffect(() => {
     void loadSessions(activeAgentId);
   }, [activeAgentId, loadSessions]);
   const routines = list?.find((s) => s.id === routinesId || s.surface === "routines");
-  const others = (list ?? []).filter((s) => s.id !== routines?.id);
+  const archived = new Set(prefs[activeAgentId]?.archived ?? []);
+  const others = (list ?? []).filter((s) => s.id !== routines?.id && !archived.has(s.id));
+  const thread = threads[activeAgentId];
+  if (thread) return <ThreadEntry thread={thread} current={current} pastCount={list ? others.length : undefined} failed={failed} />;
   return (
     <Section title="Conversations">
       {routines ? (
@@ -164,13 +171,170 @@ function ConversationsEntry(): ReactNode {
           title="Routines feed"
           detail={`${routines.routine ? `Last: ${routines.routine} · ` : ""}${whenShort(routines.updatedAt)}`}
           active={current === routines.id}
-          onClick={() => void openSession(activeAgentId, routines.id)}
+          onClick={() => {
+            void openSession(activeAgentId, routines.id);
+            setPanel("none");
+          }}
         />
       ) : null}
       <Row
         icon={<Icon name="chevronRight" size={14} />}
         title="Show conversations"
-        detail={list ? `${others.length} thread${others.length === 1 ? "" : "s"} across this app, your phone and iMessage` : "Loading…"}
+        detail={
+          list
+            ? withStale(`${others.length} ${filter === "active" ? "active " : ""}thread${others.length === 1 ? "" : "s"} across this app, your phone and iMessage`, failed)
+            : failed
+              ? UNREACHABLE_ROW
+              : "Loading…"
+        }
+        onClick={() => setPanel("conversations")}
+      />
+    </Section>
+  );
+}
+
+/**
+ * The door to the Artifacts drawer, under Conversations. It asks the agent
+ * nothing until opened: the list is per person and fetched fresh there.
+ */
+function ArtifactsEntry(): ReactNode {
+  const setPanel = useStore((s) => s.setPanel);
+  return (
+    <Section title="Artifacts">
+      <Row
+        icon={<Icon name="page" size={14} />}
+        title="Show artifacts"
+        detail="Pages and documents this agent made for you"
+        onClick={() => setPanel("artifacts")}
+      />
+    </Section>
+  );
+}
+
+/**
+ * Every artifact this agent made for the signed-in person, newest first.
+ *
+ * The agent answers only with that person's own (and, for someone who manages
+ * it, what its routines made), so this drawer shows exactly what its routes
+ * return. Opening one uses the same viewer as a card in the conversation, at
+ * its latest version.
+ */
+function ArtifactsView(): ReactNode {
+  const { activeAgentId, agents, setPanel, openArtifact } = useStore();
+  const agent = agents.find((a) => a.id === activeAgentId);
+  const [state, setState] = useState<{ list?: ArtifactSummary[]; error?: string } | null>(null);
+  const [round, setRound] = useState(0);
+  useEffect(() => {
+    let live = true;
+    setState(null);
+    if (!agent?.url) {
+      setState({ error: "This agent has no address yet." });
+      return;
+    }
+    void window.studio?.agentArtifacts({ url: agent.url }).then((r) => {
+      if (live) setState(r.ok ? { list: r.artifacts ?? [] } : { error: r.error });
+    });
+    return () => {
+      live = false;
+    };
+  }, [agent?.url, round]);
+
+  return (
+    <>
+      <Head title="Artifacts" onBack={() => setPanel("overview")} onClose={() => setPanel("none")} />
+      <div className="panel__body">
+        <div className="panel__section-head">
+          <span className="panel__section-title">Made for you</span>
+          {state?.list ? <span className="muted" style={{ marginRight: 8 }}>{state.list.length}</span> : null}
+          <button className="btn btn--small" disabled={!state} onClick={() => setRound((n) => n + 1)}>
+            Refresh
+          </button>
+        </div>
+        {!state ? <Empty loaded={false} none="" /> : null}
+        {state?.error ? <div className="muted" style={{ padding: "2px 8px 6px" }}>{state.error}</div> : null}
+        {state?.list && state.list.length === 0 ? (
+          <Empty loaded none="Nothing yet. Ask for a report, a dashboard or a plan, and it lands here." />
+        ) : null}
+        {state?.list?.map((a) => (
+          <Row
+            key={a.id}
+            icon={<Icon name="page" size={14} />}
+            title={a.title}
+            detail={[a.format === "markdown" ? "Document" : "Page", a.version > 1 ? `v${a.version}` : null, whenShort(a.updatedAt)]
+              .filter(Boolean)
+              .join(" · ")}
+            onClick={() => {
+              // The page opens over the conversation, which is under the drawer.
+              openArtifact(activeAgentId, a.id, a.title);
+              setPanel("none");
+            }}
+          />
+        ))}
+      </div>
+    </>
+  );
+}
+
+/** Whether the conversation on screen is the person's thread, not a past one opened to read. */
+function onThread(thread: ThreadView, current: string | undefined): boolean {
+  return !current || current === thread.current || thread.sessions.some((x) => x.id === current);
+}
+
+/**
+ * The agent keeps one thread for this person: it is the conversation, on this
+ * app and the phone, and routines report into it. Everything else (earlier
+ * conversations, iMessage, Buzz) is there to read.
+ */
+function ThreadEntry({
+  thread,
+  current,
+  pastCount,
+  failed,
+}: {
+  thread: ThreadView;
+  current: string | undefined;
+  pastCount: number | undefined;
+  failed: boolean;
+}): ReactNode {
+  const { activeAgentId, agents, openThread, startConversation, inflight, setPanel } = useStore();
+  const name = agents.find((a) => a.id === activeAgentId)?.name ?? "this agent";
+  const here = onThread(thread, current);
+  const busy = Boolean(inflight[activeAgentId]);
+  return (
+    <Section title="Conversation">
+      <Row
+        icon={<Icon name="pin" size={14} />}
+        title={`Your thread with ${name}`}
+        detail={here ? "Open now. The same conversation on your phone; routines report here." : "Go back to it. Your next message goes there anyway."}
+        active={here}
+        onClick={() => {
+          if (!here) void openThread(activeAgentId);
+          setPanel("none");
+        }}
+      />
+      <Row
+        icon={<Icon name="plus" size={14} />}
+        title="Start fresh"
+        detail={busy ? "Wait for the current turn to finish" : "The agent sets aside what it was holding in mind. Everything said stays in your thread."}
+        onClick={
+          busy
+            ? undefined
+            : () => {
+                startConversation(activeAgentId);
+                setPanel("none");
+              }
+        }
+      />
+      <Row
+        icon={<Icon name="chevronRight" size={14} />}
+        title="Other conversations"
+        detail={
+          pastCount !== undefined
+            ? withStale(`${pastCount} from before the thread, plus iMessage and Buzz, to read`, failed)
+            : failed
+              ? UNREACHABLE_ROW
+              : "Loading…"
+        }
         onClick={() => setPanel("conversations")}
       />
     </Section>
@@ -183,60 +347,392 @@ function ConversationsEntry(): ReactNode {
  * to the others, which until now sat on the agent's disk with no door.
  */
 function ConversationsView(): ReactNode {
-  const { activeAgentId, sessions, agentSessions, routinesSessions, openSession, startConversation, loadSessions, inflight, setPanel } = useStore();
-  const list = agentSessions[activeAgentId];
+  const {
+    agents,
+    activeAgentId,
+    sessions,
+    agentSessions,
+    sessionsFailed,
+    threadIndex,
+    routinesSessions,
+    openSession,
+    startConversation,
+    loadSessions,
+    inflight,
+    setPanel,
+    prefs,
+    setThreadFilter,
+    archiveThread,
+    unarchiveThread,
+    threads,
+    openThread,
+  } = useStore();
+  // The agent keeps one thread for this person: there is no new one to start,
+  // only a fresh start inside it.
+  const oneThread = Boolean(threads[activeAgentId]);
+  const filter = threadFilterFor(prefs, activeAgentId);
+  const list = asKnown(heldUnder(agentSessions[activeAgentId], filter), threadIndex[activeAgentId], filter);
+  const failed = failedUnder(sessionsFailed[activeAgentId], filter);
   const current = sessions[activeAgentId];
   const routinesId = routinesSessions[activeAgentId];
+  const [showArchived, setShowArchived] = useState(false);
+  // The thread an End confirmation was opened for, described as it was then.
+  const [ending, setEnding] = useState<EndTarget | null>(null);
   useEffect(() => {
     void loadSessions(activeAgentId);
+    setShowArchived(false);
+    setEnding(null);
   }, [activeAgentId, loadSessions]);
-  const others = (list ?? []).filter((s) => s.id !== routinesId && s.surface !== "routines");
+  const archivedIds = prefs[activeAgentId]?.archived ?? [];
+  const archived = new Set(archivedIds);
+  // Archived is the person's choice, held here; ended is the agent's report.
+  // Archiving hides a thread whatever its status, and ending never archives.
+  const threadIds = new Set(threads[activeAgentId]?.sessions.map((x) => x.id) ?? []);
+  const others = (list ?? []).filter((s) => s.id !== routinesId && s.surface !== "routines" && !archived.has(s.id) && !threadIds.has(s.id));
+  const known = threadIndex[activeAgentId] ?? {};
+  const toggleArchived = (): void => {
+    // The archived list must name threads the current filter does not fetch —
+    // an ended thread under Active — so it asks for all of them once.
+    if (!showArchived) void loadSessions(activeAgentId, "all");
+    setShowArchived(!showArchived);
+  };
+  const askEnd = (s: AgentSession): void => {
+    const agentName = agents.find((a) => a.id === activeAgentId)?.name ?? "this agent";
+    setEnding({
+      agentId: activeAgentId,
+      sessionId: s.id,
+      agentName,
+      thread: describeThread(useStore.getState(), activeAgentId, s.id),
+    });
+  };
   const busy = Boolean(inflight[activeAgentId]);
+  // The drawer lies over the conversation, so it gets out of the way of the
+  // thread just picked rather than stepping back to the overview on top of it.
   const pick = (id: string) => {
     void openSession(activeAgentId, id);
-    setPanel("overview");
+    setPanel("none");
   };
   return (
     <>
-      <Head title="Conversations" onBack={() => setPanel("overview")} onClose={() => setPanel("none")} />
+      <Head title={oneThread ? "Other conversations" : "Conversations"} onBack={() => setPanel("overview")} onClose={() => setPanel("none")} />
       <div className="panel__body">
-        <Row
-          icon={<Icon name="plus" size={14} />}
-          title="New conversation"
-          detail={busy ? "Wait for the current turn to finish" : "Leaves this thread where it is; the next message starts a fresh one."}
-          onClick={
-            busy
-              ? undefined
-              : () => {
-                  startConversation(activeAgentId);
-                  setPanel("none");
-                }
-          }
-        />
-        <div className="panel__section-head" style={{ marginTop: 16 }}>
-          <span className="panel__section-title">All threads</span>
-          {list ? <span className="muted">{others.length}</span> : null}
-        </div>
-        {list === undefined ? <Empty loaded={false} none="" /> : null}
-        {list && others.length === 0 ? <Empty loaded none="No conversations yet." /> : null}
-        {others.map((s) => (
+        {oneThread ? (
           <Row
-            key={s.id}
-            icon={<Icon name="monitor" size={14} />}
-            title={s.title}
-            detail={`${SURFACE_LABEL[s.surface] ?? s.surface}${s.channel ? ` · ${s.channel}` : ""} · ${whenShort(s.updatedAt)}${s.status === "alive" ? "" : " · ended"}`}
-            active={current === s.id}
-            onClick={() => pick(s.id)}
+            icon={<Icon name="pin" size={14} />}
+            title="Back to your thread"
+            detail="Reading one of these leaves your thread as it is. Your next message goes to your thread."
+            active={onThread(threads[activeAgentId]!, current)}
+            onClick={() => {
+              void openThread(activeAgentId);
+              setPanel("none");
+            }}
           />
-        ))}
+        ) : (
+          <Row
+            icon={<Icon name="plus" size={14} />}
+            title="New conversation"
+            detail={busy ? "Wait for the current turn to finish" : "Leaves this thread where it is; the next message starts a fresh one."}
+            onClick={
+              busy
+                ? undefined
+                : () => {
+                    startConversation(activeAgentId);
+                    setPanel("none");
+                  }
+            }
+          />
+        )}
+        <div className="panel__section-head" style={{ marginTop: 16 }}>
+          <span className="panel__section-title">{oneThread ? "Conversations" : "Threads"}</span>
+          {list ? <span className="muted" style={{ marginRight: 8 }}>{others.length}</span> : null}
+          <div className="thread-filter" role="group" aria-label="Which threads to show">
+            {THREAD_FILTERS.map(([value, label]) => (
+              <button
+                key={value}
+                className={`tab${filter === value ? " tab--on" : ""}`}
+                aria-pressed={filter === value}
+                onClick={() => setThreadFilter(activeAgentId, value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {failed ? <LoadFailed key={activeAgentId} agentId={activeAgentId} stale={list !== undefined} /> : null}
+        {list === undefined && !failed ? <Empty loaded={false} none="" /> : null}
+        {list && others.length === 0 && filter === "all" ? <Empty loaded none="No conversations yet." /> : null}
+        {list && others.length === 0 && filter === "active" ? (
+          <>
+            <Empty loaded none="No active conversations. Finished ones are under All." />
+            <button className="btn" style={{ width: "100%", marginTop: 4 }} onClick={() => setThreadFilter(activeAgentId, "all")}>
+              Show all conversations
+            </button>
+          </>
+        ) : null}
+        {others.map((s) =>
+          ending?.sessionId === s.id && ending.agentId === activeAgentId ? (
+            <EndConversationConfirm key={s.id} target={ending} onDone={() => setEnding(null)} />
+          ) : (
+            <ThreadRow
+              key={s.id}
+              thread={s}
+              active={current === s.id}
+              onPick={() => pick(s.id)}
+              actions={
+                <>
+                  {s.status === "alive" ? (
+                    <button className="btn btn--small" onClick={() => askEnd(s)} aria-label={`End ${s.title}`}>
+                      End…
+                    </button>
+                  ) : null}
+                  <button className="btn btn--small" onClick={() => archiveThread(activeAgentId, s.id)} aria-label={`Archive ${s.title}`}>
+                    Archive
+                  </button>
+                </>
+              }
+            />
+          ),
+        )}
+
+        <div className="panel__section-head" style={{ marginTop: 16 }}>
+          <span className="panel__section-title">Archived</span>
+          <span className="muted" style={{ marginRight: 8 }}>{archivedIds.length}</span>
+          <button className="btn btn--small" onClick={toggleArchived} aria-pressed={showArchived}>
+            {showArchived ? "Hide archived" : "Show archived"}
+          </button>
+        </div>
+        {showArchived && archivedIds.length === 0 ? <Empty loaded none="Nothing archived. Archiving hides a thread here and leaves it untouched on the agent." /> : null}
+        {showArchived
+          ? archivedIds.map((id) => {
+              const s: AgentSession = known[id] ?? {
+                id,
+                title: "A conversation not listed by the agent right now",
+                surface: "chat",
+                trigger: "",
+                status: "alive",
+                createdAt: "",
+                updatedAt: "",
+              };
+              return (
+                <ThreadRow
+                  key={id}
+                  thread={s}
+                  unknown={!known[id]}
+                  active={current === id}
+                  onPick={() => pick(id)}
+                  actions={
+                    <button className="btn btn--small" onClick={() => unarchiveThread(activeAgentId, id)} aria-label={`Unarchive ${s.title}`}>
+                      Unarchive
+                    </button>
+                  }
+                />
+              );
+            })
+          : null}
       </div>
     </>
+  );
+}
+
+const THREAD_FILTERS: ReadonlyArray<readonly [ThreadFilter, string]> = [
+  ["active", "Active"],
+  ["all", "All"],
+];
+
+/**
+ * The held list, if it was fetched under the filter now chosen. Otherwise
+ * undefined, which reads as "Loading…" until the new request answers: a list
+ * fetched as All must not be shown under Active (KYB-646).
+ */
+function heldUnder<T>(held: { filter: ThreadFilter; sessions: T[] } | undefined, filter: ThreadFilter): T[] | undefined {
+  return held?.filter === filter ? held.sessions : undefined;
+}
+
+/**
+ * A listing as this client knows it (KYB-649, AC9). A thread ended from here
+ * stays ended even when the agent's list has not caught up yet — retirement
+ * is terminal — and the Active list drops it. Without this an End stayed
+ * invisible, and End… stayed offered, until the next refresh found the agent
+ * current.
+ */
+function asKnown(
+  list: AgentSession[] | undefined,
+  known: Record<string, AgentSession> | undefined,
+  filter: ThreadFilter,
+): AgentSession[] | undefined {
+  if (!list) return list;
+  const out = list.map((s) => {
+    const k = known?.[s.id];
+    return isRetired(k) && !isRetired(s) ? { ...s, status: k!.status } : s;
+  });
+  return filter === "active" ? out.filter((s) => !isRetired(s)) : out;
+}
+
+/** What a row that summarises the thread list says when no list is held and the last request failed (KYB-647). */
+const UNREACHABLE_ROW = "Couldn't reach this agent. Open to try again.";
+
+/**
+ * A row's count, with word that it may be out of date when the last request
+ * under this filter failed (KYB-647). The count is from the held list, which
+ * stays on screen; without this the row read as current while the drawer said
+ * it might not be.
+ */
+function withStale(count: string, failed: boolean): string {
+  return failed ? `${count}. Couldn't reach this agent just now, so this may be out of date.` : count;
+}
+
+/** Whether the last `/sessions` request under this filter failed (KYB-647). */
+function failedUnder(failed: { filter: ThreadFilter } | undefined, filter: ThreadFilter): boolean {
+  return failed?.filter === filter;
+}
+
+/**
+ * The thread list could not be fetched (KYB-647). Said in so many words, with
+ * a way to ask again: before this, a failure and a request still in flight
+ * both read "Loading…", and nothing on screen could retry. `stale` when an
+ * older list is still shown under it.
+ */
+function LoadFailed({ agentId, stale }: { agentId: string; stale: boolean }): ReactNode {
+  const loadSessions = useStore((s) => s.loadSessions);
+  const [trying, setTrying] = useState(false);
+  const retry = async (): Promise<void> => {
+    setTrying(true);
+    try {
+      await loadSessions(agentId);
+    } finally {
+      setTrying(false);
+    }
+  };
+  return (
+    <div className="muted" role="status" style={{ padding: "2px 8px 6px" }}>
+      <div>
+        {stale
+          ? "Couldn't reach this agent just now, so this list may be out of date."
+          : "Couldn't reach this agent to list its conversations."}
+      </div>
+      <button className="btn btn--small" style={{ marginTop: 6 }} disabled={trying} onClick={() => void retry()}>
+        {trying ? "Trying…" : "Try again"}
+      </button>
+    </div>
   );
 }
 
 /** Distinguishes "not asked yet" from "the agent has none". */
 function Empty({ loaded, none }: { loaded: boolean; none: string }): ReactNode {
   return <div className="muted" style={{ padding: "2px 8px 6px" }}>{loaded ? none : "Loading…"}</div>;
+}
+
+/** One thread in the drawer: pick it to read it, with its own actions beside it. */
+function ThreadRow({
+  thread: s,
+  active,
+  unknown,
+  onPick,
+  actions,
+}: {
+  thread: AgentSession;
+  active: boolean;
+  unknown?: boolean;
+  onPick: () => void;
+  actions: ReactNode;
+}): ReactNode {
+  // A retired thread says so on its row, and never as an error: most of an
+  // owner's history was ended by a routine upgrade, not by anything they did.
+  const detail = unknown
+    ? "Not in the agent's current list"
+    : `${SURFACE_LABEL[s.surface] ?? s.surface}${s.channel ? ` · ${s.channel}` : ""} · ${whenShort(s.updatedAt)}${s.status === "alive" ? "" : " · ended"}`;
+  return (
+    <div className="thread-row" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <Row icon={<Icon name="monitor" size={14} />} title={s.title} detail={detail} active={active} onClick={onPick} />
+      </div>
+      {actions}
+    </div>
+  );
+}
+
+/** A confirmation's target: the thread, described once, when it opened. */
+type EndTarget = { agentId: string; sessionId: string; agentName: string; thread: ReturnType<typeof describeThread> };
+
+/**
+ * What the End confirmation says about a thread: its title (or its last
+ * message), when it was last active, and whether the agent still lists it as
+ * alive. A thread the agent has not listed yet is treated as alive, so the
+ * cross-surface warning is shown rather than silently left out.
+ */
+export function describeThread(
+  state: Pick<ReturnType<typeof useStore.getState>, "agentSessions" | "threadIndex" | "conversations" | "sessions">,
+  agentId: string,
+  sessionId: string,
+): { name: string; lastActive: string; alive: boolean } {
+  const listed =
+    state.threadIndex[agentId]?.[sessionId] ?? state.agentSessions[agentId]?.sessions.find((s) => s.id === sessionId);
+  // Only the transcript on screen belongs to this thread; another one's would misname it.
+  const blocks = state.sessions[agentId] === sessionId ? (state.conversations[agentId] ?? []) : [];
+  const last = [...blocks]
+    .reverse()
+    .find((b) => b.kind === "text" && typeof (b as { text?: unknown }).text === "string" && (b as { text: string }).text.trim()) as
+    | { text: string; at?: number }
+    | undefined;
+  const fromTranscript = last ? (last.text.length > 80 ? `${last.text.slice(0, 80)}…` : last.text) : "This conversation";
+  if (listed) {
+    return { name: listed.title?.trim() || fromTranscript, lastActive: whenShort(listed.updatedAt), alive: listed.status === "alive" };
+  }
+  const lastActive = last?.at ? whenShort(new Date(last.at).toISOString()) : "";
+  return { name: fromTranscript, lastActive, alive: true };
+}
+
+/** Fixed until the agent reports which surface a thread belongs to (KYB-645). */
+export const END_CROSS_SURFACE_LINE = "If this conversation is also open in Buzz, iMessage or on your phone, it ends there too.";
+
+/**
+ * Confirm ending ONE named conversation. It ends `target.sessionId` — the
+ * thread shown when this opened — and nothing else. Never says "delete": the
+ * conversation stays stored and readable on the agent.
+ */
+function EndConversationConfirm({
+  target,
+  onDone,
+}: {
+  target: EndTarget;
+  onDone: () => void;
+}): ReactNode {
+  const endConversation = useStore((s) => s.endConversation);
+  // Described when the confirmation OPENED and never again: if the chat moves
+  // to another thread meanwhile, this must still name the one it will end.
+  const { thread } = target;
+  return (
+    <div className="card" role="alertdialog" aria-label="End this conversation?">
+      <div style={{ marginBottom: 6 }}>End this conversation with {target.agentName}?</div>
+      <div style={{ marginBottom: 6 }}>
+        <strong>{thread.name}</strong>
+        {thread.lastActive ? <span className="muted"> · last active {thread.lastActive}</span> : null}
+      </div>
+      <div className="muted" style={{ marginBottom: 6 }}>
+        It stays stored and you can still read it, but it cannot be continued, and the agent loses its working memory of it.
+      </div>
+      {thread.alive ? (
+        <div className="muted" style={{ marginBottom: 10 }}>
+          {END_CROSS_SURFACE_LINE}
+        </div>
+      ) : null}
+      <div className="stack-row">
+        <button className="btn" onClick={onDone}>
+          Cancel
+        </button>
+        <div style={{ flex: 1 }} />
+        <button
+          className="btn btn--primary"
+          onClick={() => {
+            endConversation(target.agentId, target.sessionId);
+            onDone();
+          }}
+        >
+          End conversation
+        </button>
+      </div>
+    </div>
+  );
 }
 
 /** Create a routine that is actually written into the agent's repository. */
@@ -468,6 +964,8 @@ function Overview(): ReactNode {
         <ComputerCard />
 
         <ConversationsEntry />
+
+        <ArtifactsEntry />
 
         <Section title="Routines" count={loaded ? schedules.length : undefined}>
           <NewRoutine />
@@ -798,12 +1296,21 @@ function LocalAccess({ agent, url }: { agent: string; url?: string }): ReactNode
 }
 
 function Settings(): ReactNode {
-  const { agents, activeAgentId, patchAgent, setPanel, details, models, resetConversation, sessions } =
+  const { agents, activeAgentId, patchAgent, setPanel, details, models, sessions } =
     useStore();
   const agent = agents.find((a) => a.id === activeAgentId);
   const info = details[activeAgentId];
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
+  // The thread the confirmation names, captured when it OPENS. Ending reads
+  // this, never `sessions[…]` at the moment of confirming: adoption can change
+  // the selected thread while the confirmation is open (KYB-649).
+  const [ending, setEnding] = useState<EndTarget | null>(null);
+  // Settings is not keyed by agent: a confirmation left open across an agent
+  // switch would sit under the other agent's settings. It closes instead.
+  useEffect(() => {
+    setEnding((e) => (e && e.agentId !== activeAgentId ? null : e));
+  }, [activeAgentId]);
   if (!agent) return null;
 
   return (
@@ -878,24 +1385,36 @@ function Settings(): ReactNode {
           </button>
         </div>
 
-        <div className="card stack-row">
-          <div style={{ flex: 1 }}>
-            <div>Start a fresh conversation</div>
-            <div className="muted">
-              {sessions[activeAgentId]
-                ? "Same as “New conversation” in the header: retires the agent's current session and starts fresh. The view clears; the old conversation is kept on this device, not deleted. Use this too if replies stopped arriving — an agent that restarted mid-turn leaves a session that can never finish."
-                : "No session yet; the next message starts one."}
+        {ending && ending.agentId === activeAgentId ? (
+          <EndConversationConfirm target={ending} onDone={() => setEnding(null)} />
+        ) : (
+          <div className="card stack-row">
+            <div style={{ flex: 1 }}>
+              <div>Current conversation</div>
+              <div className="muted">
+                {sessions[activeAgentId]
+                  ? "Use this if replies stopped arriving — an agent that restarted mid-turn leaves a conversation that can never finish. You will be asked to confirm."
+                  : "No conversation yet; the next message starts one."}
+              </div>
             </div>
+            <button
+              className="btn"
+              disabled={!sessions[activeAgentId]}
+              onClick={() => {
+                const sessionId = sessions[activeAgentId];
+                if (!sessionId) return;
+                setEnding({
+                  agentId: activeAgentId,
+                  sessionId,
+                  agentName: agent.name,
+                  thread: describeThread(useStore.getState(), activeAgentId, sessionId),
+                });
+              }}
+            >
+              End this conversation
+            </button>
           </div>
-          {/* One behaviour, two places: this is the header button's action. */}
-          <button
-            className="btn"
-            disabled={!sessions[activeAgentId]}
-            onClick={() => resetConversation(activeAgentId)}
-          >
-            New conversation
-          </button>
-        </div>
+        )}
 
         <div className="card stack-row">
           <div style={{ flex: 1 }}>
@@ -915,7 +1434,7 @@ function Settings(): ReactNode {
           </div>
           <select
             className="input"
-            style={{ maxWidth: 130 }}
+            style={{ maxWidth: 220 }}
             value={agent.voice ?? "marin"}
             onChange={(e) => patchAgent(agent.id, { voice: e.target.value })}
           >
@@ -961,6 +1480,7 @@ function Settings(): ReactNode {
 
 export function Panel(): ReactNode {
   const panel = useStore((s) => s.panel);
+  const setPanel = useStore((s) => s.setPanel);
   /**
    * The view being shown, which lags the store while the drawer closes.
    *
@@ -987,17 +1507,36 @@ export function Panel(): ReactNode {
     return () => clearTimeout(timer);
   }, [panel, shown]);
 
+  // Escape closes the drawer, as it closes every other thing laid over the
+  // conversation. Anything above the drawer (a modal, the palette, the
+  // computer) has the key first, so it is left alone while one is open.
+  useEffect(() => {
+    if (panel === "none") return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (useStore.getState().paletteOpen) return;
+      if (document.querySelector(".scrim, .computer-view")) return;
+      setPanel("none");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [panel, setPanel]);
+
   if (shown === "none") return null;
   return (
-    <aside className={`panel${closing ? " panel--closing" : ""}`}>
-      {/* Gated on `shown`, not `panel`: `panel` is already "none" while the
-          drawer animates out, so gating on it blanked the contents instantly
-          and slid an empty box off screen — defeating the very hold above. */}
-      {shown === "overview" ? <Overview /> : null}
-      {shown === "routine" ? <RoutineView /> : null}
-      {shown === "settings" ? <Settings /> : null}
-      {shown === "vault" ? <VaultView /> : null}
-      {shown === "conversations" ? <ConversationsView /> : null}
-    </aside>
+    <>
+      <div className={`panel-scrim${closing ? " panel-scrim--closing" : ""}`} onClick={() => setPanel("none")} />
+      <aside className={`panel${closing ? " panel--closing" : ""}`}>
+        {/* Gated on `shown`, not `panel`: `panel` is already "none" while the
+            drawer animates out, so gating on it blanked the contents instantly
+            and slid an empty box off screen — defeating the very hold above. */}
+        {shown === "overview" ? <Overview /> : null}
+        {shown === "routine" ? <RoutineView /> : null}
+        {shown === "settings" ? <Settings /> : null}
+        {shown === "vault" ? <VaultView /> : null}
+        {shown === "conversations" ? <ConversationsView /> : null}
+        {shown === "artifacts" ? <ArtifactsView /> : null}
+      </aside>
+    </>
   );
 }

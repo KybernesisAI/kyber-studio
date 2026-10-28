@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   filesFromClipboard,
   formatSize,
@@ -7,19 +7,57 @@ import {
 } from "../lib/attachments";
 import type { Block, PeerEvent } from "@shared/types";
 import { peerSummaryLabel, summarizePeerEvents } from "@shared/types";
-import { currentConversation, isFreshStart } from "@shared/conversationView";
-import { useStore } from "@/lib/store";
+import { isRetired, useStore } from "@/lib/store";
 import * as composerDom from "@/lib/composerDom";
 import { Autocomplete, type Suggestion } from "./Autocomplete";
 import { LocalAskCard } from "./LocalAsk";
 import { Markdown } from "./Markdown";
 import { record, type Recorder } from "../lib/dictation";
 import { DeliveredFiles } from "./DeliveredFiles";
-import { SpendRequestCard, VaultAskCard } from "./Asks";
+import { ApprovalAskCard, FormAskCard, SpendRequestCard, VaultAskCard } from "./Asks";
 import { approvalPrompt, parseSpendRequestAsk, parseVaultItemAsk } from "@shared/asks";
 import { deliveredFiles } from "../../../shared/deliveredFiles";
 import { Spinner } from "./Spinner";
 import { Avatar, Icon, RichText, timeLabel } from "./primitives";
+import { approvalCard, isKnownCard, parseCardPrompt } from "@kybernesis/cards";
+import { placeCards } from "../lib/placeCards";
+import { ArtifactFrame, CardStack, CardView, type CardContext } from "./Cards";
+import { WorkSteps } from "./Work";
+import { reportLabel } from "@shared/thread";
+
+/**
+ * An artifact, over the conversation, opened from its card.
+ *
+ * Fetched fresh on open, so an older card shows the latest version unless it
+ * named one. Closed with the button or Escape, back to where you were.
+ */
+function ArtifactView(): ReactNode {
+  const artifact = useStore((s) => s.artifact);
+  const closeArtifact = useStore((s) => s.closeArtifact);
+  const agents = useStore((s) => s.agents);
+  useEffect(() => {
+    if (!artifact) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") closeArtifact();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [artifact, closeArtifact]);
+  if (!artifact) return null;
+  const agent = agents.find((a) => a.id === artifact.agentId);
+  return (
+    <div className="artifact-view">
+      <div className="artifact-view__head">
+        <span className="artifact-view__title">{artifact.title ?? "Artifact"}</span>
+        {agent ? <span className="klabel">{agent.name}</span> : null}
+        <button className="btn" onClick={closeArtifact}>
+          Close
+        </button>
+      </div>
+      <ArtifactFrame agentUrl={agent?.url} artifactId={artifact.artifactId} version={artifact.version} className="artifact-view__body" />
+    </div>
+  );
+}
 
 /**
  * Agent-to-agent traffic, collapsed.
@@ -171,16 +209,24 @@ function ExchangeView(): ReactNode {
 function QuestionCard({
   block,
   onAnswer,
+  ctx,
 }: {
   block: Extract<Block, { kind: "question" }>;
   onAnswer(answer: { optionId?: string; text?: string; label?: string }): void;
+  ctx: CardContext;
 }): ReactNode {
   const [text, setText] = useState("");
   const vault = parseVaultItemAsk(block.prompt);
   const spend = parseSpendRequestAsk(block.prompt);
-  const approval = approvalPrompt(block.prompt);
+  const carded = vault || spend ? null : parseCardPrompt(block.prompt);
+  const approval = carded ? null : approvalPrompt(block.prompt);
   // What the transcript shows once answered: the sentence, not the marker line.
-  const shownPrompt = vault ? `Needed ${vault.ask.kind === "login" ? "a login" : vault.ask.kind === "card" ? "a card" : `an ${vault.ask.kind}`}${vault.ask.site ? ` for ${vault.ask.site}` : ""}` : spend ? `Purchase approval · ${spend.ask.merchant ?? spend.ask.merchant_url ?? ""}` : approval ? approval.title : block.prompt;
+  const shownPrompt = vault ? `Needed ${vault.ask.kind === "login" ? "a login" : vault.ask.kind === "card" ? "a card" : `an ${vault.ask.kind}`}${vault.ask.site ? ` for ${vault.ask.site}` : ""}` : spend ? `Purchase approval · ${spend.ask.merchant ?? spend.ask.merchant_url ?? ""}` : carded ? carded.text : approval ? approval.title : block.prompt;
+
+  const approvalCardOf = block.approval && !carded && !vault && !spend ? approvalCard(block.approval.tool, block.approval.input, block.requestId) : null;
+  if (approvalCardOf && isKnownCard(approvalCardOf) && approvalCardOf.card === "approval") return <ApprovalAskCard block={block} card={approvalCardOf} onAnswer={onAnswer} />;
+  if (carded && isKnownCard(carded.card) && carded.card.card === "form") return <FormAskCard block={block} card={carded.card} text={carded.text} onAnswer={onAnswer} />;
+  if (spend) return <SpendRequestCard block={block} ask={spend.ask} text={spend.text} onAnswer={onAnswer} />;
 
   if (block.answered) {
     return (
@@ -194,11 +240,11 @@ function QuestionCard({
   }
 
   if (vault) return <VaultAskCard block={block} ask={vault.ask} text={vault.text} onAnswer={onAnswer} />;
-  if (spend) return <SpendRequestCard block={block} ask={spend.ask} text={spend.text} onAnswer={onAnswer} />;
 
   return (
     <div className="ask">
-      <div className="ask__title" style={{ marginBottom: 10 }}>{approval ? approval.title : block.prompt}</div>
+      {carded ? <CardView card={carded.card} ctx={ctx} /> : null}
+      <div className="ask__title" style={{ marginBottom: 10 }}>{carded ? carded.text : approval ? approval.title : block.prompt}</div>
       {block.options?.length ? (
         <div className="ask__options">
           {block.options.map((o) => (
@@ -255,9 +301,10 @@ function AuthorizationCard({
 
   if (settled) {
     return (
-      <div className="ask ask--done">
-        <div className="ask__title" style={{ fontWeight: 500 }}>
-          {good ? `${block.name} connected` : `${block.name} was not connected`}
+      <div className="kcard kcard--signin is-done">
+        <div className="kcard__head">
+          <span className="kcard__title">{block.name}</span>
+          <span className={`kpill${good ? " is-good" : ""}`}>{good ? "Connected" : "Not connected"}</span>
         </div>
         {!good ? <div className="muted">{block.outcome}</div> : null}
       </div>
@@ -265,14 +312,13 @@ function AuthorizationCard({
   }
 
   return (
-    <div className="ask">
-      <div className="ask__title" style={{ marginBottom: 4 }}>
-        Sign in to {block.name}
+    <div className="kcard kcard--signin">
+      <div className="kcard__head">
+        <span className="kcard__title">Sign in to {block.name}</span>
+        <span className="klabel kcard__source">Sign-in</span>
       </div>
-      <div className="muted" style={{ marginBottom: 10 }}>
-        {block.instructions ?? block.description ?? "The agent needs access before it can continue."}
-      </div>
-      <div className="ask__options">
+      <div className="kcard__text">{block.instructions ?? block.description ?? "The agent needs access before it can continue."}</div>
+      <div className="kcard__actions" style={{ alignItems: "center" }}>
         <button
           className="btn btn--primary"
           disabled={!block.url}
@@ -280,7 +326,7 @@ function AuthorizationCard({
         >
           Open sign-in
         </button>
-        {block.userCode ? <span className="ask__code">{block.userCode}</span> : null}
+        {block.userCode ? <span className="ksignin__code">{block.userCode}</span> : null}
       </div>
     </div>
   );
@@ -311,7 +357,8 @@ export function Conversation(): ReactNode {
   const agent = agents.find((a) => a.id === activeAgentId);
   const rooms = useStore((s) => s.rooms);
   const sessions = useStore((s) => s.sessions);
-  const newConversation = useStore((s) => s.resetConversation);
+  const threadIndex = useStore((s) => s.threadIndex);
+  const startConversation = useStore((s) => s.startConversation);
   const openOrb = (): void => {
     if (!agent?.url) return;
     void window.studio.toggleOrb({
@@ -342,6 +389,9 @@ export function Conversation(): ReactNode {
   const roomQueue = useStore((s) => s.roomQueue);
   const setRoomPolicy = useStore((s) => s.setRoomPolicy);
   const room = rooms.find((r) => r.id === activeAgentId);
+  // The open thread is one the agent reports ended or failed (KYB-649).
+  const held = agent ? sessions[agent.id] : undefined;
+  const retired = !room && Boolean(agent && held && isRetired(threadIndex[agent.id]?.[held]));
   const roomMembers = (room?.memberIds ?? [])
     .map((id) => agents.find((a) => a.id === id))
     .filter((a): a is NonNullable<typeof a> => Boolean(a));
@@ -356,12 +406,39 @@ export function Conversation(): ReactNode {
         name: peer.name,
         accent: agents.find((a) => a.id === peer.id || a.name === peer.name)?.accent,
       }));
-  const stored = conversations[activeAgentId] ?? [];
-  // Only the current conversation. Earlier ones stay in `stored` (and on disk)
-  // behind their dividers; see @shared/conversationView.
-  const blocks = currentConversation(stored);
-  const freshStart = isFreshStart(stored);
-  const canStartNew = !room && (Boolean(sessions[activeAgentId]) || blocks.length > 0);
+  const blocks = conversations[activeAgentId] ?? [];
+  const placed = useMemo(() => placeCards(blocks), [blocks]);
+  const openArtifact = useStore((s) => s.openArtifact);
+  const runRoutine = useStore((s) => s.runRoutine);
+  /** Cards act for the agent that made them: in a room, the member who answered. */
+  const cardContext = (speakerId?: string): CardContext => {
+    const owner = agents.find((a) => a.id === (speakerId ?? activeAgentId)) ?? agent ?? roomMembers[0];
+    return {
+      agentUrl: owner?.url,
+      onSay: (text) => (room ? sendToRoom(room.id, text) : send(activeAgentId, text)),
+      onRunRoutine: (routine, say) => {
+        if (owner) runRoutine(owner.id, routine, say);
+      },
+      onOpenArtifact: (artifactId, title, version) => {
+        if (owner) openArtifact(owner.id, artifactId, title, version);
+      },
+    };
+  };
+  // The newest work block, while the agent is on it, is the one whose steps are live.
+  const lastWork = [...blocks].reverse().find((b) => b.kind === "work");
+  const lastWorkId = lastWork?.id;
+  // A running step already says what is happening; the activity line would say it twice.
+  const stepRunning =
+    blocks[blocks.length - 1]?.kind === "work" &&
+    lastWork?.kind === "work" &&
+    lastWork.steps.some((step) => step.status === "running");
+  // KYB-643: right after signing in, the account's threads are still being
+  // read. An empty chat may be about to receive one, so "No messages yet"
+  // would be a guess, and usually a wrong one. Not conditioned on the chat
+  // having no thread: adoption names the thread first and replays its history
+  // after, and the directory gate stays shut until that replay has landed.
+  const directoryLoading = useStore((s) => s.directoryLoading);
+  const loadingMessages = !room && directoryLoading;
   const [draft, setDraft] = useState("");
   const [acCursor, setAcCursor] = useState(0);
   const [folderMenu, setFolderMenu] = useState(false);
@@ -683,6 +760,7 @@ export function Conversation(): ReactNode {
   return (
     <div className="main" style={{ position: "relative" }}>
       <ExchangeView />
+      <ArtifactView />
       <div className="topbar">
         {room ? (
           <>
@@ -758,17 +836,6 @@ export function Conversation(): ReactNode {
             Folder
           </button>
         )}
-        {room ? null : (
-          <button
-            className="workspace"
-            title="Retire this session and start a fresh conversation"
-            disabled={!canStartNew}
-            onClick={() => newConversation(activeAgentId)}
-          >
-            <Icon name="plus" size={13} />
-            New conversation
-          </button>
-        )}
         <button
           className={`topbar__btn${panel !== "none" ? " topbar__btn--on" : ""}`}
           title="Agent panel"
@@ -790,8 +857,6 @@ export function Conversation(): ReactNode {
       >
         <div className="thread__inner" ref={innerRef}>
           {blocks.map((b, i) => {
-            // Never present in the current conversation; narrows the type.
-            if (b.kind === "divider") return null;
             const when = whenLabel(b.at, i > 0 ? blocks[i - 1].at : undefined);
             const marker = when ? (
               <div className="thread__when" key={`w${b.id}`}>
@@ -803,48 +868,80 @@ export function Conversation(): ReactNode {
               return (
                 <PeerActivity key={b.id} events={b.events} agentId={activeAgentId} blockId={b.id} />
               );
+            if (b.kind === "work") {
+              const cards = placed.atWork.get(b.id);
+              return (
+                <div key={b.id} className="turn-work">
+                  <WorkSteps steps={b.steps} live={running && b.id === lastWorkId} />
+                  {cards ? <CardStack cards={cards} ctx={cardContext(b.speakerId)} /> : null}
+                </div>
+              );
+            }
             if (b.kind === "authorization") return <AuthorizationCard key={b.id} block={b} />;
+            // What a routine or heads-up produced. It ran in the background and
+            // nobody typed its instruction, so only its answer is here, labelled.
+            if (b.kind === "report")
+              return (
+                <div key={b.id} className="report">
+                  <div className="report__head">
+                    <span className="klabel">{reportLabel(b.routine)}</span>
+                  </div>
+                  {b.text ? <Markdown text={b.text} /> : null}
+                  {b.cards?.length ? <CardStack cards={b.cards} ctx={cardContext()} /> : null}
+                </div>
+              );
+            if (b.kind === "divider")
+              return (
+                <div key={b.id} className="thread-divider" role="separator">
+                  <span>{b.label}</span>
+                </div>
+              );
             if (b.kind === "question")
               return (
                 <QuestionCard
                   key={b.id}
                   block={b}
+                  ctx={cardContext()}
                   onAnswer={(answer) => answerQuestion(activeAgentId, b.id, answer)}
                 />
               );
-              // In a room, every agent turn says who is speaking. Without it a
-              // run of replies from three agents is one anonymous wall.
-              // Who said it, above what they said, with their avatar beside the
-              // bubble. In a room this is not decoration: two grey bubbles in a
-              // row are unreadable when three agents can produce them.
-              return b.speaker ? (
-                <div key={b.id} className="said">
-                  <div className="said__who">{b.speaker.name}</div>
-                  <div className="said__row">
-                    <Avatar name={b.speaker.name} accent={b.speaker.accent} size={22} />
-                    <div className="bubble bubble--agent">
-                      <Markdown text={b.text} />
-                      <DeliveredFiles files={deliveredFiles(b.text)} />
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div key={b.id} className={`bubble bubble--${b.role}`}>
-                  {b.role === "agent" ? (
-                    <>
-                      <Markdown text={b.text} />
-                      {/* Under the words, never instead of them: the sentence
-                          explaining what the file is stays exactly as written. */}
-                      <DeliveredFiles files={deliveredFiles(b.text)} />
-                    </>
-                  ) : (
-                    <>
-                      {b.scheduled ? <div className="bubble__scheduled">⏰ scheduled {b.scheduled}</div> : null}
-                      <RichText text={b.text} mentions={mentionable} />
-                    </>
-                  )}
+            // A kind this version does not know (saved by a newer Studio sharing
+            // this data folder) has no text to draw: skip it, never crash on it.
+            if (typeof b.text !== "string") return null;
+            if (b.role === "user") {
+              return (
+                <div key={b.id} className="bubble bubble--user">
+                  {b.scheduled ? <div className="bubble__scheduled">⏰ scheduled {b.scheduled}</div> : null}
+                  <RichText text={b.text} mentions={mentionable} />
                 </div>
               );
+            }
+            // The agent's reply is the page, not a bubble: full width, with the
+            // cards its tools returned underneath. A bubble around a table or a
+            // chart is a box inside a box.
+            const cards = placed.under.get(b.id);
+            const reply = (
+              <div className="reply">
+                <Markdown text={b.text} />
+                {/* Under the words, never instead of them: the sentence
+                    explaining what the file is stays exactly as written. */}
+                <DeliveredFiles files={deliveredFiles(b.text)} />
+                {cards ? <CardStack cards={cards} ctx={cardContext(b.speaker?.id)} /> : null}
+              </div>
+            );
+            // In a room, every reply says who is speaking. Without it a run of
+            // replies from three agents is one anonymous wall.
+            return b.speaker ? (
+              <div key={b.id} className="said">
+                <div className="said__who">
+                  <Avatar name={b.speaker.name} accent={b.speaker.accent} size={18} />
+                  {b.speaker.name}
+                </div>
+                {reply}
+              </div>
+            ) : (
+              <Fragment key={b.id}>{reply}</Fragment>
+            );
             })();
 
             // A marker and its block travel together, so the label always sits
@@ -858,17 +955,19 @@ export function Conversation(): ReactNode {
               body
             );
           })}
-          {freshStart && !room ? (
-            <div className="empty">Fresh start — {agent?.name} won't see the earlier messages. Say hello.</div>
-          ) : null}
-          {blocks.length === 0 && !freshStart ? (
+          {blocks.length === 0 && loadingMessages ? (
+            <div className="empty" role="status">
+              <Spinner />
+              <span> Loading messages…</span>
+            </div>
+          ) : blocks.length === 0 ? (
             <div className="empty">
               {room
                 ? `No messages yet. Say something to ${roomMembers.map((m) => m.name).join(" and ")}.`
                 : `No messages yet. Say hello to ${agent?.name}.`}
             </div>
           ) : null}
-          {busy ? (
+          {busy && !stepRunning ? (
             <div className="activity">
               <Spinner />
               <span className="activity__label">{busy}</span>
@@ -877,8 +976,24 @@ export function Conversation(): ReactNode {
         </div>
       </div>
 
-      <div className="composer">
+      <div className={`composer${retired ? " composer--retired" : ""}`}>
+        {/* Outside the switch below, always mounted: the permission card is for
+            EVERY agent, and unmounting it while a retired thread is open would
+            leave asks with no listener, denied unseen when they time out. */}
         <LocalAskCard />
+        {/* A thread the agent reports ended or failed opens to READ (KYB-649):
+            it cannot be continued, so the composer is not offered at all. */}
+        {retired && agent ? (
+          <div className="card stack-row" role="status">
+            <span style={{ flex: 1 }} className="muted">
+              This conversation has ended. You can read it, but it cannot be continued.
+            </span>
+            <button className="btn btn--primary" onClick={() => startConversation(agent.id)}>
+              New conversation
+            </button>
+          </div>
+        ) : (
+        <>
         {suggestions.length > 0 ? (
           <div className="composer__ac">
             <Autocomplete
@@ -1113,6 +1228,8 @@ export function Conversation(): ReactNode {
             ) : null}
           </div>
         ) : null}
+        </>
+        )}
       </div>
     </div>
   );

@@ -3,11 +3,10 @@ import type { PendingAttachment } from "./attachments";
 import type { AgentSummary } from "@shared/ipc";
 import { summarize } from "./agentInfo";
 import type { Agent, Block, PeerEvent, Room } from "@shared/types";
-import { adoptedState, decideAdoption, type SessionChoice } from "@shared/sessionAdoption";
-import { currentConversation } from "@shared/conversationView";
 import { ROOM_PREFIX, isRoomId } from "@shared/types";
 import { recipientsFor, type RoomPolicy } from "@shared/addressing";
 import { reconcile } from "@shared/sessionReplay";
+import { newReports, placeThreadBlocks, readThreadView, recapOf, reportLabel, threadBlocks, type ThreadView } from "@shared/thread";
 
 /**
  * Renderer state.
@@ -32,6 +31,15 @@ import { reconcile } from "@shared/sessionReplay";
  * by that. Nothing is torn down mid-flight because nothing is scoped to a turn.
  */
 const streamOwners = new Map<string, string>();
+/**
+ * Sessions whose replay runs before their live watch starts.
+ *
+ * Opening a thread clears its stream cursor, and a watch with no cursor reads
+ * the session from event 0. Started before the replay set the cursor, it took
+ * the whole history in as new turns, stamped with the time it arrived, so a
+ * thread's first answer showed up at the bottom with no question above it.
+ */
+const replayFirst = new Set<string>();
 
 /**
  * Which agent is behind a stream, when the conversation has more than one.
@@ -60,22 +68,113 @@ let crossDeviceReady = false;
  * the rate at which polling costs anything.
  */
 function startCrossDeviceRefresh(get: () => State): void {
-  if (crossDeviceReady) return;
-  crossDeviceReady = true;
-
   const refresh = (): void => void get().refreshFromOthers();
 
-  window.addEventListener("focus", refresh);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") refresh();
-  });
-  setInterval(() => {
-    if (document.visibilityState === "visible") refresh();
-  }, 30_000);
+  // The listeners once per window; the read every time someone signs in. A
+  // second sign-in in the same window (after signing out) still has to learn
+  // the account's threads, and returning early here is how it would not.
+  if (!crossDeviceReady) {
+    crossDeviceReady = true;
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refresh();
+    });
+    setInterval(() => {
+      if (document.visibilityState === "visible") refresh();
+    }, 30_000);
+  }
 
   refresh();
 }
 
+/**
+ * Whether the account's thread directory has been read, against a loaded agent
+ * list, since this sign-in (KYB-643).
+ *
+ * Until it has, a first message to an agent this device has no thread with
+ * would start a NEW thread while the directory may be about to name an
+ * existing one. That new thread then becomes the account's newest, and every
+ * other device moves onto it. So `send` waits for this, briefly.
+ *
+ * Settled by default: only `signedIn` opens it, so nothing that never signs in
+ * (tests, a missing bridge) ever waits on it.
+ */
+let directorySettled = true;
+/**
+ * Which sign-in the directory gate belongs to. A message that was waiting when
+ * its sign-in ended, or a directory pass that started under it, must not act on
+ * the next one's gate.
+ */
+let signInGeneration = 0;
+/**
+ * Which sign-in the agent list in the store was loaded under. Sign-out keeps
+ * the previous account's agents on screen, so "the list is not empty" does not
+ * mean "this account's agents have loaded": a directory pass resolved against
+ * the previous account's list matches nothing and would settle the new gate.
+ */
+let agentsGeneration = 0;
+let settleDirectory: () => void = () => {};
+let directoryReady: Promise<void> = Promise.resolve();
+
+/**
+ * Also published as `directoryLoading`, so the conversation can say "Loading
+ * messages…" instead of "No messages yet" while a thread may be about to
+ * arrive. Without it a wiped config showed the empty state, then the history
+ * popped in a moment later.
+ */
+function expectDirectory(set: (partial: Partial<State>) => void): void {
+  // A new generation first, so anyone released below sees they are stale.
+  signInGeneration += 1;
+  settleDirectory(); // release anyone still waiting on a previous sign-in
+  directorySettled = false;
+  set({ directoryLoading: true });
+  directoryReady = new Promise<void>((resolve) => {
+    settleDirectory = () => {
+      directorySettled = true;
+      set({ directoryLoading: false });
+      resolve();
+    };
+  });
+}
+
+/**
+ * How long a first message waits for the directory before going out anyway.
+ * A control plane that does not answer must not stop someone talking to an
+ * agent.
+ *
+ * 15 s, the directory read's own timeout (`listSessions` in sessionIndex.ts),
+ * chosen by the owner on 15 October 2026. Expiring sooner would start a new
+ * thread on a read that was merely slow, and that thread then becomes the
+ * account's newest on every device. At 15 s, a new thread is only started
+ * when the read has actually failed, with nothing better to go on.
+ */
+export const DIRECTORY_WAIT_MS = 15_000;
+let directoryWaitMs = DIRECTORY_WAIT_MS;
+/** Tests only: shorten the bound so its exit can be driven without a 15 s wait. */
+export function setDirectoryWaitForTests(ms: number): void {
+  directoryWaitMs = ms;
+}
+
+/** Which way the wait ended; the timeout is logged, because it starts a new thread. */
+function waitForDirectory(): Promise<"settled" | "timeout"> {
+  return Promise.race([
+    directoryReady.then(() => "settled" as const),
+    new Promise<"timeout">((r) => setTimeout(() => r("timeout"), directoryWaitMs)),
+  ]);
+}
+
+/** Set for the one synchronous re-entry of `send` after it has waited. */
+let directoryWaited = false;
+
+/**
+ * Everything that follows a successful sign-in, for BOTH ways in (KYB-643).
+ *
+ * `bootstrap` (a stored session) and `signIn` (a fresh one: every first run and
+ * every wiped config) used to repeat these steps by hand, and `signIn` left
+ * out the last one. After a fresh sign-in the directory was read once, before
+ * the agents had loaded, and never again until a relaunch, so the account's
+ * threads were not picked up and the first message started a new one.
+ */
 let schedulerReady = false;
 /**
  * Post scheduled turns for local agents, as turns in their conversations.
@@ -104,6 +203,19 @@ function startScheduler(get: () => State): void {
   });
 }
 
+async function signedIn(get: () => State, set: (partial: Partial<State>) => void): Promise<void> {
+  expectDirectory(set);
+  // Local state first, so reopening shows the conversation immediately.
+  await get().restore();
+  await get().refreshAgents();
+  // Then the account's threads, which can only be matched against agents that
+  // have loaded, and from then on on every focus and every 30 s.
+  startCrossDeviceRefresh(get);
+  // Scheduled turns for this machine's local agents; idempotent, and started
+  // on both ways in (a first sign-in used to run without it until relaunch).
+  startScheduler(get);
+}
+
 function ensureListeners(
   get: () => State,
   set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
@@ -128,6 +240,9 @@ function ensureListeners(
     }));
     // Our turn, our notifications: the phone stays quiet for it.
     if (first && sessionId) void window.studio?.claimDriver(sessionId);
+    // A new thread exists from its first turn, not from when the reply ends;
+    // a list on screen shows it now (KYB-649, AC9).
+    if (first && sessionId) refreshListIfShown(get, agentId);
   });
 
   window.studio.onReset(({ streamId }) => {
@@ -231,6 +346,44 @@ function ensureListeners(
     get().persist();
   });
 
+  /**
+   * The turn's tool calls, one work block per turn, updated in place.
+   *
+   * Placed where the first call arrives, which is above the reply: the agent
+   * narrates, acts, then answers, and the narration is cleared on reset. So the
+   * transcript reads question, what it did, answer, with the cards under the
+   * answer. Saved when a step settles rather than on every move.
+   */
+  window.studio.onStep(({ streamId, step }) => {
+    const agentId = streamOwners.get(streamId);
+    if (!agentId) return;
+    const id = `w${streamId.slice(1)}`;
+    set((s) => {
+      const conv = s.conversations[agentId] ?? [];
+      const existing = conv.find((b) => b.id === id);
+      if (existing && existing.kind === "work") {
+        const at = existing.steps.findIndex((x) => x.callId === step.callId);
+        const steps = at >= 0 ? existing.steps.map((x, n) => (n === at ? step : x)) : [...existing.steps, step];
+        return {
+          conversations: {
+            ...s.conversations,
+            [agentId]: conv.map((b) => (b.id === id ? { ...existing, steps, turnId: existing.turnId ?? step.turnId } : b)),
+          },
+        };
+      }
+      return {
+        conversations: {
+          ...s.conversations,
+          [agentId]: [
+            ...conv,
+            { kind: "work", id, at: Date.now(), turnId: step.turnId, speakerId: streamSpeakers.get(streamId)?.id, steps: [step] },
+          ],
+        },
+      };
+    });
+    if (step.status !== "running") get().persist();
+  });
+
   window.studio.onAuthorization(({ streamId, event }) => {
     const agentId = streamOwners.get(streamId);
     if (!agentId) return;
@@ -310,6 +463,7 @@ function ensureListeners(
               prompt: request.prompt,
               options: request.options,
               allowFreeform: request.allowFreeform,
+              ...(request.approval ? { approval: request.approval } : {}),
             },
           ],
         },
@@ -369,6 +523,13 @@ function roomPreamble(room: Room, members: Agent[], me: Agent, speaker?: string)
     `Only reply to what was sent to you; do not repeat another agent's answer back to the room.`,
     speaker ? `This message is from ${speaker}, not from the user.]` : `]`,
   ].join(" ");
+}
+
+/** How a conversation's steps read, in order: chip, line and status of each. */
+function stepsKey(blocks: Block[]): string {
+  return blocks
+    .flatMap((b) => (b.kind === "work" ? b.steps.map((s) => `${s.callId}|${s.chip}|${s.label}|${s.status}`) : []))
+    .join("\n");
 }
 
 /**
@@ -515,6 +676,18 @@ async function deliverToMember(
  * Settings; on by default, because the question an agent asks while nobody
  * is watching is the one that stalls it for an hour.
  */
+/** Reports each agent's thread held when this device last read it, so only new ones notify. */
+const seenReports = new Map<string, Set<string>>();
+
+/**
+ * Blocks the thread added (reports, a routine's questions, Start fresh lines)
+ * are not the conversation's own history: a chat holding only those has not
+ * been read from the agent yet.
+ */
+function fromThread(b: Block): boolean {
+  return b.kind === "report" || b.kind === "divider" || (b.kind === "question" && Boolean(b.runSessionId));
+}
+
 function alertIfAway(get: () => State, agentId: string, title: string, body: string): void {
   const s = get();
   const agent = s.agents.find((a) => a.id === agentId);
@@ -614,6 +787,81 @@ function currentGeneration(agentId: string): number {
 /** Retire everything in flight for this agent, so late results stay quiet. */
 function retireGeneration(agentId: string): void {
   generation.set(agentId, currentGeneration(agentId) + 1);
+}
+
+/** A thread the agent reports as ended or failed: readable, not continuable. */
+export function isRetired(thread: Pick<AgentSession, "status"> | undefined): boolean {
+  return thread?.status === "ended" || thread?.status === "failed";
+}
+
+/**
+ * Fold a listing into what is known about an agent's threads (KYB-649).
+ *
+ * Retirement is terminal — eve has no route that brings a session back — so a
+ * thread known ended here stays ended even when a listing still calls it
+ * alive. That listing is the one asked for straight after this client's own
+ * End, and an agent that has not caught up yet would otherwise reopen the
+ * composer on the thread just ended.
+ */
+function mergeThreadIndex(
+  known: Record<string, AgentSession> | undefined,
+  listed: AgentSession[],
+): Record<string, AgentSession> {
+  const next = { ...known };
+  for (const x of listed) {
+    const before = known?.[x.id];
+    next[x.id] = isRetired(before) && !isRetired(x) ? { ...x, status: before!.status } : x;
+  }
+  return next;
+}
+
+/**
+ * Ask the agent for its thread list again, if one is on screen for it.
+ *
+ * Both the overview's "Show conversations" row and the drawer load their list
+ * once, when they mount; without this a list left open never changed — a new
+ * thread did not appear and the count did not move (KYB-649, AC9). Gated on
+ * the panel, so a hidden list costs nothing.
+ */
+function refreshListIfShown(get: () => State, agentId: string): void {
+  const { panel, activeAgentId } = get();
+  if (activeAgentId !== agentId) return;
+  if (panel !== "conversations" && panel !== "overview") return;
+  void get().loadSessions(agentId);
+}
+
+/**
+ * Put the agent's chat on a new, empty conversation. LOCAL ONLY: nothing is
+ * sent to the agent, and the thread being left is untouched there.
+ *
+ * Records a fresh-start choice (`sessionId: null`) so neither adoption path —
+ * the directory sync nor `loadAgentInfo` — fills the new conversation with
+ * another thread before the person has said anything (KYB-649).
+ */
+function leaveForNewConversation(
+  get: () => State,
+  set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
+  agentId: string,
+): void {
+  retireGeneration(agentId);
+  if (get().watching?.agentId === agentId) get().stopWatching();
+  // A turn stopped in the thread being left can still stream and settle: eve
+  // settles a cancelled turn as "waiting", which the bridge reports as a
+  // normal end. Its events must reach no one, or they land in the new chat.
+  for (const [streamId, owner] of streamOwners) if (owner === agentId) streamOwners.delete(streamId);
+  set((st) => {
+    const streamIndexes = { ...st.streamIndexes };
+    // The cursor belongs to the thread being left.
+    delete streamIndexes[agentId];
+    return {
+      sessions: { ...st.sessions, [agentId]: undefined },
+      conversations: { ...st.conversations, [agentId]: [] },
+      streamIndexes,
+      sessionChoice: { ...st.sessionChoice, [agentId]: { sessionId: null, at: Date.now() } },
+      activity: { ...st.activity, [agentId]: null },
+    };
+  });
+  get().persist();
 }
 
 /**
@@ -771,7 +1019,73 @@ function flushQueue(get: () => State, agentId: string): void {
   setTimeout(() => get().send(agentId, next, true), 0);
 }
 
-export type PanelView = "none" | "overview" | "routine" | "settings" | "vault" | "conversations";
+export type PanelView = "none" | "overview" | "routine" | "settings" | "vault" | "conversations" | "artifacts";
+
+/**
+ * Which of an agent's conversations the Conversations drawer asks for (KYB-646).
+ *
+ * "active" sends `?alive=1`, so the agent drops runs that have completed,
+ * failed or been cancelled. "all" omits it. The agent sorts and truncates
+ * server-side, so switching asks again rather than filtering what is held:
+ * filtering the 60 newest of everything would hide live threads that fell
+ * outside them.
+ */
+export type ThreadFilter = "active" | "all";
+
+/** A person who has never chosen sees only the conversations still running. */
+export const DEFAULT_THREAD_FILTER: ThreadFilter = "active";
+
+/** The agent's choice of filter, or the default. */
+export function threadFilterFor(prefs: Record<string, { threadFilter?: ThreadFilter } | undefined>, agentId: string): ThreadFilter {
+  return prefs[agentId]?.threadFilter ?? DEFAULT_THREAD_FILTER;
+}
+
+/** The `/sessions` request for a filter. Exported so tests name the request rather than retype it. */
+export function sessionsPath(filter: ThreadFilter): string {
+  return filter === "active" ? "/sessions?limit=60&alive=1" : "/sessions?limit=60";
+}
+
+/**
+ * How long a `/sessions` read may take before it counts as failed (KYB-647).
+ * Every management call otherwise inherits the 420 s bound sized for installs,
+ * which left the drawer on "Loading…" for seven minutes against an agent that
+ * accepted the connection and never answered.
+ */
+export const SESSIONS_READ_TIMEOUT_MS = 15_000;
+
+/**
+ * Answers to `/sessions` are applied in the order their requests were SENT,
+ * not the order they arrive (KYB-647). The list is asked for from the drawer's
+ * mount, the Active / All switch, `loadAgentInfo`, and every refresh trigger,
+ * and nothing orders the answers; without this an old answer that arrives last
+ * replaces a newer list, and a slow old failure replaces a good list with
+ * "couldn't be reached".
+ *
+ * One counter per agent numbers every request. Two watermarks record the
+ * newest request whose answer has been applied:
+ *
+ * - per agent and FILTER, for the held list and the failed state, which are
+ *   both tagged with a filter.
+ * - per agent, for `threadIndex` and `routinesSessions`, which describe the
+ *   agent whatever the filter.
+ *
+ * An answer only claims the list watermark while its filter is the drawer's
+ * current one, so an answer under another filter (`loadAgentInfo`'s All under
+ * an Active drawer) never claims it at all. That check, not the per-filter
+ * key, is what keeps such an answer from making a pending Active answer stale.
+ * The per-filter key matters in one sequence: an Active request in flight,
+ * a switch to All whose answer lands, and a switch back to Active before the
+ * first Active answer lands. Keyed per filter, that answer is stored (a newer
+ * Active answer can still replace it); keyed per agent, the All answer's
+ * claim would drop it and the drawer would wait on the next request.
+ *
+ * The counter never resets, so a watermark left from an earlier request can
+ * only ever be lower than a later request's number.
+ */
+const sessionsSent = new Map<string, number>();
+const sessionsListApplied = new Map<string, number>();
+const sessionsIndexApplied = new Map<string, number>();
+const listKey = (agentId: string, filter: ThreadFilter): string => `${agentId}\u0000${filter}`;
 
 /** One conversation as the agent's management routes describe it (see @kybernesis/manage's /sessions). */
 export interface AgentSession {
@@ -833,6 +1147,19 @@ interface State {
       avatar?: string;
       /** Spoken voice for this agent's voice orb. Account-wide, like the picture. */
       voice?: string;
+      /**
+       * Active or all conversations in the drawer. This machine's, not the
+       * account's: `patchAgent` does not carry it and the profile has no field
+       * for it.
+       */
+      threadFilter?: ThreadFilter;
+      /**
+       * Threads this person archived here (KYB-649). This machine's only, like
+       * `threadFilter`: never sent to the agent or the account directory. The
+       * directory has its own archive flag, but every write that omits it
+       * clears it, and Studio's three write sites all omit it.
+       */
+      archived?: string[];
     }
   >;
   /**
@@ -880,22 +1207,60 @@ interface State {
   exchange: { agentId: string; blockId: string } | null;
   openExchange: (agentId: string, blockId: string) => void;
   closeExchange: () => void;
+  /**
+   * The artifact being read, opened from its card. Over the conversation like
+   * an exchange, and closed back to it.
+   */
+  artifact: { agentId: string; artifactId: string; title?: string; version?: number } | null;
+  openArtifact: (agentId: string, artifactId: string, title?: string, version?: number) => void;
+  closeArtifact: () => void;
   /** Per-agent eve session id, so a conversation keeps its thread across turns. */
   sessions: Record<string, string | undefined>;
   /**
    * Every conversation the agent itself knows about, from its management
    * routes — Studio's, the phone's, iMessage threads, Buzz rooms, the routines
    * feed. undefined = not asked yet.
+   *
+   * Tagged with the filter it was fetched under, so a list fetched as "all"
+   * is never shown as "active", or the other way round.
    */
-  agentSessions: Record<string, AgentSession[] | undefined>;
+  agentSessions: Record<string, { filter: ThreadFilter; sessions: AgentSession[] } | undefined>;
+  /**
+   * The last `/sessions` request for this agent failed, under this filter
+   * (KYB-647). Absent once a request under the held filter succeeds. Without
+   * it a failure left nothing behind, and "no list held" read as "Loading…"
+   * for as long as the agent stayed unreachable.
+   */
+  sessionsFailed: Record<string, { filter: ThreadFilter; at: number } | undefined>;
+  /**
+   * Every thread the agent has described in ANY answer, whatever the filter,
+   * by id (KYB-649). What the chat knows about the thread it shows (is it
+   * still alive?) and what the archived list names, neither of which may
+   * depend on which filter the drawer last asked under.
+   */
+  threadIndex: Record<string, Record<string, AgentSession> | undefined>;
   /** The agent's routines conversation, when it has one. Shown as a feed, never adopted as the chat. */
   routinesSessions: Record<string, string | null | undefined>;
+  /**
+   * The person's thread on each agent (@kybernesis/manage 0.30+): one
+   * conversation the desktop and the phone share, with what routines reported
+   * in it. Null for an agent without threads; undefined before it was asked.
+   */
+  threads: Record<string, ThreadView | null | undefined>;
+  /** Read the person's thread: follow its live session, and place its reports. */
+  loadThread(agentId: string): Promise<void>;
   /**
    * A conversation the person picked on purpose, and when. Cross-device sync
    * may only replace it with a thread that moved AFTER the pick; otherwise
    * opening an older conversation flipped back within thirty seconds.
+   *
+   * `sessionId: null` is a NEW conversation the person asked for (KYB-649).
+   * Nothing adopts a thread over it, however new: the directory stores no
+   * surface, so its newest row can be a Buzz thread some Studio client
+   * republished, and yielding would put the person's next message into it.
+   * It stands until they send, pick a thread, or end the conversation.
    */
-  sessionChoice: Record<string, SessionChoice | undefined>;
+  sessionChoice: Record<string, { sessionId: string | null; at: number } | undefined>;
   streamIndexes: Record<string, number | undefined>;
   /** Per-agent "what it is doing right now", or null when idle. */
   activity: Record<string, string | null>;
@@ -947,11 +1312,39 @@ interface State {
   hydrate(agentId: string, mode?: "fill" | "merge"): Promise<void>;
   /** Learn which threads this account has, from the control-plane directory. */
   syncSessions(): Promise<void>;
-  /** Ask the agent for every conversation it has had. */
-  loadSessions(agentId: string): Promise<AgentSession[]>;
+  /**
+   * True from sign-in until the account's thread directory has been read
+   * against a loaded agent list (KYB-643). While it is, a chat with no thread
+   * may be about to receive one, so it shows "Loading messages…".
+   */
+  directoryLoading: boolean;
+  /**
+   * Ask the agent for its conversations, under the drawer's current filter
+   * unless `filter` names one. A list fetched under any other filter than the
+   * drawer's is returned but not stored, and so is an answer that arrives
+   * after a newer request's. A failure is recorded in `sessionsFailed` and
+   * returns the held list only if it was fetched under the same filter.
+   */
+  loadSessions(agentId: string, filter?: ThreadFilter): Promise<AgentSession[]>;
+  /** Choose active or all conversations for one agent, remember it here, and ask again. */
+  setThreadFilter(agentId: string, filter: ThreadFilter): void;
   /** Switch the chat to one of the agent's conversations and read it. */
   openSession(agentId: string, sessionId: string): Promise<void>;
-  /** Leave the current thread and start fresh, with an empty transcript. */
+  /** Back to the person's one thread, from a past conversation opened to read. */
+  openThread(agentId: string): Promise<void>;
+  /**
+   * Run a routine now, in the background, as its schedule would. Its answer
+   * arrives in the thread as a report. An agent without the route gets `say`
+   * as a message instead, as before.
+   */
+  runRoutine(agentId: string, routine: string, say?: string): void;
+  /**
+   * Leave the current thread and start fresh, with an empty transcript.
+   *
+   * Local only: the thread being left is NOT retired and stays in the drawer.
+   * This used to reset the selected session, which ended a live Buzz
+   * conversation mid-turn (KYB-649).
+   */
   startConversation(agentId: string): void;
   /** Pick up turns that happened on another device. Cheap; safe to call often. */
   refreshFromOthers(): Promise<void>;
@@ -981,19 +1374,24 @@ interface State {
   /** Ask the agent to stop the turn it is running. */
   stopTurn(agentId: string): void;
   /**
-   * "New conversation": retire the eve session and start a fresh one.
+   * Terminally retire ONE named session on the agent, after the person has
+   * confirmed it.
    *
-   * The one behaviour behind both the header button and the Settings card. The
-   * view CLEARS, but the old transcript is archived, not deleted: a divider
-   * block is appended and the view shows only what comes after it
-   * (@shared/conversationView). The earlier blocks stay in conversations.json
-   * for a future "past conversations" list.
+   * The target is passed in — the id the confirmation showed when it opened —
+   * and never read from `sessions[agentId]` here: adoption can change the
+   * selected thread while a confirmation is open, and the session ended must
+   * be the one the person was shown (KYB-649). If it is still the selected
+   * thread, the chat then starts fresh exactly as "New conversation" does.
    *
-   * The escape hatch for a conversation that cannot move: a turn interrupted by
-   * an agent restart never settles, so the session never parks and every later
-   * message queues behind it forever.
+   * Also the escape hatch for a conversation that cannot move: a turn
+   * interrupted by an agent restart never settles, so the session never parks
+   * and every later message queues behind it forever.
    */
-  resetConversation(agentId: string): void;
+  endConversation(agentId: string, sessionId: string): void;
+  /** Hide a thread from the drawer on this machine. Never calls the agent (KYB-649). */
+  archiveThread(agentId: string, sessionId: string): void;
+  /** Bring an archived thread back into the drawer. */
+  unarchiveThread(agentId: string, sessionId: string): void;
   answerQuestion(agentId: string, blockId: string, answer: { optionId?: string; text?: string; label?: string }): void;
   patchAgent(id: string, patch: Partial<Agent>): void;
 
@@ -1062,6 +1460,7 @@ function refreshAgentInfoAcrossRestart(get: () => State, agentId: string): void 
 
 export const useStore = create<State>((set, get) => ({
   agents: [],
+  directoryLoading: false,
   conversations: {},
 
   activeAgentId: "",
@@ -1078,13 +1477,17 @@ export const useStore = create<State>((set, get) => ({
   account: null,
   sessions: {},
   agentSessions: {},
+  sessionsFailed: {},
+  threadIndex: {},
   routinesSessions: {},
+  threads: {},
   sessionChoice: {},
   streamIndexes: {},
   rooms: [],
   roomQueue: {},
   roomSeen: {},
   exchange: null,
+  artifact: null,
   prefs: {},
   activity: {},
   inflight: {},
@@ -1105,6 +1508,7 @@ export const useStore = create<State>((set, get) => ({
     // Opening is when a conversation is worth fetching, not launch: a person
     // with thirty agents would otherwise pay for thirty replays to read one.
     void get().hydrate(id);
+    if (!isRoomId(id)) void get().loadThread(id);
   },
   /**
    * Learn which conversations this account has, wherever they were started.
@@ -1117,110 +1521,182 @@ export const useStore = create<State>((set, get) => ({
    */
   syncSessions: async () => {
     if (!window.studio) return;
-    const indexed = await window.studio.listSessions();
-
-    // Directory rows name the agent by its registered name; older rows from
-    // this app carry its id. Resolve either to the local agent, and skip what
-    // is not one of ours (a room, an agent no longer granted).
-    const resolve = (name: string): Agent | undefined =>
-      get().agents.find((a) => a.registeredName === name || a.id === name || a.name === name);
-    const localLastAt = (agentId: string): number => {
-      const local = get().conversations[agentId] ?? [];
-      return local.length ? Math.max(...local.map((b) => b.at)) : 0;
-    };
-
-    // Only the NEWEST row per agent is a candidate. The directory keeps every
-    // thread a person has had with an agent; walking all of them adopted one,
-    // then the next, on every tick — a conversation that emptied and refilled
-    // itself every thirty seconds.
-    /**
-     * A member's session in a room is filed under the room id as its label.
-     * It is adopted only where this machine has none — a room's transcript is
-     * assembled here from what each member said, so replacing a member's
-     * session would orphan the part of the transcript that came from it.
-     */
-    for (const entry of indexed) {
-      if (!entry.label || !isRoomId(entry.label)) continue;
-      const roomHere = get().rooms.find((r) => r.id === entry.label);
-      const agent = resolve(entry.agent);
-      if (!roomHere || !agent) continue;
-      const key = `${roomHere.id}::${agent.id}`;
-      if (!get().sessions[key]) set((s) => ({ sessions: { ...s.sessions, [key]: entry.sessionId } }));
+    // KYB-643: a row resolved against an agent list that has not loaded, for
+    // THIS sign-in, matches nothing and is skipped. That is not an answer, so it
+    // is not treated as one: no rows are judged, and the directory is not
+    // marked as read. The list being non-empty is not enough, because sign-out
+    // leaves the previous account's agents in place.
+    if (agentsGeneration !== signInGeneration) {
+      console.log("[index] sync skipped — agents not loaded yet");
+      return;
     }
-
-    // Every non-room row, grouped by the local agent it resolves to. Only the
-    // newest is a candidate; which one (if any) the chat should show is decided
-    // in ../../../shared/sessionAdoption, where the rules are tested.
-    const byAgent = new Map<string, (typeof indexed)[number][]>();
-    for (const entry of indexed) {
-      if (entry.label && isRoomId(entry.label)) continue;
-      const agent = resolve(entry.agent);
-      // A local agent's session is a Claude Code session in THIS machine's
-      // ~/.claude; another machine's id cannot be resumed here ("No conversation
-      // found with session ID", UAT story 3, 2026-10-16).
-      if (!agent || agent.kind === "local-claude") continue;
-      byAgent.set(agent.id, [...(byAgent.get(agent.id) ?? []), entry]);
+    const generation = signInGeneration;
+    // Loaded, and empty: there is no agent a thread could be adopted for, so
+    // the directory has nothing to say and the gate opens without a read.
+    if (get().agents.length === 0) {
+      console.log("[index] sync skipped — no agents granted to this account");
+      settleDirectory();
+      return;
     }
+    try {
+      const indexed = await window.studio.listSessions();
+      // Signed out (or in again) while the directory was read: these rows are
+      // the previous sign-in's, and acting on them would adopt threads into an
+      // account they may not belong to.
+      if (generation !== signInGeneration) {
+        console.log("[index] sync dropped — the sign-in changed while it read");
+        return;
+      }
+      /** One summary line per pass; counts only, never message text (KYB-637). */
+      const count = { room: 0, noAgent: 0, resolved: 0, same: 0, chosen: 0, fresh: 0, published: 0, adopted: 0 };
 
-    const seen = new Set<string>();
-    for (const [agentId, entries] of byAgent) {
-      const agent = get().agents.find((a) => a.id === agentId);
-      if (!agent) continue;
-      seen.add(agent.id);
+      // Directory rows name the agent by its registered name; older rows from
+      // this app carry its id. Resolve either to the local agent, and skip what
+      // is not one of ours (a room, an agent no longer granted).
+      const resolve = (name: string): Agent | undefined =>
+        get().agents.find((a) => a.registeredName === name || a.id === name || a.name === name);
+      const localLastAt = (agentId: string): number => {
+        const local = get().conversations[agentId] ?? [];
+        return local.length ? Math.max(...local.map((b) => b.at)) : 0;
+      };
 
+      // Only the NEWEST row per agent is a candidate. The directory keeps every
+      // thread a person has had with an agent; walking all of them adopted one,
+      // then the next, on every tick — a conversation that emptied and refilled
+      // itself every thirty seconds.
       /**
-       * Two-way. The account's thread is adopted when it is the newer one;
-       * when THIS machine's is newer, it is published so the other devices
-       * adopt it instead. Without the second half a desktop that had been
-       * talking all afternoon lost to a phone that said one thing later, and
-       * a thread this app had never recorded under the shared name was
-       * invisible everywhere else.
-       *
-       * A thread the person opened on purpose — or a "New conversation" — stays
-       * unless the directory's newest moved AFTER they picked.
-       *
-       * Adopting replaces this device's view of the older thread. Nothing is
-       * destroyed — that session is still durable on the agent — but it is no
-       * longer what this agent's chat shows.
+       * A member's session in a room is filed under the room id as its label.
+       * It is adopted only where this machine has none — a room's transcript is
+       * assembled here from what each member said, so replacing a member's
+       * session would orphan the part of the transcript that came from it.
        */
-      const decision = decideAdoption({
-        entries,
-        localSession: get().sessions[agent.id],
-        localAt: localLastAt(agent.id),
-        choice: get().sessionChoice[agent.id],
-      });
-      if (decision.kind === "skip") continue;
-      if (decision.kind === "publish") {
+      for (const entry of indexed) {
+        if (!entry.label || !isRoomId(entry.label)) continue;
+        count.room += 1;
+        const roomHere = get().rooms.find((r) => r.id === entry.label);
+        const agent = resolve(entry.agent);
+        if (!roomHere || !agent) continue;
+        const key = `${roomHere.id}::${agent.id}`;
+        if (!get().sessions[key]) set((s) => ({ sessions: { ...s.sessions, [key]: entry.sessionId } }));
+      }
+
+      const newest = new Map<string, (typeof indexed)[number]>();
+      for (const entry of indexed) {
+        if (entry.label && isRoomId(entry.label)) continue;
+        const agent = resolve(entry.agent);
+        if (!agent) {
+          count.noAgent += 1;
+          continue;
+        }
+        // A local agent's session is a Claude Code session in THIS machine's
+        // ~/.claude; another machine's id cannot be resumed here ("No conversation
+        // found with session ID", UAT story 3, 2026-10-16).
+        if (agent.kind === "local-claude") continue;
+        count.resolved += 1;
+        const at = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
+        const held = newest.get(agent.id);
+        const heldAt = held?.lastMessageAt ? Date.parse(held.lastMessageAt) : 0;
+        if (!held || at > heldAt) newest.set(agent.id, entry);
+      }
+
+      const seen = new Set<string>();
+      for (const entry of newest.values()) {
+        const agent = resolve(entry.agent);
+        if (!agent) continue;
+        seen.add(agent.id);
+        // The agent keeps this person's thread itself; there is nothing to pick.
+        if (get().threads[agent.id]) continue;
         const localSession = get().sessions[agent.id];
-        if (!localSession) continue;
+        const localAt = localLastAt(agent.id);
+        const remoteAt = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
+        if (localSession === entry.sessionId) {
+          count.same += 1;
+          continue;
+        }
+        const choice = get().sessionChoice[agent.id];
+        // A new conversation the person started stays new, whatever the
+        // directory says, until they send or pick a thread (KYB-649).
+        if (choice && choice.sessionId === null && !localSession) {
+          count.fresh += 1;
+          continue;
+        }
+        // A thread the person opened on purpose stays unless the directory's
+        // newest moved AFTER they picked (someone really did talk elsewhere).
+        if (choice && choice.sessionId === localSession && remoteAt <= choice.at) {
+          count.chosen += 1;
+          continue;
+        }
+
+        /**
+         * Two-way. The account's thread is adopted when it is the newer one;
+         * when THIS machine's is newer, it is published so the other devices
+         * adopt it instead. Without the second half a desktop that had been
+         * talking all afternoon lost to a phone that said one thing later, and
+         * a thread this app had never recorded under the shared name was
+         * invisible everywhere else.
+         *
+         * Adopting replaces this device's view of the older thread. Nothing is
+         * destroyed — that session is still durable on the agent — but it is no
+         * longer what this agent's chat shows.
+         */
+        if (localSession && localAt >= remoteAt) {
+          count.published += 1;
+          void window.studio.recordSession({
+            agent: agent.registeredName ?? agent.id,
+            sessionId: localSession,
+            label: agent.id,
+            lastMessageAt: localAt || Date.now(),
+            lastMessagePreview: [...(get().conversations[agent.id] ?? [])].reverse().find((b) => b.kind === "text")?.["text" as never] ?? undefined,
+          });
+          continue;
+        }
+
+        count.adopted += 1;
+        set((s) => {
+          const streamIndexes = { ...s.streamIndexes };
+          // The cursor belongs to the session being replaced; carrying it over
+          // would post the next message into a thread this device is no longer on.
+          delete streamIndexes[agent.id];
+          return {
+            sessions: { ...s.sessions, [agent.id]: entry.sessionId },
+            conversations: { ...s.conversations, [agent.id]: [] },
+            streamIndexes,
+          };
+        });
+        await get().hydrate(agent.id);
+      }
+
+      // Threads this machine holds that the directory has never heard of.
+      for (const agent of get().agents) {
+        const localSession = get().sessions[agent.id];
+        if (!localSession || seen.has(agent.id) || isRoomId(agent.id) || agent.kind === "local-claude") continue;
+        const localAt = localLastAt(agent.id);
+        if (!localAt) continue;
         void window.studio.recordSession({
           agent: agent.registeredName ?? agent.id,
           sessionId: localSession,
           label: agent.id,
-          lastMessageAt: decision.localAt || Date.now(),
-          lastMessagePreview: [...currentConversation(get().conversations[agent.id] ?? [])].reverse().find((b) => b.kind === "text")?.["text" as never] ?? undefined,
+          lastMessageAt: localAt,
         });
-        continue;
       }
+      get().persist();
 
-      set((s) => adoptedState(s, agent.id, decision.sessionId));
-      await get().hydrate(agent.id);
+      console.log(
+        `[index] sync: ${indexed.length} row(s); ${count.resolved} for an agent here (${newest.size} newest), ` +
+          `${count.adopted} adopted, ${count.published} published (local newer), ${count.same} already current, ` +
+          `${count.chosen} kept (chosen), ${count.fresh} kept (new conversation), ${count.resolved - newest.size} older; skipped ${count.room} room, ${count.noAgent} no agent`,
+      );
+    } catch (error) {
+      // A failed pass still settles the gate: waiting the full bound on every
+      // first message would not make the directory any more readable.
+      console.log(`[index] sync failed: ${(error as Error)?.message ?? String(error)}`);
+    } finally {
+      // After the adopted threads have been replayed, not before: a first
+      // message released earlier would land in a chat that the replay then
+      // declines to fill, because it only fills an empty one. And only for the
+      // sign-in this pass started under.
+      if (generation === signInGeneration) settleDirectory();
     }
-
-    // Threads this machine holds that the directory has never heard of.
-    for (const agent of get().agents) {
-      const localSession = get().sessions[agent.id];
-      if (!localSession || seen.has(agent.id) || isRoomId(agent.id) || agent.kind === "local-claude") continue;
-      const localAt = localLastAt(agent.id);
-      if (!localAt) continue;
-      void window.studio.recordSession({
-        agent: agent.registeredName ?? agent.id,
-        sessionId: localSession,
-        label: agent.id,
-        lastMessageAt: localAt,
-      });
-    }
-    get().persist();
   },
 
   /**
@@ -1235,13 +1711,16 @@ export const useStore = create<State>((set, get) => ({
     if (!window.studio) return;
     const sessionId = get().sessions[agentId];
     if (!sessionId) return;
-    if (mode === "fill" && (get().conversations[agentId] ?? []).length > 0) return;
+    if (mode === "fill" && (get().conversations[agentId] ?? []).some((b) => !fromThread(b))) return;
     const agent = get().agents.find((a) => a.id === agentId);
     if (!agent?.url) return;
 
     const replayed = await window.studio.replaySession({ url: agent.url, sessionId });
     if (!replayed || replayed.blocks.length === 0) return;
-    if (mode === "fill" && (get().conversations[agentId] ?? []).length > 0) return;
+    // The chat moved on while this was being read — a new conversation, or
+    // another thread. Writing now would put this thread's history into it.
+    if (get().sessions[agentId] !== sessionId) return;
+    if (mode === "fill" && (get().conversations[agentId] ?? []).some((b) => !fromThread(b))) return;
 
     /**
      * "merge" adds what this device has not seen; "fill" builds from nothing.
@@ -1267,6 +1746,16 @@ export const useStore = create<State>((set, get) => ({
     const fromAgent: Block[] = [
       ...replayed.blocks.map(
         (b): Block => ({ kind: "text", id: b.eventId, role: b.role, text: b.text, at: b.at }),
+      ),
+      ...(replayed.workBlocks ?? []).map(
+        (w): Block => ({
+          kind: "work",
+          // Keyed on the turn, like the peer exchanges.
+          id: `work-${sessionId}-${w.turnId}`,
+          at: w.at,
+          turnId: w.turnId,
+          steps: w.steps,
+        }),
       ),
       ...(replayed.peerBlocks ?? []).map(
         (p): Block => ({
@@ -1295,7 +1784,9 @@ export const useStore = create<State>((set, get) => ({
      * appears four times.
      */
     const next = reconcile(existing, fromAgent);
-    if (mode === "merge" && next.length === existing.length) return;
+    // Nothing new to add, unless a turn's steps read differently now: a newer
+    // steps reader can rename a chip or a label on a reply already on screen.
+    if (mode === "merge" && next.length === existing.length && stepsKey(next) === stepsKey(existing)) return;
 
 
     set((s) => ({
@@ -1369,6 +1860,17 @@ export const useStore = create<State>((set, get) => ({
     if (watching && wanted && watching.agentId === wanted.agentId && watching.sessionId === wanted.sessionId) return;
     get().stopWatching();
     if (!wanted || !agent?.url || !window.studio) return;
+    if (streamIndexes[agent.id] === undefined && !replayFirst.has(wanted.sessionId)) {
+      // No cursor yet: read what the agent holds first, then watch from where that read ended.
+      replayFirst.add(wanted.sessionId);
+      void get()
+        .hydrate(agent.id)
+        .finally(() => {
+          get().watchActive();
+          replayFirst.delete(wanted.sessionId);
+        });
+      return;
+    }
     const streamId = `w${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
     // The stream listeners were registered lazily by the first SEND from this
     // window. A watch started before any send had nobody listening, so a turn
@@ -1398,30 +1900,144 @@ export const useStore = create<State>((set, get) => ({
     await get().refreshRooms();
     await get().syncSessions();
     const active = get().activeAgentId;
+    if (active && !isRoomId(active)) await get().loadThread(active);
     // The open conversation only. Refreshing every thread would multiply the
     // cost by the size of the sidebar to update something nobody is looking at.
     if (active && !isRoomId(active) && !get().inflight[active]) {
       await get().hydrate(active, "merge");
     }
+    // Threads started on another surface, and lifecycle changes, reach a list
+    // on screen within one tick (KYB-649, AC9).
+    if (active && !isRoomId(active)) refreshListIfShown(get, active);
   },
 
   setPanel: (panel) => set({ panel, activeRoutineId: null }),
-  loadSessions: async (agentId) => {
+  loadSessions: async (agentId, requested) => {
     const agent = get().agents.find((a) => a.id === agentId);
     if (!window.studio || !agent?.url) return [];
+    const filter = requested ?? threadFilterFor(get().prefs, agentId);
+    const seq = (sessionsSent.get(agentId) ?? 0) + 1;
+    sessionsSent.set(agentId, seq);
+    const key = listKey(agentId, filter);
+    // Whether this answer is still the newest word on the list for its
+    // filter, and on the agent as a whole. Asked when the answer lands, and
+    // claimed in the same breath, so a later request's answer always wins.
+    const claimList = (): boolean => {
+      if (seq <= (sessionsListApplied.get(key) ?? 0)) return false;
+      sessionsListApplied.set(key, seq);
+      return true;
+    };
+    const claimIndex = (): boolean => {
+      if (seq <= (sessionsIndexApplied.get(agentId) ?? 0)) return false;
+      sessionsIndexApplied.set(agentId, seq);
+      return true;
+    };
+    // Stored only under the drawer's filter as it is NOW. The switch may have
+    // moved while this was in flight, and a late "active" answer would
+    // otherwise land on top of "all" and look like the toggle had done
+    // nothing; a caller that named its own filter is not the drawer's.
+    const isCurrent = (): boolean => threadFilterFor(get().prefs, agentId) === filter;
+    const failed = (): AgentSession[] => {
+      if (isCurrent() && claimList()) {
+        set((st) => ({ sessionsFailed: { ...st.sessionsFailed, [agentId]: { filter, at: Date.now() } } }));
+      }
+      // Only a list fetched under the filter that was asked for. Whatever else
+      // is held may be the drawer's Active list, and `loadAgentInfo` adopts a
+      // thread from what this returns: an Active list there could offer a
+      // thread All never would.
+      const held = get().agentSessions[agentId];
+      return held?.filter === filter ? held.sessions : [];
+    };
+    let res: { ok: boolean; status: number; data: unknown };
     try {
-      const res = await window.studio.manage({ url: agent.url, path: "/sessions?limit=60" });
-      if (!res.ok) return get().agentSessions[agentId] ?? [];
-      const data = res.data as { sessions?: AgentSession[]; routines?: string | null };
-      const sessions = data.sessions ?? [];
-      set((st) => ({
-        agentSessions: { ...st.agentSessions, [agentId]: sessions },
-        routinesSessions: { ...st.routinesSessions, [agentId]: data.routines ?? null },
-      }));
-      return sessions;
+      res = await window.studio.manage({ url: agent.url, path: sessionsPath(filter), timeoutMs: SESSIONS_READ_TIMEOUT_MS });
     } catch {
-      return get().agentSessions[agentId] ?? [];
+      return failed();
     }
+    // An answer with no readable body is as good as none: storing it would
+    // show "No conversations" for an agent that has them.
+    if (!res.ok || !res.data || typeof res.data !== "object") return failed();
+    const data = res.data as { sessions?: AgentSession[]; routines?: string | null };
+    const sessions = data.sessions ?? [];
+    const list = isCurrent() && claimList();
+    const index = claimIndex();
+    if (list || index) {
+      set((st) => {
+        const next: Partial<State> = {};
+        if (list) {
+          next.agentSessions = { ...st.agentSessions, [agentId]: { filter, sessions } };
+          next.sessionsFailed = { ...st.sessionsFailed, [agentId]: undefined };
+        }
+        if (index) {
+          next.threadIndex = { ...st.threadIndex, [agentId]: mergeThreadIndex(st.threadIndex[agentId], sessions) };
+          next.routinesSessions = { ...st.routinesSessions, [agentId]: data.routines ?? null };
+        }
+        return next;
+      });
+    }
+    // Returned to its own caller even when it arrived too late to be stored:
+    // `loadAgentInfo` asked for All and gets All.
+    return sessions;
+  },
+  loadThread: async (agentId) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (!window.studio || !agent?.url || isRoomId(agentId)) return;
+    let res: { ok: boolean; status: number; data: unknown };
+    try {
+      res = await window.studio.manage({ url: agent.url, path: "/thread" });
+    } catch {
+      return;
+    }
+    // 404 is an agent whose manage predates threads: it keeps the directory.
+    // Anything else (offline, a sign-in to renew) says nothing new.
+    const view = res.ok ? readThreadView(res.data) : null;
+    if (!view) {
+      if (res.ok || res.status === 404) set((s) => ({ threads: { ...s.threads, [agentId]: null } }));
+      return;
+    }
+
+    // A report this device has not seen rings, as a reply would. The first
+    // read only learns what is there: a launch is not news.
+    const seen = seenReports.get(agentId);
+    if (seen) {
+      for (const r of newReports(view, seen)) {
+        alertIfAway(get, agentId, `${agent.name} · ${reportLabel(r.routine)}`, r.text);
+      }
+    }
+    seenReports.set(agentId, new Set(view.reports.map((r) => r.id)));
+    set((s) => ({ threads: { ...s.threads, [agentId]: view } }));
+
+    /**
+     * Follow the thread to the session it holds now. The desktop and the phone
+     * send to the same address, so whichever started a new session (after a
+     * long quiet, or an upgrade), the other moves onto it here. What this
+     * device already shows stays; the new session's turns are added below.
+     *
+     * Not while a turn runs, and not over a conversation the person opened
+     * from the drawer on purpose: that is theirs to read until they send.
+     */
+    const held = get().sessions[agentId];
+    const picked = Boolean(held) && get().sessionChoice[agentId]?.sessionId === held && !view.sessions.some((x) => x.id === held);
+    if (view.current && held !== view.current && !get().inflight[agentId] && !picked) {
+      console.log(`[thread] ${agentId}: following the thread to ${view.current.slice(0, 18)}`);
+      set((st) => {
+        const streamIndexes = { ...st.streamIndexes };
+        delete streamIndexes[agentId];
+        return { sessions: { ...st.sessions, [agentId]: view.current ?? undefined }, streamIndexes };
+      });
+      await get().hydrate(agentId, "merge");
+    }
+
+    set((s) => ({
+      conversations: { ...s.conversations, [agentId]: placeThreadBlocks(s.conversations[agentId] ?? [], threadBlocks(view)) },
+    }));
+    get().persist();
+  },
+  setThreadFilter: (agentId, filter) => {
+    if (threadFilterFor(get().prefs, agentId) === filter) return;
+    set((st) => ({ prefs: { ...st.prefs, [agentId]: { ...st.prefs[agentId], threadFilter: filter } } }));
+    get().persist();
+    void get().loadSessions(agentId);
   },
   openSession: async (agentId, sessionId) => {
     if (get().sessions[agentId] === sessionId) return;
@@ -1442,13 +2058,82 @@ export const useStore = create<State>((set, get) => ({
     get().persist();
     await get().hydrate(agentId);
   },
+  openThread: async (agentId) => {
+    const thread = get().threads[agentId];
+    if (!thread || get().inflight[agentId]) return;
+    if (thread.current) {
+      await get().openSession(agentId, thread.current);
+    } else {
+      // No message yet: the thread starts with the next one.
+      retireGeneration(agentId);
+      set((st) => {
+        const streamIndexes = { ...st.streamIndexes };
+        delete streamIndexes[agentId];
+        const sessionChoice = { ...st.sessionChoice };
+        delete sessionChoice[agentId];
+        return {
+          sessions: { ...st.sessions, [agentId]: undefined },
+          conversations: { ...st.conversations, [agentId]: [] },
+          sessionChoice,
+          streamIndexes,
+          activity: { ...st.activity, [agentId]: null },
+        };
+      });
+      get().persist();
+    }
+    await get().loadThread(agentId);
+  },
+  runRoutine: (agentId, routine, say) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (!window.studio || !agent?.url) return;
+    const fallback = (): void => {
+      if (say) void get().send(agentId, say);
+    };
+    if (!get().threads[agentId]) return fallback();
+    const note = (label: string): void =>
+      set((st) => ({
+        conversations: {
+          ...st.conversations,
+          [agentId]: [...(st.conversations[agentId] ?? []), { kind: "divider", id: `run:${routine}:${Date.now()}`, at: Date.now(), label }],
+        },
+      }));
+    void window.studio
+      .manage({ url: agent.url, path: "/thread/run", body: { routine } })
+      .then((res) => {
+        if (res.status === 404 && !res.ok) {
+          // An agent that predates the route, or a routine it no longer has.
+          const missing = (res.data as { error?: unknown } | undefined)?.error === "No such routine.";
+          if (missing) note(`${routine} isn't a routine on this agent any more`);
+          else fallback();
+          return;
+        }
+        if (!res.ok) {
+          const error = (res.data as { error?: unknown } | undefined)?.error;
+          note(typeof error === "string" ? error : `${routine} could not start`);
+          return;
+        }
+        note(`Running ${routine} in the background. Its answer will appear here.`);
+        // Look for the report sooner than the usual beat, for a few minutes.
+        for (const after of [10_000, 20_000, 40_000, 60_000, 90_000, 120_000, 180_000]) {
+          setTimeout(() => void get().loadThread(agentId), after);
+        }
+      })
+      .catch(() => note(`${routine} could not start`));
+  },
   startConversation: (agentId) => {
-    get().resetConversation(agentId);
-    set((st) => ({
-      conversations: { ...st.conversations, [agentId]: [] },
-      sessionChoice: { ...st.sessionChoice, [agentId]: { at: Date.now() } },
-    }));
-    get().persist();
+    // A turn is running in the current thread; let it finish (as openSession).
+    if (get().inflight[agentId]) return;
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (get().threads[agentId] && window.studio && agent?.url) {
+      /**
+       * Start fresh. There is one thread, so nothing is left behind: the agent
+       * lets go of what it was holding in mind, everything said stays on
+       * screen, and a line marks where the fresh start began.
+       */
+      void window.studio.manage({ url: agent.url, path: "/thread/fresh", body: {} }).then(() => get().loadThread(agentId));
+      return;
+    }
+    leaveForNewConversation(get, set, agentId);
   },
   openRoutine: (id) => set({ panel: "routine", activeRoutineId: id }),
   setPluginsOpen: (pluginsOpen) => set({ pluginsOpen }),
@@ -1494,6 +2179,8 @@ export const useStore = create<State>((set, get) => ({
     void window.studio?.saveRoom({ id: roomId, archived: true });
   },
   openExchange: (agentId, blockId) => set({ exchange: { agentId, blockId } }),
+  openArtifact: (agentId, artifactId, title, version) => set({ artifact: { agentId, artifactId, title, version } }),
+  closeArtifact: () => set({ artifact: null }),
   closeExchange: () => set({ exchange: null }),
 
   /**
@@ -1560,6 +2247,13 @@ export const useStore = create<State>((set, get) => ({
   },
 
   send: (agentId, text, fromQueue, attachments, opts) => {
+    // A retired thread cannot be continued (KYB-649). The composer is already
+    // closed on one; this is for every other way in — voice, a queued message.
+    const held = get().sessions[agentId];
+    if (held && isRetired(get().threadIndex[agentId]?.[held])) {
+      console.log(`[send] refused: ${agentId}'s open thread has ended`);
+      return;
+    }
     const at = Date.now();
     // A queued message was already shown when the user typed it. Adding it again
     // on flush is how one message becomes two identical bubbles.
@@ -1592,14 +2286,53 @@ export const useStore = create<State>((set, get) => ({
     // is annoying; losing what you asked is worse.
     get().persist();
 
-    const agent = get().agents.find((a) => a.id === agentId);
-
     // A Claude Code agent on this machine: its own transport, none of the eve
-    // machinery (cursor, questions, session directory) applies.
-    if (agent?.kind === "local-claude") {
+    // machinery (directory, cursor, questions, threads) applies.
+    if (get().agents.find((a) => a.id === agentId)?.kind === "local-claude") {
       sendLocalTurn(get, set, agentId, text, at, Boolean(opts?.scheduled));
       return;
     }
+
+    /**
+     * KYB-643: no thread with this agent yet, and the account's directory is
+     * still being read. Sending now would start a new thread that every other
+     * device then moves onto, while the directory may be about to name the one
+     * the person has been using. So wait for it (bounded), then go out on
+     * whatever thread it found.
+     *
+     * The bubble stays on screen meanwhile. If the directory adopts a thread,
+     * adopting replaces this chat with that thread's history, bubble included,
+     * so it is put back after the history rather than lost.
+     */
+    if (!directorySettled && !directoryWaited && !get().sessions[agentId]) {
+      const shown = `u${at}`;
+      const generation = signInGeneration;
+      console.log(`[send] waiting for the thread directory before the first message to ${agentId}`);
+      void waitForDirectory().then((how) => {
+        if (generation !== signInGeneration) {
+          // Signed out (or in again) while it waited. Sending now would go out
+          // under whatever account and gate are current, not the one it was
+          // written under. It stays on screen, unsent.
+          console.log(`[send] not sent: the sign-in ended while the first message to ${agentId} waited`);
+          return;
+        }
+        if (how === "timeout") {
+          console.log(
+            `[send] thread directory not read after ${directoryWaitMs / 1000} s; the first message to ${agentId} starts a new thread`,
+          );
+        }
+        const stillShown = (get().conversations[agentId] ?? []).some((b) => b.id === shown);
+        directoryWaited = true;
+        try {
+          get().send(agentId, text, fromQueue || stillShown, attachments);
+        } finally {
+          directoryWaited = false;
+        }
+      });
+      return;
+    }
+
+    const agent = get().agents.find((a) => a.id === agentId);
 
     // Create the reply bubble on first content rather than up front. An empty
     // "…" bubble alongside the activity line says the same thing twice, and it
@@ -1652,6 +2385,39 @@ export const useStore = create<State>((set, get) => ({
       return;
     }
 
+    /**
+     * The person's thread on the agent, when it keeps one. A message always
+     * goes into the thread, so a conversation opened from the drawer to read
+     * is left first, and the thread's own session comes back on screen.
+     */
+    const thread = get().threads[agentId];
+    let recap: string | undefined;
+    if (thread) {
+      const held = get().sessions[agentId];
+      if (thread.current && held && held !== thread.current && !thread.sessions.some((x) => x.id === held)) {
+        const bubble = (get().conversations[agentId] ?? []).filter((b) => b.kind === "text" && b.role === "user" && b.text === text).at(-1);
+        retireGeneration(agentId);
+        set((st) => {
+          const streamIndexes = { ...st.streamIndexes };
+          delete streamIndexes[agentId];
+          return {
+            sessions: { ...st.sessions, [agentId]: thread.current ?? undefined },
+            conversations: { ...st.conversations, [agentId]: bubble ? [bubble] : [] },
+            sessionChoice: { ...st.sessionChoice, [agentId]: { sessionId: thread.current, at: Date.now() } },
+            streamIndexes,
+          };
+        });
+        void get().hydrate(agentId, "merge").then(() => get().loadThread(agentId));
+      } else if (thread.sessions.length === 0) {
+        // The first message into the thread: the agent starts a new session for
+        // it, so it is told how the conversation on this screen ended.
+        const before = [...(get().conversations[agentId] ?? [])];
+        const last = before.map((b) => b.kind === "text" && b.role === "user" && b.text === text).lastIndexOf(true);
+        if (last >= 0) before.splice(last, 1);
+        recap = recapOf(before);
+      }
+    }
+
     const streamId = `s${at}`;
     const bubbleId = `a${at}`;
     set((s) => ({ streaming: { ...s.streaming, [streamId]: "" } }));
@@ -1660,6 +2426,7 @@ export const useStore = create<State>((set, get) => ({
     set((s) => ({ inflight: { ...s.inflight, [agentId]: { streamId } } }));
     armDeadMan(get, set, agentId);
 
+    const workingFolder = get().workspaces[agentId];
     const sentAtGeneration = currentGeneration(agentId);
     void window.studio
       .send({
@@ -1675,22 +2442,37 @@ export const useStore = create<State>((set, get) => ({
         })),
         sessionId: get().sessions[agentId],
         streamIndex: get().streamIndexes[agentId],
-        clientContext: get().workspaces[agentId]
-          ? {
-              workingFolder: get().workspaces[agentId],
-              note: "Default working directory on the user's own computer. Other paths are still fine when they ask.",
-            }
-          : undefined,
+        clientContext:
+          workingFolder || recap
+            ? {
+                ...(workingFolder
+                  ? {
+                      workingFolder,
+                      note: "Default working directory on the user's own computer. Other paths are still fine when they ask.",
+                    }
+                  : {}),
+                ...(recap ? { earlierConversation: recap } : {}),
+              }
+            : undefined,
+        ...(thread ? { thread: true } : {}),
         streamId,
       })
       .then((res) => {
-        // "New conversation" was pressed while this turn was finishing. Writing
-        // its session back would re-adopt the thread the person just left, and
-        // its reply would land after the divider (UAT story 6, 2026-10-16).
+        // The chat left this thread while the turn ran — Stop, then New
+        // conversation, End, or another thread picked. Writing now would put
+        // the chat back on the thread it left and turn a new conversation's
+        // hold into a pick of that thread (KYB-649). The reply is kept by the
+        // agent; opening that thread again shows it.
         if (sentAtGeneration !== currentGeneration(agentId)) return;
         set((s) => ({
           sessions: { ...s.sessions, [agentId]: res.sessionId },
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
+          // The first message of a new conversation makes it a thread like any
+          // other: the fresh-start hold gives way to an ordinary choice.
+          sessionChoice:
+            s.sessionChoice[agentId]?.sessionId === null && res.sessionId
+              ? { ...s.sessionChoice, [agentId]: { sessionId: res.sessionId, at: Date.now() } }
+              : s.sessionChoice,
         }));
         /**
          * Tell the account where this conversation lives.
@@ -1711,6 +2493,8 @@ export const useStore = create<State>((set, get) => ({
           lastMessageAt: Date.now(),
           lastMessagePreview: (res.reply ?? "").slice(0, 200),
         });
+        refreshListIfShown(get, agentId);
+        if (thread) void get().loadThread(agentId);
         if (res.reply) {
           if (!res.askedQuestion) retireStaleQuestions(get, set, agentId);
           upsertBlock(get, set, agentId, bubbleId, res.reply);
@@ -1727,17 +2511,20 @@ export const useStore = create<State>((set, get) => ({
         upsertBlock(get, set, agentId, bubbleId, e instanceof Error ? e.message : String(e));
       })
       .finally(() => {
-        set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
+        // Only THIS turn's flight is released. A turn that settles after Stop
+        // must not release, or disarm, a newer turn running in its place.
+        const mine = (get().inflight[agentId]?.streamId ?? streamId) === streamId;
         set((s) => {
           const rest = { ...s.streaming };
           delete rest[streamId];
+          if (!mine) return { streaming: rest };
           const flight = { ...s.inflight };
           delete flight[agentId];
-          return { streaming: rest, inflight: flight };
+          return { streaming: rest, inflight: flight, activity: { ...s.activity, [agentId]: null } };
         });
         // Keep the owner mapping briefly: a late event that arrives after the
         // response is exactly what this whole change is about.
-        disarmDeadMan(agentId);
+        if (mine) disarmDeadMan(agentId);
         setTimeout(() => streamOwners.delete(streamId), 30_000);
         get().persist();
         flushQueue(get, agentId);
@@ -1818,52 +2605,54 @@ export const useStore = create<State>((set, get) => ({
     flushQueue(get, agentId);
   },
 
-  resetConversation: (agentId) => {
+  endConversation: (agentId, sessionId) => {
     const agent = get().agents.find((a) => a.id === agentId);
-    const isLocal = agent?.kind === "local-claude";
-    if (!agent || (!agent.url && !isLocal) || !window.studio) return;
+    if (!agent?.url || !window.studio || !sessionId) return;
     const url = agent.url;
-    const sessionId = get().sessions[agentId];
-    const blocks = get().conversations[agentId] ?? [];
-    // Nothing to start fresh from: no session, and nothing said since the last
-    // divider. Stacking dividers would only mark the same empty spot twice.
-    if (!sessionId && (blocks.length === 0 || blocks[blocks.length - 1].kind === "divider")) return;
-    // Drop the local handles first. Even if the agent cannot retire the session
-    // (its owner may already be gone), the next message must not be posted into
-    // the session that was stuck — that is the whole point of resetting.
-    disarmDeadMan(agentId);
-    retireGeneration(agentId);
-    const at = Date.now();
-    set((s) => ({
-      sessions: { ...s.sessions, [agentId]: undefined },
-      // A pick of no thread: sync may not bring back the one just left, or an
-      // older one, until something moves after this moment.
-      sessionChoice: { ...s.sessionChoice, [agentId]: { at } },
-      streamIndexes: { ...s.streamIndexes, [agentId]: 0 },
-      inflight: { ...s.inflight, [agentId]: undefined },
-      activity: { ...s.activity, [agentId]: null },
-      conversations: {
-        ...s.conversations,
-        [agentId]: [
-          ...(s.conversations[agentId] ?? []),
-          { kind: "divider", id: `new-${at}`, at, ...(sessionId ? { retiredSessionId: sessionId } : {}) },
-        ],
-      },
+    // Drop the local handles first, when it is the thread on screen. Even if
+    // the agent cannot retire the session (its owner may already be gone), the
+    // next message must not be posted into the session that was stuck — that
+    // is the whole point of ending it.
+    if (get().sessions[agentId] === sessionId) {
+      disarmDeadMan(agentId);
+      set((s) => ({ inflight: { ...s.inflight, [agentId]: undefined } }));
+      leaveForNewConversation(get, set, agentId);
+    }
+    console.log(`[sessions] ending ${agentId} ${sessionId.slice(0, 18)} (confirmed)`);
+    // Nothing is destroyed if this fails — the thread stays alive on the agent
+    // — but it must not fail silently.
+    void window.studio
+      .resetSession({ url, sessionId })
+      .then(() => {
+        // Known ended from here, before the agent is asked again: a thread
+        // reopened in the meantime must already be read-only.
+        set((st) => {
+          const known = st.threadIndex[agentId]?.[sessionId];
+          if (!known) return {};
+          return {
+            threadIndex: { ...st.threadIndex, [agentId]: { ...st.threadIndex[agentId], [sessionId]: { ...known, status: "ended" } } },
+          };
+        });
+        refreshListIfShown(get, agentId);
+      })
+      .catch((error: unknown) =>
+        console.log(`[sessions] ending ${agentId} ${sessionId.slice(0, 18)} failed: ${(error as Error)?.message ?? String(error)}`),
+      );
+  },
+
+  archiveThread: (agentId, sessionId) => {
+    const archived = get().prefs[agentId]?.archived ?? [];
+    if (archived.includes(sessionId)) return;
+    set((st) => ({ prefs: { ...st.prefs, [agentId]: { ...st.prefs[agentId], archived: [...archived, sessionId] } } }));
+    get().persist();
+  },
+  unarchiveThread: (agentId, sessionId) => {
+    const archived = get().prefs[agentId]?.archived ?? [];
+    if (!archived.includes(sessionId)) return;
+    set((st) => ({
+      prefs: { ...st.prefs, [agentId]: { ...st.prefs[agentId], archived: archived.filter((id) => id !== sessionId) } },
     }));
     get().persist();
-    if (isLocal) {
-      // A local turn still running belongs to the session being retired.
-      void window.studio.stopLocal(agentId).catch(() => undefined);
-      return;
-    }
-    if (sessionId) {
-      void window.studio.resetSession({ url, sessionId }).catch(() => undefined);
-      // Best effort, for the person's other devices; this device's guard is
-      // `sessionChoice`, which does not depend on the directory honouring it.
-      void window.studio
-        .recordSession({ agent: agent.registeredName ?? agent.id, sessionId, label: agent.id, archived: true })
-        .catch(() => undefined);
-    }
   },
 
   answerQuestion: (agentId, blockId, answer) => {
@@ -1883,7 +2672,9 @@ export const useStore = create<State>((set, get) => ({
       conversations: {
         ...s.conversations,
         [agentId]: (s.conversations[agentId] ?? []).map((b) =>
-          b.id === blockId && b.kind === "question" ? { ...b, answered: label } : b,
+          b.id === blockId && b.kind === "question"
+            ? { ...b, answered: label, ...(answer.optionId ? { answeredOption: answer.optionId } : {}) }
+            : b,
         ),
       },
     }));
@@ -1891,6 +2682,37 @@ export const useStore = create<State>((set, get) => ({
 
     const agent = get().agents.find((a) => a.id === agentId);
     if (!window.studio || !agent?.url) return;
+
+    /**
+     * A routine's question. Its run is a background session of its own, so
+     * the answer goes there, through the thread route that checks it reported
+     * to this person. The run carries on out of sight, and what it finally
+     * says arrives in the thread as a report.
+     */
+    if (block.runSessionId) {
+      const runSessionId = block.runSessionId;
+      void window.studio
+        .manage({
+          url: agent.url,
+          path: "/thread/respond",
+          body: { sessionId: runSessionId, inputResponses: [{ requestId: block.requestId, optionId: answer.optionId, text: answer.text }] },
+        })
+        .then((res) => {
+          if (res.ok) {
+            // The run usually answers within seconds; the regular tick covers the rest.
+            setTimeout(() => void get().loadThread(agentId), 8_000);
+            return;
+          }
+          set((s) => ({
+            conversations: {
+              ...s.conversations,
+              [agentId]: (s.conversations[agentId] ?? []).map((b) => (b.id === blockId && b.kind === "question" ? { ...b, answered: undefined, answeredOption: undefined } : b)),
+            },
+          }));
+          upsertBlock(get, set, agentId, `a${Date.now()}`, "That answer did not reach the routine. Try again in a moment.");
+        });
+      return;
+    }
 
     const at = Date.now();
     const streamId = `s${at}`;
@@ -1900,6 +2722,7 @@ export const useStore = create<State>((set, get) => ({
     set((s) => ({ inflight: { ...s.inflight, [agentId]: { streamId } } }));
     armDeadMan(get, set, agentId);
 
+    const sentAtGeneration = currentGeneration(agentId);
     void window.studio
       .send({
         url: agent.url,
@@ -1913,6 +2736,8 @@ export const useStore = create<State>((set, get) => ({
         streamId,
       })
       .then((res) => {
+        // As in send: the chat has left this thread (KYB-649).
+        if (sentAtGeneration !== currentGeneration(agentId)) return;
         set((s) => ({
           sessions: { ...s.sessions, [agentId]: res.sessionId },
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
@@ -1924,16 +2749,20 @@ export const useStore = create<State>((set, get) => ({
           upsertBlock(get, set, agentId, bubbleId, "(the agent returned no text for this turn)");
         }
       })
-      .catch((e: unknown) =>
-        upsertBlock(get, set, agentId, bubbleId, e instanceof Error ? e.message : String(e)),
-      )
+      .catch((e: unknown) => {
+        if (sentAtGeneration !== currentGeneration(agentId)) return;
+        upsertBlock(get, set, agentId, bubbleId, e instanceof Error ? e.message : String(e));
+      })
       .finally(() => {
-        set((s) => {
-          const flight = { ...s.inflight };
-          delete flight[agentId];
-          return { activity: { ...s.activity, [agentId]: null }, inflight: flight };
-        });
-        disarmDeadMan(agentId);
+        const mine = (get().inflight[agentId]?.streamId ?? streamId) === streamId;
+        if (mine) {
+          set((s) => {
+            const flight = { ...s.inflight };
+            delete flight[agentId];
+            return { activity: { ...s.activity, [agentId]: null }, inflight: flight };
+          });
+          disarmDeadMan(agentId);
+        }
         setTimeout(() => streamOwners.delete(streamId), 30_000);
         get().persist();
         flushQueue(get, agentId);
@@ -2129,11 +2958,9 @@ export const useStore = create<State>((set, get) => ({
     }
     const ws = await window.studio.loadState<Record<string, string>>("workspaces.json");
     if (ws) set({ workspaces: ws });
-
-    // After the local state, so the directory can only add threads this device
-    // does not have. Not awaited by the caller: a slow control plane must not
-    // hold up an app whose conversations are already on disk.
-    void get().syncSessions();
+    // The directory is NOT read here. Here is before the agents have loaded,
+    // and a row matched against no agents is silently skipped (KYB-643);
+    // `signedIn` reads it once they have.
   },
 
   /** Write the transcript now. Cheap, and called at every point worth surviving. */
@@ -2176,11 +3003,7 @@ export const useStore = create<State>((set, get) => ({
 
       // Restore before touching the network, so reopening shows the
       // conversation immediately rather than an empty window that fills in later.
-      await get().restore();
-
-      await get().refreshAgents();
-      startCrossDeviceRefresh(get);
-      startScheduler(get);
+      await signedIn(get, set);
     } catch (e) {
       set({ authState: "signed-out", authError: e instanceof Error ? e.message : String(e) });
     }
@@ -2191,6 +3014,12 @@ export const useStore = create<State>((set, get) => ({
     // Which control plane this actually is. Held as a constant, the account menu
     // went on naming ours after the app had been pointed somewhere else.
     void window.studio.controlPlane().then((cp) => set({ issuer: cp.url.replace(/^https?:\/\//, "") }));
+    // KYB-643: which sign-in this list belongs to, recorded only if that
+    // sign-in is still current when it lands.
+    const generation = signInGeneration;
+    const loadedFor = (): void => {
+      if (generation === signInGeneration) agentsGeneration = generation;
+    };
     try {
       const remote = await window.studio.listAgents();
       // Local coding agents are this machine's own, not the control plane's,
@@ -2206,6 +3035,7 @@ export const useStore = create<State>((set, get) => ({
               ? undefined
               : "No agents are granted to your account yet. Register one in the control plane, or ask an admin for a grant.",
         });
+        loadedFor();
         return;
       }
       // Keep local presentation (accent, pin) but let the control plane own the
@@ -2293,6 +3123,8 @@ export const useStore = create<State>((set, get) => ({
         if (send) void window.studio.saveAgentProfile(carry);
       }
 
+      loadedFor();
+
       // Rooms need the agent list to map names to ids, so they come after it.
       void get().refreshRooms();
 
@@ -2363,14 +3195,21 @@ export const useStore = create<State>((set, get) => ({
      * is listed as the routines feed, and the chat only picks a thread when it
      * has none: the newest live conversation a person actually had.
      */
-    const listed = await get().loadSessions(agentId);
-    if (!get().sessions[agentId]) {
+    // Always All, as before KYB-646: which thread the chat adopts must not
+    // depend on how the drawer happens to be filtered. Under Active, `alive=1`
+    // reaches past the 60 newest and could adopt an older live thread that
+    // All would never have offered.
+    const listed = await get().loadSessions(agentId, "all");
+    // Not over a new conversation the person started (KYB-649): with nothing
+    // held, this would otherwise fill it with the newest live thread — which,
+    // while KYB-645 stands, can be a Buzz conversation labelled "chat".
+    const fresh = get().sessionChoice[agentId]?.sessionId === null;
+    // An agent that keeps the person's thread names the session itself.
+    await get().loadThread(agentId);
+    if (!get().threads[agentId] && !get().sessions[agentId] && !fresh) {
       const newest = listed.find((x) => x.surface === "chat" && x.status === "alive");
-      // After "New conversation" the next thread is the one the person starts,
-      // unless one really moved since (another device).
-      const fresh = get().sessionChoice[agentId];
-      const stale = !!newest && !!fresh && !fresh.sessionId && Date.parse(newest.updatedAt) <= fresh.at;
-      if (newest && !stale) {
+      if (newest) {
+        console.log(`[sessions] ${agentId}: no thread held; adopted the newest live chat thread ${newest.id.slice(0, 18)}`);
         set((st) => {
           const streamIndexes = { ...st.streamIndexes };
           delete streamIndexes[agentId];
@@ -2404,13 +3243,7 @@ export const useStore = create<State>((set, get) => ({
         account: { email: session.email, orgName: session.orgName },
         authError: null,
       });
-      await get().restore();
-      await get().refreshAgents();
-      // Boot only starts these when a session already exists, so a first
-      // sign-in ran with no cross-device sync and no scheduled turns until the
-      // app was relaunched. Both are idempotent.
-      startCrossDeviceRefresh(get);
-      startScheduler(get);
+      await signedIn(get, set);
       return true;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -2427,7 +3260,11 @@ export const useStore = create<State>((set, get) => ({
     // history — the eve session ids are dropped because they will not resume,
     // but what was said stays and reappears on the next sign-in.
     get().persist();
+    // End this sign-in's directory gate: a first message still waiting on it
+    // is not sent, and a pass still running does not settle the next one.
+    signInGeneration += 1;
+    settleDirectory();
     await window.studio?.signOut();
-    set({ authState: "signed-out", account: null, sessions: {}, streamIndexes: {} });
+    set({ authState: "signed-out", account: null, sessions: {}, streamIndexes: {}, directoryLoading: false });
   },
 }));

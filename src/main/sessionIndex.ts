@@ -1,6 +1,7 @@
 import { activeSession, authHeaders, issuer } from "./controlPlane";
 import {
   blocksFromEvents,
+  workFromEvents,
   type Replayed,
   type ReplayedBlock,
   type ReplayedPeerBlock,
@@ -138,7 +139,13 @@ export async function replaySession(input: {
   limit?: number;
 }): Promise<Replayed | null> {
   const s = await activeSession();
-  if (!s?.bundle) return null;
+  // Logged, like the directory read: a replay that silently came back empty
+  // looks exactly like a thread with no history (KYB-643). No message text.
+  const which = input.sessionId.slice(0, 20);
+  if (!s?.bundle) {
+    console.log(`[replay] ${which} skipped — no bundle`);
+    return null;
+  }
 
   const base = input.url.replace(/\/$/, "");
   const limit = input.limit ?? 400;
@@ -153,7 +160,10 @@ export async function replaySession(input: {
       headers: authHeaders(s, { bundle: true }),
       signal: AbortSignal.timeout(60_000),
     });
-    if (!res.ok || !res.body) return null;
+    if (!res.ok || !res.body) {
+      console.log(`[replay] ${which} failed ${res.status}`);
+      return null;
+    }
 
     const tailHeader = res.headers.get("x-eve-stream-tail-index");
     const tail = tailHeader === null ? -1 : Number(tailHeader);
@@ -242,13 +252,18 @@ export async function replaySession(input: {
       else peerBlocks.push({ turnId, at: Number.isNaN(at) ? Date.now() : at, events: [...found] });
     }
 
+    const workBlocks = workFromEvents(lines);
+
+    console.log(`[replay] ${which} ${blocks.length} block(s), ${peerBlocks.length} peer exchange(s), ${workBlocks.length} turn(s) with steps`);
     return {
       blocks,
       peerBlocks,
+      workBlocks,
       streamIndex: tail >= 0 ? tail + 1 : lines.length,
       truncated: tail >= 0 && tail + 1 > limit,
     };
-  } catch {
+  } catch (error) {
+    console.log(`[replay] ${which} error: ${(error as Error)?.message ?? String(error)}`);
     return null;
   }
 }

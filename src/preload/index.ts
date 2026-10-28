@@ -107,6 +107,9 @@ const studio: StudioApi = {
     return () => ipcRenderer.off("studio:updater", listener);
   },
   openExternal: (url) => ipcRenderer.invoke("studio:openExternal", url),
+  agentImage: (input) => ipcRenderer.invoke("studio:agentImage", input),
+  agentArtifact: (input) => ipcRenderer.invoke("studio:agentArtifact", input),
+  agentArtifacts: (input) => ipcRenderer.invoke("studio:agentArtifacts", input),
   onAuthorization: (handler) => {
     const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);
     ipcRenderer.on("studio:authorization", listener);
@@ -116,6 +119,11 @@ const studio: StudioApi = {
     const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);
     ipcRenderer.on('studio:peer', listener);
     return () => ipcRenderer.off('studio:peer', listener);
+  },
+  onStep: (handler) => {
+    const listener = (_e: unknown, payload: Parameters<typeof handler>[0]): void => handler(payload);
+    ipcRenderer.on("studio:step", listener);
+    return () => ipcRenderer.off("studio:step", listener);
   },
   notify: (input) => ipcRenderer.invoke("studio:notify", input),
   onOpenAgent: (handler) => {
