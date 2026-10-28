@@ -400,7 +400,7 @@ export interface StudioApi {
   claimDriver(sessionId: string): Promise<void>;
   watch(input: { url: string; sessionId: string; streamIndex: number; streamId: string }): Promise<void>;
   unwatch(streamId: string): Promise<void>;
-  onLive(handler: (payload: { streamId: string; kind: "received" | "boundary" | "ended" | "gone" }) => void): () => void;
+  onLive(handler: (payload: { streamId: string; kind: "received" | "boundary" | "ended" | "gone" | "stranded" }) => void): () => void;
   agentInfo(url: string): Promise<AgentInfo | null>;
   /** Whether the agent itself answers right now. See `agentHealth` in main. */
   agentHealth(url: string): Promise<boolean>;

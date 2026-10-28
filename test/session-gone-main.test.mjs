@@ -30,7 +30,7 @@ mock.module("electron", {
   },
 });
 
-const { watchSession, ConversationGoneError } = await import("../src/main/controlPlane.ts");
+const { watchSession, ConversationGoneError, ConversationStrandedError } = await import("../src/main/controlPlane.ts");
 const { replaySession } = await import("../src/main/sessionIndex.ts");
 
 const jwt = (claims) => `header.${Buffer.from(JSON.stringify(claims), "utf8").toString("base64url")}.signature`;
@@ -141,4 +141,31 @@ test("a watch that ends on a platform's 404 is an ordinary ending, not a gone co
     assert.ok(error, "it ends");
     assert.ok(!(error instanceof ConversationGoneError), `not gone for ${JSON.stringify(body)}`);
   }
+});
+
+const STRANDED = JSON.stringify({ code: "session_stranded", error: "This session is no longer available.", ok: false });
+
+test("a watch refused as stranded ends with ConversationStrandedError, not as gone", async (t) => {
+  t.mock.method(console, "log", () => {});
+  const { error } = await watchToEnd(409, STRANDED);
+  assert.ok(error instanceof ConversationStrandedError, `ended with ${error}`);
+  assert.ok(!(error instanceof ConversationGoneError));
+});
+
+test("the history read is bounded (follow=false), so a stranded conversation's history can be read", async (t) => {
+  t.mock.method(console, "log", () => {});
+  const realFetch = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    return new Response(STRANDED, { status: 409, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const result = await replaySession({ url: "https://a.example", sessionId: "wrun_STRANDED" });
+    assert.equal(result, null, "a refused read is still no answer, never gone");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(urls.length, 1);
+  assert.equal(new URL(urls[0]).searchParams.get("follow"), "false");
 });

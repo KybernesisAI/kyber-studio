@@ -12,7 +12,7 @@ import { isCredentialStoreAvailable } from "./credentialStorage";
 import { newStepState, readStep, type Step } from "@kybernesis/cards";
 import { readPeerEvents, type PeerState } from "./peerEvents";
 import { isHeldForInput } from "./turnBoundary";
-import { sessionGoneReason, type GoneReason } from "../shared/sessionGone";
+import { isSessionStranded, sessionGoneReason, type GoneReason } from "../shared/sessionGone";
 
 /**
  * Control-plane identity for KYBER Studio.
@@ -1525,6 +1525,16 @@ export class ConversationGoneError extends Error {
 }
 
 /**
+ * A watch was refused because the session is stranded (409 `session_stranded`,
+ * KYB-657): it cannot be followed, but its history can still be read.
+ */
+export class ConversationStrandedError extends Error {
+  constructor() {
+    super("the agent cannot follow this conversation any more (409 session_stranded); its history can still be read");
+  }
+}
+
+/**
  * Follow a session that something ELSE is driving — the phone, a workspace,
  * a schedule — and report it through the same callbacks a turn of our own
  * uses, so the renderer draws it with the same code.
@@ -1621,6 +1631,7 @@ export async function watchSession(input: {
     // (KYB-657). Said apart from every other ending, so the renderer stops.
     const gone = error instanceof ClientError ? sessionGoneReason(error.status, error.body, error.code) : null;
     if (gone) throw new ConversationGoneError(gone, (error as ClientError).status);
+    if (error instanceof ClientError && isSessionStranded(error.status, error.body, error.code)) throw new ConversationStrandedError();
     throw describeClientError(error, base);
   } finally {
     console.log(`[watch] end ${input.sessionId.slice(0, 18)} after ${seen} event(s)${input.signal.aborted ? " (stopped)" : " (stream closed)"}`);

@@ -46,7 +46,7 @@ window.studio = new Proxy(bridge, {
     return target[key];
   },
 });
-const { useStore, rewatchDelay } = await import("@/lib/store");
+const { useStore } = await import("@/lib/store");
 
 after(() => window.close());
 
@@ -188,38 +188,24 @@ test("AC2: the account's directory never adopts a gone conversation", async () =
   assert.equal(useStore.getState().sessions[ID], ALIVE);
 });
 
-// Under the drawer's Active filter the agent leaves ended conversations out
-// rather than marking them, so only a list that includes them can say so: All,
-// which is also what choosing a thread for the chat always reads.
-test("AC4: a conversation the list reports ended or failed stops being watched", async () => {
-  for (const status of ["ended", "failed"]) {
-    holding(ALIVE);
-    useStore.getState().watchActive();
-    assert.equal(watches.length, 1);
-    live.agentSessions = [{ id: ALIVE, title: "t", surface: "chat", trigger: "http", status, createdAt: "", updatedAt: "" }];
-    await useStore.getState().loadSessions(ID, "all");
-    assert.equal(useStore.getState().watching, null, `stopped on ${status}`);
-    useStore.getState().watchActive();
-    assert.equal(watches.length, 1, `not watched again while it is ${status}`);
-  }
-  live.agentSessions = [];
-});
-
-test("AC5: a watch that ends for any other reason waits before watching again, longer each time", async (t) => {
+test("stranded: a watch refused as stranded is not watched again, is not gone, and its history is still read", async (t) => {
   const logs = captureLogs(t);
   holding(ALIVE);
   useStore.getState().watchActive();
-  emitLive({ streamId: watches[0].streamId, kind: "ended" });
-  await sleep(1_000);
-  assert.equal(watches.length, 1, "not restarted at once");
-  await sleep(1_300);
-  assert.equal(watches.length, 2, "restarted after the first wait");
+  assert.equal(watches.length, 1);
+  emitLive({ streamId: watches[0].streamId, kind: "stranded" });
+  await sleep(150);
+  const st = useStore.getState();
+  assert.deepEqual(st.goneSessions, {}, "not recorded as gone");
+  assert.equal(st.sessions[ID], ALIVE, "still the conversation on screen");
+  assert.ok(replays.includes(ALIVE), "its history is read");
+  assert.equal(watches.length, 1, "and it is not watched again");
+  assert.ok(!(st.conversations[ID] ?? []).some((b) => b.kind === "gone"), "no notice that it has gone");
+  assert.ok(!logs().some((l) => l.includes("[gone]")));
 
-  emitLive({ streamId: watches[1].streamId, kind: "ended" });
-  assert.ok(logs().some((l) => l.includes("2 in a row") && l.includes("in 4 s")), "the second wait is longer");
-  useStore.getState().stopWatching();
-});
-
-test("AC5: the waits double from 2 s and stop growing at a minute", () => {
-  assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 20].map(rewatchDelay), [2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000]);
+  // Nothing else watches it again this launch either.
+  useStore.getState().watchActive();
+  assert.equal(watches.length, 1);
+  await useStore.getState().hydrate(ID, "merge");
+  assert.ok(replays.filter((x) => x === ALIVE).length >= 2, "read again on request");
 });

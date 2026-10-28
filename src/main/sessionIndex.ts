@@ -154,7 +154,12 @@ export async function replaySession(input: {
   // A negative startIndex reads relative to the tail, which is exactly the
   // "last N events" this needs — and avoids pulling a long history to throw
   // most of it away.
-  const endpoint = `${base}/eve/v1/session/${encodeURIComponent(input.sessionId)}/stream?startIndex=-${limit}&includeTailIndex=1`;
+  // `follow=false` makes the read bounded on the server, so it also returns
+  // the history of a stranded session, whose followed stream is refused with
+  // 409 `session_stranded` (KYB-657). Without it eve 0.81 opens the stream
+  // as followed even with `includeTailIndex=1`. eve 0.38's stream route reads
+  // only `startIndex` and `includeTailIndex`, so it is ignored there.
+  const endpoint = `${base}/eve/v1/session/${encodeURIComponent(input.sessionId)}/stream?startIndex=-${limit}&includeTailIndex=1&follow=false`;
 
   try {
     const res = await fetch(endpoint, {

@@ -13,25 +13,44 @@
  * already starts a fresh session for that.
  *
  * - 410 `session_expired`: the run ended and its history is past retention.
- * - 404: eve has no run for that id. Only an answer shaped like eve's counts:
- *   a JSON body whose `error` is a string (`{"error":"Session not found."}`).
- *   This checks the shape, not the words, so a server framework whose own 404
- *   has a string `error` would also pass. A hosting
+ * - 404: eve has no run for that id. eve gives this 404 no code to match.
+ *   The installed eve (0.81.1, dist/src/eve-channel/request.js) answers it
+ *   with, verbatim:
+ *
+ *     Response.json({error:n?`Session not found.`:`Session stream unavailable.`,ok:!1},{status:n?404:503})
+ *
+ *   while the 410 beside it carries code:`session_expired`. So only the
+ *   shape is checked: a JSON body whose `error` is a string. A server
+ *   framework whose own 404 has a string `error` would also pass. A hosting
  *   platform in front of the agent also answers 404 when the deployment is not
  *   up or the URL is wrong (Vercel in plain text, or with an `error` object;
  *   Render in plain text; Railway with a `message`), and the conversation may
  *   be alive behind it. Being gone is saved and permanent, so anything that is
- *   not plainly eve is left to the ordinary, backed-off retry.
- * - 409 `session_stranded`: the session's durable owner is gone ("This session
- *   is no longer available."). Other 409s are not about the session being gone.
+ *   not plainly eve is left to the ordinary retry.
+ *
+ * Not gone: 409 `session_stranded` ("This session is no longer available.").
+ * The session's durable owner is another eve version, so it can no longer be
+ * followed or continued, but its recorded history can still be read with a
+ * bounded read (`follow=false`). See {@link isSessionStranded}. Other 409s
+ * are not about the session at all.
  */
-export type GoneReason = "expired" | "missing" | "stranded";
+export type GoneReason = "expired" | "missing";
 
 export function sessionGoneReason(status: number, body?: string, code?: string): GoneReason | null {
   if (status === 410) return "expired";
   if (status === 404) return isEveNotFound(body) ? "missing" : null;
-  if (status === 409) return (code ?? codeFrom(body)) === "session_stranded" ? "stranded" : null;
   return null;
+}
+
+/**
+ * The agent refused to FOLLOW the session because it is stranded (409
+ * `session_stranded`): built by another eve version, so it cannot be followed
+ * or continued. Its history is still there, and a bounded read returns it
+ * (eve: "A bounded read only reads recorded history, so it also works for a
+ * stranded session"). Studio stops watching it and keeps reading it.
+ */
+export function isSessionStranded(status: number, body?: string, code?: string): boolean {
+  return status === 409 && (code ?? codeFrom(body)) === "session_stranded";
 }
 
 function isEveNotFound(body: string | undefined): boolean {

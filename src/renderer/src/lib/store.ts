@@ -244,7 +244,6 @@ function ensureListeners(
     // Saved continuously, not just on success: a stale cursor makes the next
     // turn replay old questions.
     set((s) => ({ streamIndexes: { ...s.streamIndexes, [agentId]: index } }));
-    if (watchedSessions.has(streamId)) watchHealthy(agentId);
   });
 
   /**
@@ -406,16 +405,17 @@ function ensureListeners(
       else get().stopWatching();
       return;
     }
-    if (kind === "boundary" || kind === "ended") {
+    if (kind === "stranded") {
+      // The agent cannot follow it any more, but still has its history
+      // (KYB-657). Not gone: it is read once more below, and not watched again.
+      const sessionId = watchedSessions.get(streamId);
+      if (sessionId) markStranded(agentId, sessionId);
+    }
+    if (kind === "boundary" || kind === "ended" || kind === "stranded") {
       set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
       // A watched turn was started elsewhere; that device owns its notification.
       get().stopWatching();
     }
-    if (kind === "ended") {
-      scheduleRewatch(get, agentId);
-      return;
-    }
-    watchHealthy(agentId);
     if (!get().inflight[agentId]) {
       void get().hydrate(agentId, "merge").then(() => get().watchActive());
     }
@@ -908,41 +908,22 @@ function conversationGone(
 }
 
 /**
- * Watches that ended on an error, in a row, per agent; and the retry waiting
- * for each. A watch the agent keeps closing is tried again later, and later
- * still each time, rather than at once (KYB-657, AC5).
+ * Conversations the agent refused to follow because they are stranded (409
+ * `session_stranded`, KYB-657), per agent, for this launch. Their history
+ * can still be read, so they are not gone: they are only not watched again.
+ * Kept in memory: after a relaunch one watch is refused again and lands here.
  */
-const rewatchFailures = new Map<string, number>();
-const rewatchTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const REWATCH_MIN_MS = 2_000;
-const REWATCH_MAX_MS = 60_000;
+const strandedSessions = new Map<string, Set<string>>();
 
-/** The wait before the nth retry in a row: 2 s, doubling, capped at a minute. */
-export function rewatchDelay(failures: number): number {
-  return Math.min(REWATCH_MAX_MS, REWATCH_MIN_MS * 2 ** Math.max(0, failures - 1));
+function markStranded(agentId: string, sessionId: string): void {
+  const ids = strandedSessions.get(agentId) ?? new Set<string>();
+  if (!ids.has(sessionId)) console.log(`[live] ${agentId} ${sessionId.slice(0, 18)}: stranded; reading its history, not watching it again`);
+  ids.add(sessionId);
+  strandedSessions.set(agentId, ids);
 }
 
-function scheduleRewatch(get: () => State, agentId: string): void {
-  const failures = (rewatchFailures.get(agentId) ?? 0) + 1;
-  rewatchFailures.set(agentId, failures);
-  const delay = rewatchDelay(failures);
-  clearTimeout(rewatchTimers.get(agentId));
-  console.log(`[live] ${agentId}: watch ended (${failures} in a row); watching again in ${delay / 1000} s`);
-  rewatchTimers.set(
-    agentId,
-    setTimeout(() => {
-      rewatchTimers.delete(agentId);
-      if (get().inflight[agentId]) return;
-      void get()
-        .hydrate(agentId, "merge")
-        .then(() => get().watchActive());
-    }, delay),
-  );
-}
-
-/** The watch is delivering again: the next failure starts the backoff from the beginning. */
-function watchHealthy(agentId: string): void {
-  rewatchFailures.delete(agentId);
+function isStranded(agentId: string, sessionId: string | undefined): boolean {
+  return Boolean(sessionId) && Boolean(strandedSessions.get(agentId)?.has(sessionId as string));
 }
 
 function armDeadMan(
@@ -1843,10 +1824,9 @@ export const useStore = create<State>((set, get) => ({
     const { activeAgentId, watching, agents, sessions, inflight, streamIndexes } = get();
     const agent = activeAgentId && !isRoomId(activeAgentId) ? agents.find((a) => a.id === activeAgentId) : undefined;
     const sessionId = agent ? sessions[agent.id] : undefined;
-    // Not one the agent no longer has, and not one it reports ended or failed:
-    // a run that has ended has nothing left to stream (KYB-657).
-    const followable =
-      agent && sessionId && !isGone(get, agent.id, sessionId) && !isRetired(get().threadIndex[agent.id]?.[sessionId]);
+    // Not one the agent no longer has, and not one it refused to follow as
+    // stranded (KYB-657).
+    const followable = agent && sessionId && !isGone(get, agent.id, sessionId) && !isStranded(agent.id, sessionId);
     const wanted = agent && agent.url && sessionId && followable && !inflight[agent.id] ? { agentId: agent.id, sessionId } : null;
     if (watching && wanted && watching.agentId === wanted.agentId && watching.sessionId === wanted.sessionId) return;
     get().stopWatching();
@@ -1967,15 +1947,6 @@ export const useStore = create<State>((set, get) => ({
         }
         return next;
       });
-      // The list says the conversation being watched has ended or failed: its
-      // run is over, so there is nothing more to follow, and since eve 0.80
-      // nothing left to read either. Stopped now rather than at the refusal
-      // the next read would get (KYB-657, AC4).
-      const watching = get().watching;
-      if (watching?.agentId === agentId && isRetired(get().threadIndex[agentId]?.[watching.sessionId])) {
-        console.log(`[live] ${agentId}: ${watching.sessionId.slice(0, 18)} is listed as ended; no longer watching it`);
-        get().stopWatching();
-      }
     }
     // Returned to its own caller even when it arrived too late to be stored:
     // `loadAgentInfo` asked for All and gets All.

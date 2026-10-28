@@ -898,7 +898,7 @@ export function Conversation(): ReactNode {
                 <GoneNotice
                   key={b.id}
                   agentName={agent?.name ?? "the agent"}
-                  oneThread={Boolean(agent && threads[agent.id])}
+                  oneThread={agent && threads[agent.id] !== undefined ? Boolean(threads[agent.id]) : undefined}
                   showAction={i === blocks.length - 1 && Boolean(agent) && !inflight[activeAgentId]}
                   onNewConversation={() => agent && startConversation(agent.id)}
                   onBackToThread={() => agent && void openThread(agent.id)}

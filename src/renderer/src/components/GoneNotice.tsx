@@ -11,6 +11,11 @@ export const GONE_LINE = "This conversation is no longer available on";
  *
  * The action is offered only while this is the last thing in the chat: once
  * the person has carried on below it, the way forward is already taken.
+ *
+ * Until the agent's thread has been read this launch, whether it keeps one is
+ * not known, and the two kinds of agent need opposite advice: a new
+ * conversation there could be Start fresh. So nothing is said about what
+ * sending does, and nothing is offered, until it is known.
  */
 export function GoneNotice({
   agentName,
@@ -20,8 +25,11 @@ export function GoneNotice({
   onBackToThread,
 }: {
   agentName: string;
-  /** The agent keeps one thread per person: the way back is that thread, not a new conversation. */
-  oneThread: boolean;
+  /**
+   * The agent keeps one thread per person: the way back is that thread, not a
+   * new conversation. Undefined while its thread has not been read yet.
+   */
+  oneThread: boolean | undefined;
   showAction: boolean;
   onNewConversation: () => void;
   onBackToThread: () => void;
@@ -31,9 +39,13 @@ export function GoneNotice({
       <span style={{ flex: 1 }} className="muted">
         {GONE_LINE} {agentName}. It has ended there, and the agent no longer keeps its history. What is above is
         this device's copy.{" "}
-        {oneThread ? "Anything you send now goes to your thread." : "Anything you send now starts a new conversation."}
+        {oneThread === undefined
+          ? null
+          : oneThread
+            ? "Anything you send now goes to your thread."
+            : "Anything you send now starts a new conversation."}
       </span>
-      {showAction ? (
+      {showAction && oneThread !== undefined ? (
         oneThread ? (
           <button className="btn" onClick={onBackToThread}>
             Back to your thread

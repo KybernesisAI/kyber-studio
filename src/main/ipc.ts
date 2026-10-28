@@ -53,6 +53,7 @@ import {
   claimDriver,
   watchSession,
   ConversationGoneError,
+  ConversationStrandedError,
   pollDeviceAuth,
   resetSession,
   sendTurn,
@@ -327,6 +328,11 @@ export function registerIpc(): void {
           if (error instanceof ConversationGoneError) {
             console.log(`[watch] ${input.streamId} gone: ${error.message}`);
             send("studio:live", { streamId: input.streamId, kind: "gone" });
+            return;
+          }
+          if (error instanceof ConversationStrandedError) {
+            console.log(`[watch] ${input.streamId} stranded: ${error.message}`);
+            send("studio:live", { streamId: input.streamId, kind: "stranded" });
             return;
           }
           console.log(`[watch] ${input.streamId} ended: ${(error as Error).message}`);

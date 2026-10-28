@@ -68,3 +68,12 @@ test("once the person has carried on below it, it offers nothing", async () => {
   assert.equal(host.querySelector("button"), null);
   await unmount();
 });
+
+test("before the agent's thread has been read, it says nothing about what sending does and offers nothing", async () => {
+  const { host, unmount } = await mount({ agentName: "mikasa", oneThread: undefined, showAction: true, ...recorder() });
+  assert.match(host.textContent, new RegExp(GONE_LINE));
+  assert.doesNotMatch(host.textContent, /starts a new conversation/);
+  assert.doesNotMatch(host.textContent, /goes to your thread/);
+  assert.equal(host.querySelector("button"), null);
+  await unmount();
+});

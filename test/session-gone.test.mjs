@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isReplayGone, sessionGoneReason } from "../src/shared/sessionGone.ts";
+import { isReplayGone, isSessionStranded, sessionGoneReason } from "../src/shared/sessionGone.ts";
 
 /**
  * KYB-657: which answers to a read of a held conversation mean it no longer
@@ -31,12 +31,14 @@ test("a 404 from a hosting platform in front of the agent is not the agent sayin
   }
 });
 
-test("409 is gone only when the session is stranded", () => {
+test("409 session_stranded is not gone: it cannot be followed, but its history can still be read", () => {
   const stranded = JSON.stringify({ code: "session_stranded", error: "This session is no longer available.", ok: false });
-  assert.equal(sessionGoneReason(409, stranded), "stranded");
-  assert.equal(sessionGoneReason(409, "", "session_stranded"), "stranded", "the client's parsed code is enough");
-  assert.equal(sessionGoneReason(409, JSON.stringify({ code: "session_not_ready" })), null);
-  assert.equal(sessionGoneReason(409, "not json"), null);
+  assert.equal(sessionGoneReason(409, stranded), null);
+  assert.equal(isSessionStranded(409, stranded), true);
+  assert.equal(isSessionStranded(409, "", "session_stranded"), true, "the client's parsed code is enough");
+  assert.equal(isSessionStranded(409, JSON.stringify({ code: "session_not_ready" })), false);
+  assert.equal(isSessionStranded(409, "not json"), false);
+  assert.equal(isSessionStranded(410, stranded), false);
 });
 
 test("an agent that is down, restarting or refusing the sign-in has not lost the conversation", () => {
