@@ -35,14 +35,14 @@ function recorder() {
   return {
     pressed,
     onNewConversation: () => pressed.push("new"),
-    onBackToThread: () => pressed.push("thread"),
   };
 }
 
 test("it names the agent and says the next message starts a new conversation", async () => {
   const r = recorder();
-  const { host, unmount } = await mount({ agentName: "mikasa", oneThread: false, showAction: true, ...r });
+  const { host, unmount } = await mount({ agentName: "mikasa", oneThread: false, hasCopy: true, showAction: true, ...r });
   assert.match(host.textContent, new RegExp(`${GONE_LINE} mikasa`));
+  assert.match(host.textContent, /What is above is this device's copy/);
   assert.match(host.textContent, /starts a new conversation/);
   const button = host.querySelector("button");
   assert.equal(button.textContent, "New conversation");
@@ -51,19 +51,19 @@ test("it names the agent and says the next message starts a new conversation", a
   await unmount();
 });
 
-test("on an agent that keeps one thread per person, the way forward is that thread", async () => {
+test("on an agent that keeps one thread per person it only says why: the composer offers the way back", async () => {
   const r = recorder();
-  const { host, unmount } = await mount({ agentName: "mikasa", oneThread: true, showAction: true, ...r });
-  assert.match(host.textContent, /goes to your thread/);
-  const button = host.querySelector("button");
-  assert.equal(button.textContent, "Back to your thread");
-  await act(async () => button.click());
-  assert.deepEqual(r.pressed, ["thread"]);
+  const { host, unmount } = await mount({ agentName: "mikasa", oneThread: true, hasCopy: false, showAction: true, ...r });
+  assert.match(host.textContent, new RegExp(`${GONE_LINE} mikasa`));
+  assert.match(host.textContent, /Studio has no copy of it on this device/);
+  assert.doesNotMatch(host.textContent, /What is above/);
+  assert.doesNotMatch(host.textContent, /Anything you send/);
+  assert.equal(host.querySelector("button"), null);
   await unmount();
 });
 
 test("once the person has carried on below it, it offers nothing", async () => {
-  const { host, unmount } = await mount({ agentName: "mikasa", oneThread: false, showAction: false, ...recorder() });
+  const { host, unmount } = await mount({ agentName: "mikasa", oneThread: false, hasCopy: true, showAction: false, ...recorder() });
   assert.match(host.textContent, new RegExp(GONE_LINE));
   assert.equal(host.querySelector("button"), null);
   await unmount();
