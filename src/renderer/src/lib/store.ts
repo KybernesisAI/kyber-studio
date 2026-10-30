@@ -3,6 +3,7 @@ import type { PendingAttachment } from "./attachments";
 import type { AgentSummary } from "@shared/ipc";
 import { summarize } from "./agentInfo";
 import type { Agent, Block, PeerEvent, Room } from "@shared/types";
+import { isReplayGone } from "@shared/sessionGone";
 import { ROOM_PREFIX, isRoomId } from "@shared/types";
 import { recipientsFor, type RoomPolicy } from "@shared/addressing";
 import { reconcile } from "@shared/sessionReplay";
@@ -396,7 +397,21 @@ function ensureListeners(
     const agentId = streamOwners.get(streamId);
     console.log(`[live] ${kind} on ${streamId} → ${agentId ?? "NO OWNER"}`);
     if (!agentId) return;
-    if (kind === "boundary" || kind === "ended") {
+    if (kind === "gone") {
+      // Not a stream to reopen: the agent no longer has the conversation.
+      set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
+      const sessionId = watchedSessions.get(streamId);
+      if (sessionId) conversationGone(get, set, agentId, sessionId, "watch");
+      else get().stopWatching();
+      return;
+    }
+    if (kind === "stranded") {
+      // The agent cannot follow it any more, but still has its history
+      // (KYB-657). Not gone: it is read once more below, and not watched again.
+      const sessionId = watchedSessions.get(streamId);
+      if (sessionId) markStranded(agentId, sessionId);
+    }
+    if (kind === "boundary" || kind === "ended" || kind === "stranded") {
       set((s) => ({ activity: { ...s.activity, [agentId]: null } }));
       // A watched turn was started elsewhere; that device owns its notification.
       get().stopWatching();
@@ -833,6 +848,84 @@ function leaveForNewConversation(
   get().persist();
 }
 
+/** How many gone conversations are remembered per agent. Only the recent ones can come back. */
+const GONE_KEPT = 20;
+
+function isGone(get: () => State, agentId: string, sessionId: string | undefined): boolean {
+  return Boolean(sessionId) && (get().goneSessions[agentId] ?? []).includes(sessionId as string);
+}
+
+/** The session each live watch follows, so a refusal can name the conversation it was about. */
+const watchedSessions = new Map<string, string>();
+
+/**
+ * The agent no longer has this conversation (KYB-657). One handler, whichever
+ * read found out: the history replay, the live watch, a launch or a switch of
+ * agent all end up here.
+ *
+ * It stops the watch, remembers the id so nothing asks for it again, and, when
+ * it is the conversation on screen, lets go of it: the saved choice becomes a
+ * new conversation, so a relaunch starts clean, and the chat says what
+ * happened. What is on screen stays; it is this device's own copy, and the
+ * agent has nothing to replace it with. Not while a turn of ours is running:
+ * the send owns the session then, and starts a fresh one itself when the agent
+ * refuses it.
+ */
+function conversationGone(
+  get: () => State,
+  set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
+  agentId: string,
+  sessionId: string,
+  via: "read" | "watch",
+): void {
+  const known = get().goneSessions[agentId] ?? [];
+  const first = !known.includes(sessionId);
+  if (first) console.log(`[gone] ${agentId} ${sessionId.slice(0, 18)}: the agent no longer has it (found by ${via})`);
+  const watching = get().watching;
+  if (watching?.agentId === agentId && watching.sessionId === sessionId) get().stopWatching();
+  const onScreen = get().sessions[agentId] === sessionId && !get().inflight[agentId];
+  if (!first && !onScreen) return;
+  set((st) => {
+    const next: Partial<State> = {};
+    if (first) next.goneSessions = { ...st.goneSessions, [agentId]: [...known, sessionId].slice(-GONE_KEPT) };
+    if (onScreen) {
+      const streamIndexes = { ...st.streamIndexes };
+      delete streamIndexes[agentId];
+      const conv = st.conversations[agentId] ?? [];
+      const id = `gone-${sessionId}`;
+      next.sessions = { ...st.sessions, [agentId]: undefined };
+      next.streamIndexes = streamIndexes;
+      next.sessionChoice = { ...st.sessionChoice, [agentId]: { sessionId: null, at: Date.now() } };
+      next.activity = { ...st.activity, [agentId]: null };
+      next.conversations = {
+        ...st.conversations,
+        [agentId]: conv.some((b) => b.id === id) ? conv : [...conv, { kind: "gone", id, at: Date.now(), sessionId }],
+      };
+    }
+    return next;
+  });
+  get().persist();
+}
+
+/**
+ * Conversations the agent refused to follow because they are stranded (409
+ * `session_stranded`, KYB-657), per agent, for this launch. Their history
+ * can still be read, so they are not gone: they are only not watched again.
+ * Kept in memory: after a relaunch one watch is refused again and lands here.
+ */
+const strandedSessions = new Map<string, Set<string>>();
+
+function markStranded(agentId: string, sessionId: string): void {
+  const ids = strandedSessions.get(agentId) ?? new Set<string>();
+  if (!ids.has(sessionId)) console.log(`[live] ${agentId} ${sessionId.slice(0, 18)}: stranded; reading its history, not watching it again`);
+  ids.add(sessionId);
+  strandedSessions.set(agentId, ids);
+}
+
+function isStranded(agentId: string, sessionId: string | undefined): boolean {
+  return Boolean(sessionId) && Boolean(strandedSessions.get(agentId)?.has(sessionId as string));
+}
+
 function armDeadMan(
   get: () => State,
   set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
@@ -1128,6 +1221,13 @@ interface State {
    * It stands until they send, pick a thread, or end the conversation.
    */
   sessionChoice: Record<string, { sessionId: string | null; at: number } | undefined>;
+  /**
+   * Conversations each agent no longer has (KYB-657), newest last. Since eve
+   * 0.80 a private conversation's history is deleted when its run ends, and
+   * every read of it after that is refused. None of these is read, watched or
+   * adopted again, and they are saved so that a relaunch does not ask either.
+   */
+  goneSessions: Record<string, string[] | undefined>;
   streamIndexes: Record<string, number | undefined>;
   /** Per-agent "what it is doing right now", or null when idle. */
   activity: Record<string, string | null>;
@@ -1342,6 +1442,7 @@ export const useStore = create<State>((set, get) => ({
   routinesSessions: {},
   threads: {},
   sessionChoice: {},
+  goneSessions: {},
   streamIndexes: {},
   rooms: [],
   roomQueue: {},
@@ -1408,7 +1509,7 @@ export const useStore = create<State>((set, get) => ({
         return;
       }
       /** One summary line per pass; counts only, never message text (KYB-637). */
-      const count = { room: 0, noAgent: 0, resolved: 0, same: 0, chosen: 0, fresh: 0, published: 0, adopted: 0 };
+      const count = { room: 0, noAgent: 0, resolved: 0, same: 0, chosen: 0, fresh: 0, published: 0, adopted: 0, gone: 0 };
 
       // Directory rows name the agent by its registered name; older rows from
       // this app carry its id. Resolve either to the local agent, and skip what
@@ -1467,6 +1568,12 @@ export const useStore = create<State>((set, get) => ({
         const remoteAt = entry.lastMessageAt ? Date.parse(entry.lastMessageAt) : 0;
         if (localSession === entry.sessionId) {
           count.same += 1;
+          continue;
+        }
+        // The account's newest row can name a conversation the agent has since
+        // lost; adopting it would only be refused (KYB-657).
+        if (isGone(get, agent.id, entry.sessionId)) {
+          count.gone += 1;
           continue;
         }
         const choice = get().sessionChoice[agent.id];
@@ -1540,7 +1647,7 @@ export const useStore = create<State>((set, get) => ({
       console.log(
         `[index] sync: ${indexed.length} row(s); ${count.resolved} for an agent here (${newest.size} newest), ` +
           `${count.adopted} adopted, ${count.published} published (local newer), ${count.same} already current, ` +
-          `${count.chosen} kept (chosen), ${count.fresh} kept (new conversation), ${count.resolved - newest.size} older; skipped ${count.room} room, ${count.noAgent} no agent`,
+          `${count.chosen} kept (chosen), ${count.fresh} kept (new conversation), ${count.gone} gone, ${count.resolved - newest.size} older; skipped ${count.room} room, ${count.noAgent} no agent`,
       );
     } catch (error) {
       // A failed pass still settles the gate: waiting the full bound on every
@@ -1567,11 +1674,16 @@ export const useStore = create<State>((set, get) => ({
     if (!window.studio) return;
     const sessionId = get().sessions[agentId];
     if (!sessionId) return;
+    if (isGone(get, agentId, sessionId)) return;
     if (mode === "fill" && (get().conversations[agentId] ?? []).some((b) => !fromThread(b))) return;
     const agent = get().agents.find((a) => a.id === agentId);
     if (!agent?.url) return;
 
     const replayed = await window.studio.replaySession({ url: agent.url, sessionId });
+    if (isReplayGone(replayed)) {
+      conversationGone(get, set, agentId, sessionId, "read");
+      return;
+    }
     if (!replayed || replayed.blocks.length === 0) return;
     // The chat moved on while this was being read — a new conversation, or
     // another thread. Writing now would put this thread's history into it.
@@ -1712,7 +1824,10 @@ export const useStore = create<State>((set, get) => ({
     const { activeAgentId, watching, agents, sessions, inflight, streamIndexes } = get();
     const agent = activeAgentId && !isRoomId(activeAgentId) ? agents.find((a) => a.id === activeAgentId) : undefined;
     const sessionId = agent ? sessions[agent.id] : undefined;
-    const wanted = agent && agent.url && sessionId && !inflight[agent.id] ? { agentId: agent.id, sessionId } : null;
+    // Not one the agent no longer has, and not one it refused to follow as
+    // stranded (KYB-657).
+    const followable = agent && sessionId && !isGone(get, agent.id, sessionId) && !isStranded(agent.id, sessionId);
+    const wanted = agent && agent.url && sessionId && followable && !inflight[agent.id] ? { agentId: agent.id, sessionId } : null;
     if (watching && wanted && watching.agentId === wanted.agentId && watching.sessionId === wanted.sessionId) return;
     get().stopWatching();
     if (!wanted || !agent?.url || !window.studio) return;
@@ -1733,6 +1848,7 @@ export const useStore = create<State>((set, get) => ({
     // driven from the phone arrived in main and went nowhere.
     ensureListeners(get, set);
     streamOwners.set(streamId, agent.id);
+    watchedSessions.set(streamId, wanted.sessionId);
     console.log(`[live] watching ${agent.name} ${wanted.sessionId.slice(0, 18)} as ${streamId} from ${streamIndexes[agent.id] ?? 0}`);
     set({ watching: { agentId: agent.id, sessionId: wanted.sessionId, streamId } });
     void window.studio.watch({ url: agent.url, sessionId: wanted.sessionId, streamIndex: streamIndexes[agent.id] ?? 0, streamId });
@@ -1742,6 +1858,7 @@ export const useStore = create<State>((set, get) => ({
     const { watching } = get();
     if (!watching) return;
     streamOwners.delete(watching.streamId);
+    watchedSessions.delete(watching.streamId);
     set((s) => {
       const streaming = { ...s.streaming };
       delete streaming[watching.streamId];
@@ -1874,7 +1991,11 @@ export const useStore = create<State>((set, get) => ({
      */
     const held = get().sessions[agentId];
     const picked = Boolean(held) && get().sessionChoice[agentId]?.sessionId === held && !view.sessions.some((x) => x.id === held);
-    if (view.current && held !== view.current && !get().inflight[agentId] && !picked) {
+    if (view.current && held !== view.current && isGone(get, agentId, view.current)) {
+      // The thread still names a conversation the agent no longer has.
+      // Following it would only be refused again (KYB-657).
+      console.log(`[thread] ${agentId}: not following the thread to ${view.current.slice(0, 18)}, which has gone`);
+    } else if (view.current && held !== view.current && !get().inflight[agentId] && !picked) {
       console.log(`[thread] ${agentId}: following the thread to ${view.current.slice(0, 18)}`);
       set((st) => {
         const streamIndexes = { ...st.streamIndexes };
@@ -1917,10 +2038,15 @@ export const useStore = create<State>((set, get) => ({
   openThread: async (agentId) => {
     const thread = get().threads[agentId];
     if (!thread || get().inflight[agentId]) return;
-    if (thread.current) {
+    // A thread that still names a conversation the agent no longer has is
+    // gone back to as empty: the next message starts it again (KYB-657).
+    if (thread.current && !isGone(get, agentId, thread.current)) {
       await get().openSession(agentId, thread.current);
-    } else {
-      // No message yet: the thread starts with the next one.
+    } else if (get().sessions[agentId]) {
+      // No message yet: the thread starts with the next one. The screen is
+      // emptied only when it shows another conversation. With nothing held,
+      // what is on screen is the thread's own copy, which may be the only
+      // one left once its conversation has gone (KYB-657).
       retireGeneration(agentId);
       set((st) => {
         const streamIndexes = { ...st.streamIndexes };
@@ -2789,6 +2915,7 @@ export const useStore = create<State>((set, get) => ({
       prefs: State["prefs"];
       rooms: Room[];
       sessionChoice?: State["sessionChoice"];
+      goneSessions?: State["goneSessions"];
     }>("conversations.json");
     if (saved?.rooms) set({ rooms: saved.rooms });
     if (saved?.prefs && !saved?.conversations) set({ prefs: saved.prefs });
@@ -2797,6 +2924,7 @@ export const useStore = create<State>((set, get) => ({
         conversations: saved.conversations,
         sessions: saved.sessions ?? {},
         sessionChoice: saved.sessionChoice ?? {},
+        goneSessions: saved.goneSessions ?? {},
         streamIndexes: saved.streamIndexes ?? {},
         prefs: saved.prefs ?? {},
         rooms: saved.rooms ?? [],
@@ -2820,6 +2948,7 @@ export const useStore = create<State>((set, get) => ({
         prefs: get().prefs,
         rooms: get().rooms,
         sessionChoice: get().sessionChoice,
+        goneSessions: get().goneSessions,
       },
     });
   },

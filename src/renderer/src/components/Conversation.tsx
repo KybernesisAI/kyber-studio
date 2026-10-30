@@ -8,6 +8,7 @@ import {
 import type { Block, PeerEvent } from "@shared/types";
 import { peerSummaryLabel, summarizePeerEvents } from "@shared/types";
 import { isRetired, useStore } from "@/lib/store";
+import { GoneNotice } from "./GoneNotice";
 import * as composerDom from "@/lib/composerDom";
 import { Autocomplete, type Suggestion } from "./Autocomplete";
 import { LocalAskCard } from "./LocalAsk";
@@ -359,6 +360,8 @@ export function Conversation(): ReactNode {
   const sessions = useStore((s) => s.sessions);
   const threadIndex = useStore((s) => s.threadIndex);
   const startConversation = useStore((s) => s.startConversation);
+  const openThread = useStore((s) => s.openThread);
+  const threads = useStore((s) => s.threads);
   const openOrb = (): void => {
     if (!agent?.url) return;
     void window.studio.toggleOrb({
@@ -889,6 +892,17 @@ export function Conversation(): ReactNode {
                   {b.text ? <Markdown text={b.text} /> : null}
                   {b.cards?.length ? <CardStack cards={b.cards} ctx={cardContext()} /> : null}
                 </div>
+              );
+            if (b.kind === "gone")
+              return (
+                <GoneNotice
+                  key={b.id}
+                  agentName={agent?.name ?? "the agent"}
+                  oneThread={agent && threads[agent.id] !== undefined ? Boolean(threads[agent.id]) : undefined}
+                  showAction={i === blocks.length - 1 && Boolean(agent) && !inflight[activeAgentId]}
+                  onNewConversation={() => agent && startConversation(agent.id)}
+                  onBackToThread={() => agent && void openThread(agent.id)}
+                />
               );
             if (b.kind === "divider")
               return (

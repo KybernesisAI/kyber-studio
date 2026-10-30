@@ -12,6 +12,7 @@ import { isCredentialStoreAvailable } from "./credentialStorage";
 import { newStepState, readStep, type Step } from "@kybernesis/cards";
 import { readPeerEvents, type PeerState } from "./peerEvents";
 import { isHeldForInput } from "./turnBoundary";
+import { isSessionStranded, sessionGoneReason, type GoneReason } from "../shared/sessionGone";
 
 /**
  * Control-plane identity for KYBER Studio.
@@ -1512,6 +1513,27 @@ export async function sendTurn(input: {
  * Both outcomes are success: `accepted` means the turn took the signal, and
  * `no_active_turn` means it had already settled.
  */
+/** A watch was refused because the agent no longer has the conversation (KYB-657). */
+export class ConversationGoneError extends Error {
+  readonly reason: GoneReason;
+  readonly status: number;
+  constructor(reason: GoneReason, status: number) {
+    super(`the agent no longer has this conversation (${status} ${reason})`);
+    this.reason = reason;
+    this.status = status;
+  }
+}
+
+/**
+ * A watch was refused because the session is stranded (409 `session_stranded`,
+ * KYB-657): it cannot be followed, but its history can still be read.
+ */
+export class ConversationStrandedError extends Error {
+  constructor() {
+    super("the agent cannot follow this conversation any more (409 session_stranded); its history can still be read");
+  }
+}
+
 /**
  * Follow a session that something ELSE is driving — the phone, a workspace,
  * a schedule — and report it through the same callbacks a turn of our own
@@ -1604,7 +1626,13 @@ export async function watchSession(input: {
       }
     }
   } catch (error) {
-    if (!input.signal.aborted) throw describeClientError(error, base);
+    if (input.signal.aborted) return;
+    // A conversation the agent no longer has is not a stream to reopen
+    // (KYB-657). Said apart from every other ending, so the renderer stops.
+    const gone = error instanceof ClientError ? sessionGoneReason(error.status, error.body, error.code) : null;
+    if (gone) throw new ConversationGoneError(gone, (error as ClientError).status);
+    if (error instanceof ClientError && isSessionStranded(error.status, error.body, error.code)) throw new ConversationStrandedError();
+    throw describeClientError(error, base);
   } finally {
     console.log(`[watch] end ${input.sessionId.slice(0, 18)} after ${seen} event(s)${input.signal.aborted ? " (stopped)" : " (stream closed)"}`);
   }

@@ -7,6 +7,7 @@ import {
   type ReplayedPeerBlock,
 } from "../shared/sessionReplay";
 import { readPeerEvents } from "./peerEvents";
+import { sessionGoneReason, type ReplayGone } from "../shared/sessionGone";
 
 export { blocksFromEvents };
 export type { Replayed, ReplayedBlock, ReplayedPeerBlock };
@@ -137,7 +138,7 @@ export async function replaySession(input: {
   url: string;
   sessionId: string;
   limit?: number;
-}): Promise<Replayed | null> {
+}): Promise<Replayed | ReplayGone | null> {
   const s = await activeSession();
   // Logged, like the directory read: a replay that silently came back empty
   // looks exactly like a thread with no history (KYB-643). No message text.
@@ -153,7 +154,12 @@ export async function replaySession(input: {
   // A negative startIndex reads relative to the tail, which is exactly the
   // "last N events" this needs — and avoids pulling a long history to throw
   // most of it away.
-  const endpoint = `${base}/eve/v1/session/${encodeURIComponent(input.sessionId)}/stream?startIndex=-${limit}&includeTailIndex=1`;
+  // `follow=false` makes the read bounded on the server, so it also returns
+  // the history of a stranded session, whose followed stream is refused with
+  // 409 `session_stranded` (KYB-657). Without it eve 0.81 opens the stream
+  // as followed even with `includeTailIndex=1`. eve 0.38's stream route reads
+  // only `startIndex` and `includeTailIndex`, so it is ignored there.
+  const endpoint = `${base}/eve/v1/session/${encodeURIComponent(input.sessionId)}/stream?startIndex=-${limit}&includeTailIndex=1&follow=false`;
 
   try {
     const res = await fetch(endpoint, {
@@ -161,8 +167,12 @@ export async function replaySession(input: {
       signal: AbortSignal.timeout(60_000),
     });
     if (!res.ok || !res.body) {
-      console.log(`[replay] ${which} failed ${res.status}`);
-      return null;
+      // Said apart from an empty history (KYB-657): to the caller a null and a
+      // conversation that no longer exists used to look the same, so it kept
+      // asking for one that was never coming back.
+      const gone = res.ok ? null : sessionGoneReason(res.status, await res.text().catch(() => ""));
+      console.log(`[replay] ${which} failed ${res.status}${gone ? ` (gone: ${gone})` : ""}`);
+      return gone ? { gone } : null;
     }
 
     const tailHeader = res.headers.get("x-eve-stream-tail-index");
