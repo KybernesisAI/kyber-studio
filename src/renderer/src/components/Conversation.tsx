@@ -446,7 +446,8 @@ export function Conversation(): ReactNode {
   // having no thread: adoption names the thread first and replays its history
   // after, and the directory gate stays shut until that replay has landed.
   const directoryLoading = useStore((s) => s.directoryLoading);
-  const loadingMessages = !room && directoryLoading;
+  const historyReading = useStore((s) => Boolean(s.historyReading[activeAgentId]));
+  const loadingMessages = !room && (directoryLoading || historyReading);
   const [draft, setDraft] = useState("");
   const [acCursor, setAcCursor] = useState(0);
   const [folderMenu, setFolderMenu] = useState(false);

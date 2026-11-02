@@ -156,3 +156,16 @@ test("KYB-662 AC1: the thread's own conversation ended: the transcript, one line
     await view.unmount();
   }
 });
+
+test("KYB-662 B3: an empty chat being read says it is loading, not that it has no messages", async () => {
+  reset({ thread: { current: null, sessions: [], reports: [], fresh: [] }, conversation: [], held: true });
+  useStore.setState({ historyReading: { [A.id]: DEAD } });
+  const view = await mount();
+  try {
+    assert.match(view.text(), /Loading messages/);
+    assert.doesNotMatch(view.text(), /No messages yet/);
+  } finally {
+    await view.unmount();
+    useStore.setState({ historyReading: {} });
+  }
+});
