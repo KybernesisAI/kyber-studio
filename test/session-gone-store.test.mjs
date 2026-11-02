@@ -18,7 +18,7 @@ const ID = REMOTE_AGENT.id;
 const DEAD = "wrun_DEAD";
 const ALIVE = "wrun_ALIVE";
 
-const { live } = installBridge({ rows: [], agentSessions: [] });
+const { live, sends } = installBridge({ rows: [], agentSessions: [] });
 const watches = [];
 const unwatches = [];
 const replays = [];
@@ -46,7 +46,7 @@ window.studio = new Proxy(bridge, {
     return target[key];
   },
 });
-const { useStore } = await import("@/lib/store");
+const { useStore, readOnlyReason } = await import("@/lib/store");
 
 after(() => window.close());
 
@@ -65,6 +65,7 @@ function holding(sessionId, extra = {}) {
     sessionChoice: { ...s.sessionChoice, [ID]: undefined },
     goneSessions: {},
     threadIndex: {},
+    threadCopy: {},
     ...extra,
   }));
   useStore.getState().stopWatching();
@@ -179,14 +180,15 @@ test("AC2: going back to a thread that still names a gone conversation does not 
   useStore.setState({ threads: {} });
 });
 
-test("AC2, one thread: Back to your thread after the thread's own conversation has gone keeps its only copy", async () => {
+test("KYB-662 AC1: Back to your thread after the thread's own conversation has gone keeps its only copy", async () => {
   for (const current of [DEAD, null]) {
     holding(DEAD, { threads: { [ID]: { current: DEAD, sessions: [], reports: [], fresh: [] } } });
     gone.set(DEAD, "expired");
     useStore.getState().watchActive();
     emitLive({ streamId: watches[0].streamId, kind: "gone" });
     await sleep(50);
-    assert.equal(lastBlock().kind, "gone", "the notice is shown");
+    assert.equal(lastBlock().kind, "divider", "the thread's line is shown, not the gone notice");
+    assert.equal(lastBlock().id, `afresh-${DEAD}`);
     useStore.setState({ threads: { [ID]: { current, sessions: [], reports: [], fresh: [] } } });
     await useStore.getState().openThread(ID);
     const conv = useStore.getState().conversations[ID];
@@ -227,4 +229,464 @@ test("stranded: a watch refused as stranded is not watched again, is not gone, a
   assert.equal(watches.length, 1);
   await useStore.getState().hydrate(ID, "merge");
   assert.ok(replays.filter((x) => x === ALIVE).length >= 2, "read again on request");
+});
+
+/**
+ * One thread per person. The thread carries on past a conversation that ended
+ * in it: the next message goes to the thread's address. So the chat only says
+ * "no longer available" over a conversation opened from the drawer to read,
+ * and keeps that one read-only.
+ */
+const LIVE_THREAD = { current: ALIVE, sessions: [], reports: [], fresh: [] };
+const EMPTY_THREAD = { current: null, sessions: [], reports: [], fresh: [] };
+const merged = (id) => (useStore.getState().conversations[ID] ?? []).some((b) => b.text === `history of ${id}`);
+
+/** Refuse `id` through the live watch, as an upgrade does to the conversation on screen. */
+async function refuseByWatch(id) {
+  gone.set(id, "expired");
+  useStore.setState((s) => ({ streamIndexes: { ...s.streamIndexes, [ID]: 107 } }));
+  useStore.getState().stopWatching();
+  watches.length = 0;
+  useStore.getState().watchActive();
+  emitLive({ streamId: watches[0].streamId, kind: "gone" });
+  await sleep(50);
+}
+
+test("AC2, one thread: the thread's own conversation ending is dropped quietly, and what is on screen stays", async (t) => {
+  const logs = captureLogs(t);
+  // On the thread, gone to through Back to your thread; then an upgrade
+  // ends its conversation, and the thread names nothing.
+  const OWN = "wrun_OWN_BACK";
+  holding(undefined, { threads: { [ID]: { ...EMPTY_THREAD, current: OWN } } });
+  await useStore.getState().openThread(ID);
+  assert.equal(useStore.getState().sessions[ID], OWN);
+  useStore.setState({ threads: { [ID]: EMPTY_THREAD } });
+  await refuseByWatch(OWN);
+
+  const st = useStore.getState();
+  assert.equal(st.watching, null, "the watch is stopped");
+  assert.equal(st.sessions[ID], undefined, "the dead id is dropped");
+  assert.equal(st.sessionChoice[ID], undefined, "and the chat is on the thread, not a new conversation");
+  assert.deepEqual(st.goneSessions[ID], [OWN]);
+  assert.ok(st.conversations[ID].length > 0, "what was on screen stays");
+  assert.ok(!st.conversations[ID].some((b) => b.kind === "gone"), "with no notice");
+  useStore.getState().watchActive();
+  assert.equal(watches.length, 1, "not watched again");
+  assert.equal(logs().filter((l) => l.startsWith("[gone]")).length, 1);
+  useStore.setState({ threads: {} });
+});
+
+test("AC2, one thread: the thread's conversation picked in the drawer is still the thread's, and ends quietly", async () => {
+  // Picked by its row rather than Back to your thread, while the thread named it.
+  const OWN = "wrun_OWN_ROW";
+  holding(ALIVE, { threads: { [ID]: { ...EMPTY_THREAD, current: OWN } } });
+  await useStore.getState().openSession(ID, OWN);
+  assert.equal(useStore.getState().sessionChoice[ID]?.fromDrawer, undefined, "not recorded as a drawer pick");
+  useStore.setState({ threads: { [ID]: EMPTY_THREAD } });
+  await refuseByWatch(OWN);
+  const st = useStore.getState();
+  assert.equal(st.sessions[ID], undefined);
+  assert.ok(!st.conversations[ID].some((b) => b.kind === "gone"), "no notice");
+  assert.ok(merged(OWN), "and its copy stays on screen");
+  useStore.setState({ threads: {} });
+});
+
+test("AC2, one thread: a notice put up before the thread was first read is taken down when it is", async () => {
+  // At launch the watch can be refused before the thread is read, so the
+  // agent is not yet known to keep one.
+  holding(DEAD, { threads: {} });
+  await refuseByWatch(DEAD);
+  assert.equal(lastBlock().kind, "gone");
+  assert.equal(useStore.getState().sessionChoice[ID]?.sessionId, null);
+
+  thread = EMPTY_THREAD;
+  await useStore.getState().loadThread(ID);
+  thread = null;
+  const st = useStore.getState();
+  assert.ok(!st.conversations[ID].some((b) => b.kind === "gone"), "the notice is gone");
+  assert.equal(st.conversations[ID][0].text, "hello", "the transcript is not");
+  assert.equal(st.sessionChoice[ID], undefined, "and the chat is on the thread, not a new conversation");
+  useStore.setState({ threads: {} });
+});
+
+test("AC2, one thread: a gone conversation opened from the drawer stays on screen with the notice, and the thread does not pull the chat away", async () => {
+  holding(ALIVE, { threads: { [ID]: LIVE_THREAD } });
+  gone.set(DEAD, "expired");
+  await useStore.getState().openSession(ID, DEAD);
+  await sleep(50);
+
+  let st = useStore.getState();
+  assert.equal(st.sessions[ID], DEAD, "the chat stays on the conversation the person opened");
+  assert.deepEqual(st.goneSessions[ID], [DEAD]);
+  assert.equal(st.conversations[ID].length, 1, "nothing of it is on this device");
+  assert.equal(lastBlock().kind, "gone", "so the chat says why");
+
+  thread = LIVE_THREAD;
+  await useStore.getState().loadThread(ID);
+  thread = null;
+  st = useStore.getState();
+  assert.equal(st.sessions[ID], DEAD, "a thread refresh does not move the chat back to the thread");
+  assert.equal(lastBlock().kind, "gone", "nor take the notice down");
+  assert.ok(!merged(ALIVE), "nor mix the thread into it");
+  useStore.getState().watchActive();
+  assert.equal(watches.filter((w) => w.sessionId === DEAD).length, 0, "and it is never watched");
+
+  // Back to your thread: the thread's live conversation comes back.
+  await useStore.getState().openThread(ID);
+  st = useStore.getState();
+  assert.equal(st.sessions[ID], ALIVE);
+  assert.ok(!st.conversations[ID].some((b) => b.kind === "gone"), "the notice belonged to the other conversation");
+  useStore.setState({ threads: {} });
+});
+
+test("AC2, one thread: a drawer pick the thread view lists as an earlier session gets the notice too", async () => {
+  const listed = { ...LIVE_THREAD, sessions: [{ id: DEAD, at: "2026-10-27T10:00:00.000Z" }] };
+  holding(ALIVE, { threads: { [ID]: listed } });
+  gone.set(DEAD, "expired");
+  await useStore.getState().openSession(ID, DEAD);
+  await sleep(50);
+  assert.equal(useStore.getState().sessions[ID], DEAD);
+  assert.equal(lastBlock().kind, "gone");
+  thread = listed;
+  await useStore.getState().loadThread(ID);
+  thread = null;
+  assert.equal(useStore.getState().sessions[ID], DEAD, "not followed away from");
+  assert.equal(lastBlock().kind, "gone");
+  useStore.setState({ threads: {} });
+});
+
+test("AC2, one thread: a drawer pick found gone at launch, before the thread is read, keeps its place and its notice", async () => {
+  // Opened from the drawer while it was live and read: its copy is on screen
+  // and the choice was saved as a drawer pick. Then an upgrade, and a relaunch.
+  holding(DEAD, { threads: {}, sessionChoice: { [ID]: { sessionId: DEAD, at: 1, fromDrawer: true } } });
+  await refuseByWatch(DEAD);
+  let st = useStore.getState();
+  assert.equal(st.sessions[ID], DEAD, "the hold is kept");
+  assert.equal(st.sessionChoice[ID]?.fromDrawer, true, "and so is the choice");
+  assert.equal(lastBlock().kind, "gone");
+
+  thread = LIVE_THREAD;
+  await useStore.getState().loadThread(ID);
+  thread = null;
+  st = useStore.getState();
+  assert.equal(st.sessions[ID], DEAD, "the thread does not pull the chat away");
+  assert.equal(lastBlock().kind, "gone", "the notice stays");
+  assert.ok(!merged(ALIVE), "and the thread is not mixed into its copy");
+  assert.equal(st.conversations[ID][0].text, "hello", "which stays");
+  useStore.setState({ threads: {} });
+});
+
+test("AC2, one thread: a conversation already known gone, opened from the drawer again, says why it is empty", async () => {
+  holding(ALIVE, { threads: { [ID]: LIVE_THREAD }, goneSessions: { [ID]: [DEAD] } });
+  await useStore.getState().openSession(ID, DEAD);
+  await sleep(50);
+  assert.equal(replays.filter((id) => id === DEAD).length, 0, "not asked for again");
+  assert.equal(useStore.getState().sessions[ID], DEAD);
+  assert.equal(lastBlock()?.kind, "gone", "and the empty chat is explained");
+  useStore.setState({ threads: {} });
+});
+
+test("AC2/AC4, one thread: a gone drawer pick is read-only, so its copy is not thrown away by a send", async () => {
+  holding(DEAD, { threads: { [ID]: LIVE_THREAD }, sessionChoice: { [ID]: { sessionId: DEAD, at: 1, fromDrawer: true } } });
+  await refuseByWatch(DEAD);
+  sends.length = 0;
+  useStore.getState().send(ID, "still there?");
+  await sleep(100);
+  assert.equal(sends.length, 0, "refused, as an ended conversation is (KYB-649)");
+  const conv = useStore.getState().conversations[ID];
+  assert.equal(conv[0].text, "hello", "the copy on screen stays");
+  assert.equal(conv.at(-1).kind, "gone");
+  useStore.setState({ threads: {} });
+});
+
+test("AC2, one thread: leaving a gone drawer pick for a thread that names nothing carries nothing of it along", async () => {
+  holding(DEAD, { threads: { [ID]: EMPTY_THREAD }, sessionChoice: { [ID]: { sessionId: DEAD, at: 1, fromDrawer: true } } });
+  await refuseByWatch(DEAD);
+  assert.equal(lastBlock().kind, "gone");
+  await useStore.getState().openThread(ID);
+  const st = useStore.getState();
+  assert.equal(st.sessions[ID], undefined, "on the thread");
+  assert.ok(!st.conversations[ID].some((b) => b.kind === "gone" || b.text === "hello"), "nothing of the drawer pick");
+  useStore.setState({ threads: {} });
+});
+
+// ---- Round 2 review findings ------------------------------------------------
+
+test("R2-B1: the thread's own conversation listed as ended keeps the composer, sends to the thread, and keeps its copy", async () => {
+  // After an upgrade: the list reports the thread's conversation ended before
+  // any read was refused, and the thread names nothing.
+  const OWN = "wrun_OWN_ENDED";
+  holding(undefined, { threads: { [ID]: { ...EMPTY_THREAD, current: OWN } } });
+  thread = { ...EMPTY_THREAD, current: OWN };
+  await useStore.getState().openThread(ID);
+  thread = EMPTY_THREAD;
+  useStore.setState({ threads: { [ID]: EMPTY_THREAD }, threadIndex: { [ID]: { [OWN]: { id: OWN, status: "ended" } } } });
+  assert.equal(readOnlyReason(useStore.getState(), ID), null, "not read-only: the thread carries on");
+
+  await useStore.getState().openThread(ID);
+  assert.ok(merged(OWN), "Back to your thread keeps the thread's own copy");
+
+  useStore.setState({ sessions: { [ID]: OWN }, sessionChoice: { [ID]: { sessionId: OWN, at: 1 } } });
+  sends.length = 0;
+  useStore.getState().send(ID, "carry on");
+  await sleep(100);
+  assert.equal(sends.length, 1, "the message is sent");
+  assert.equal(sends[0].thread, true, "to the thread");
+  assert.ok(merged(OWN), "and what was on screen stays");
+  thread = null;
+  useStore.setState({ threads: {}, threadIndex: {} });
+});
+
+test("R2-B1: from a drawer pick the thread view lists, Back to your thread leaves it even when the thread names nothing", async () => {
+  // The drawer pick was read while live, so its copy ("hello") is on screen.
+  const listed = { ...EMPTY_THREAD, sessions: [{ id: DEAD, at: "2026-10-27T10:00:00.000Z" }] };
+  holding(DEAD, { threads: { [ID]: listed }, sessionChoice: { [ID]: { sessionId: DEAD, at: 1, fromDrawer: true } } });
+  await refuseByWatch(DEAD);
+  await useStore.getState().openThread(ID);
+  const st = useStore.getState();
+  assert.equal(st.sessions[ID], undefined);
+  assert.ok(!st.conversations[ID].some((b) => b.kind === "gone" || b.text === "hello"), "nothing of the drawer pick is left");
+  useStore.setState({ threads: {} });
+});
+
+test("R2-B1: sending from the thread's own copy after the thread moved on does not throw that copy away", async () => {
+  const OWN = "wrun_OWN_MOVED";
+  holding(undefined, { threads: { [ID]: { ...EMPTY_THREAD, current: OWN } } });
+  await useStore.getState().openThread(ID);
+  useStore.setState({ threads: { [ID]: LIVE_THREAD } });
+  sends.length = 0;
+  useStore.getState().send(ID, "and now?");
+  await sleep(100);
+  assert.equal(sends.length, 1);
+  assert.ok(merged(OWN), "the thread's earlier copy stays on screen");
+  useStore.setState({ threads: {} });
+});
+
+test("R2-B2: a conversation refused while a turn runs in it never makes the composer read-only, and the next send goes", async () => {
+  holding(DEAD, { threads: { [ID]: EMPTY_THREAD } });
+  gone.set(DEAD, "expired");
+  useStore.getState().stopWatching();
+  watches.length = 0;
+  useStore.getState().watchActive();
+  // A turn of ours starts in it, and then the watch is refused.
+  useStore.setState({ inflight: { [ID]: "turn" } });
+  emitLive({ streamId: watches[0].streamId, kind: "gone" });
+  await sleep(50);
+  assert.equal(useStore.getState().sessions[ID], DEAD, "left to the send while the turn runs");
+  assert.equal(readOnlyReason(useStore.getState(), ID), null, "but not read-only");
+  useStore.setState({ inflight: {} });
+  sends.length = 0;
+  useStore.getState().send(ID, "next");
+  await sleep(100);
+  assert.equal(sends.length, 1, "the next message is sent");
+  useStore.setState({ threads: {}, inflight: {} });
+});
+
+test("R2-B2: on an agent with many conversations, a gone id held mid-turn is not read-only either", async () => {
+  holding(DEAD, { threads: { [ID]: null }, goneSessions: { [ID]: [DEAD] } });
+  assert.equal(readOnlyReason(useStore.getState(), ID), null);
+  useStore.setState({ threads: {} });
+});
+
+// ---- KYB-662: one-thread agents -------------------------------------------
+
+/**
+ * The state AC5 starts from, reached the way a person reaches it: an answered
+ * exchange in the thread, then the thread's own conversation ends on the agent
+ * (a reset or an upgrade), so the thread names nothing and the transcript on
+ * screen is the only copy there is.
+ */
+async function threadEnded(own) {
+  holding(undefined, { threads: { [ID]: { ...EMPTY_THREAD, current: own } } });
+  thread = { ...EMPTY_THREAD, current: own };
+  await useStore.getState().openThread(ID);
+  assert.ok(merged(own), "the thread's exchange is on screen");
+  thread = EMPTY_THREAD;
+  useStore.setState({ threads: { [ID]: EMPTY_THREAD } });
+  await refuseByWatch(own);
+  assert.equal(useStore.getState().sessions[ID], undefined, "the thread's conversation has ended");
+}
+
+/** Relaunch: the store is read back from what was saved. */
+async function relaunch() {
+  live.state = structuredClone(saved());
+  useStore.setState({ conversations: {}, sessions: {}, sessionChoice: {}, threadCopy: {}, goneSessions: {} });
+  await useStore.getState().restore();
+  useStore.setState({ activeAgentId: ID });
+}
+
+test("KYB-662 AC1: the thread's conversation ending leaves the transcript, one line, no notice and no read-only", async () => {
+  const OWN = "wrun_662_AC1";
+  await threadEnded(OWN);
+  const st = useStore.getState();
+  const conv = st.conversations[ID];
+  assert.ok(merged(OWN), "the transcript stays on screen");
+  assert.ok(!conv.some((b) => b.kind === "gone"), "no gone notice, so no Back to your thread");
+  const lines = conv.filter((b) => b.kind === "divider" && b.id === `afresh-${OWN}`);
+  assert.equal(lines.length, 1, "one line");
+  assert.match(lines[0].label, /has started afresh in your thread/);
+  assert.equal(conv.at(-1).id, `afresh-${OWN}`, "under the transcript");
+  assert.equal(readOnlyReason(st, ID), null, "the composer stays");
+
+  // Said once, whatever reads the thread again.
+  await useStore.getState().loadThread(ID);
+  await useStore.getState().loadThread(ID);
+  assert.equal(useStore.getState().conversations[ID].filter((b) => b.id === `afresh-${OWN}`).length, 1);
+
+  // The next message is answered in the thread.
+  sends.length = 0;
+  useStore.getState().send(ID, "are you there?");
+  await sleep(100);
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].thread, true, "to the thread's address");
+  assert.equal(sends[0].sessionId, undefined, "not to the conversation that ended");
+
+  // And after a relaunch the line and the transcript are still there.
+  await relaunch();
+  assert.ok(merged(OWN));
+  assert.equal(useStore.getState().conversations[ID].filter((b) => b.id === `afresh-${OWN}`).length, 1);
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 AC1: a notice put up before the thread was read becomes the thread's line, where it stood", async () => {
+  holding(DEAD, { threads: {} });
+  await refuseByWatch(DEAD);
+  assert.equal(lastBlock().kind, "gone", "the agent was not yet known to keep a thread");
+  thread = EMPTY_THREAD;
+  await useStore.getState().loadThread(ID);
+  const conv = useStore.getState().conversations[ID];
+  assert.ok(!conv.some((b) => b.kind === "gone"), "the notice is gone");
+  assert.equal(conv.filter((b) => b.id === `afresh-${DEAD}`).length, 1, "and the line is there instead");
+  assert.equal(conv[0].text, "hello", "under the transcript");
+  assert.equal(useStore.getState().sessionChoice[ID], undefined, "on the thread, not a new conversation");
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 AC2: a gone drawer pick says why it is empty each time it is opened, and after a relaunch", async () => {
+  const OWN = "wrun_662_AC2";
+  await threadEnded(OWN);
+  for (const round of [1, 2]) {
+    await useStore.getState().openSession(ID, DEAD);
+    await sleep(50);
+    const st = useStore.getState();
+    assert.equal(st.sessions[ID], DEAD, `round ${round}: on the pick`);
+    assert.deepEqual(
+      st.conversations[ID].map((b) => b.kind),
+      ["gone"],
+      `round ${round}: the chat holds the notice and nothing else, so it is never "No messages yet"`,
+    );
+    assert.equal(readOnlyReason(st, ID), "gone", `round ${round}: read-only`);
+    await useStore.getState().openThread(ID);
+  }
+  await useStore.getState().openSession(ID, DEAD);
+  await sleep(50);
+  await relaunch();
+  await useStore.getState().hydrate(ID);
+  const st = useStore.getState();
+  assert.equal(st.sessions[ID], DEAD, "the pick survives the relaunch");
+  assert.deepEqual(st.conversations[ID].map((b) => b.kind), ["gone"], "and still says why");
+  assert.equal(readOnlyReason(st, ID), "gone");
+  gone.delete(DEAD);
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 AC5: after the thread has ended, a drawer pick and Back keep the thread's transcript, across a relaunch", async () => {
+  const OWN = "wrun_662_AC5";
+  await threadEnded(OWN);
+  const before = useStore.getState().conversations[ID];
+
+  await useStore.getState().openSession(ID, DEAD);
+  await sleep(50);
+  assert.equal(useStore.getState().sessions[ID], DEAD, "the pick is on screen");
+  assert.ok(!merged(OWN), "in place of the thread");
+  assert.deepEqual(saved().threadCopy[ID], before, "the thread's transcript is saved aside");
+
+  // A relaunch while the pick is open loses nothing either.
+  await relaunch();
+  await useStore.getState().openThread(ID);
+  const st = useStore.getState();
+  assert.equal(st.sessions[ID], undefined, "back on the thread");
+  assert.deepEqual(st.conversations[ID], before, "with its transcript, as it was");
+  assert.equal(st.threadCopy[ID], undefined, "the copy is used once");
+  assert.deepEqual(saved().conversations[ID], before, "and what is saved is the transcript");
+
+  await relaunch();
+  assert.deepEqual(useStore.getState().conversations[ID], before, "still there after a relaunch");
+  gone.delete(DEAD);
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 AC5: from one pick to another, Back still brings the thread back, not the first pick", async () => {
+  const OWN = "wrun_662_TWO";
+  await threadEnded(OWN);
+  const before = useStore.getState().conversations[ID];
+  await useStore.getState().openSession(ID, ALIVE);
+  await sleep(50);
+  assert.ok(merged(ALIVE), "the first pick is read");
+  await useStore.getState().openSession(ID, DEAD);
+  await sleep(50);
+  await useStore.getState().openThread(ID);
+  assert.deepEqual(useStore.getState().conversations[ID], before);
+  gone.delete(DEAD);
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 AC5: a message sent from a live pick goes to the thread, under the thread's transcript", async () => {
+  const OWN = "wrun_662_SEND";
+  await threadEnded(OWN);
+  const before = useStore.getState().conversations[ID];
+  await useStore.getState().openSession(ID, ALIVE);
+  await sleep(50);
+  sends.length = 0;
+  useStore.getState().send(ID, "back to it");
+  await sleep(100);
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].thread, true, "to the thread");
+  assert.equal(sends[0].sessionId, undefined, "not into the pick");
+  const conv = useStore.getState().conversations[ID];
+  assert.deepEqual(conv.slice(0, before.length), before, "the thread's transcript is back");
+  assert.equal(conv[before.length]?.text, "back to it", "with the message under it");
+  assert.ok(!merged(ALIVE), "and nothing of the pick");
+  assert.equal(useStore.getState().threadCopy[ID], undefined);
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 AC3: with the thread alive, Back from a pick shows the thread's transcript and what is new", async () => {
+  holding(undefined, { threads: { [ID]: LIVE_THREAD } });
+  thread = LIVE_THREAD;
+  await useStore.getState().openThread(ID);
+  const before = useStore.getState().conversations[ID];
+  assert.ok(merged(ALIVE));
+  gone.set(DEAD, "expired");
+  await useStore.getState().openSession(ID, DEAD);
+  await sleep(50);
+  assert.equal(lastBlock().kind, "gone");
+  await useStore.getState().openThread(ID);
+  const st = useStore.getState();
+  assert.equal(st.sessions[ID], ALIVE, "on the thread's conversation");
+  assert.deepEqual(st.conversations[ID].slice(0, before.length), before, "its transcript is back");
+  assert.ok(!st.conversations[ID].some((b) => b.kind === "gone"), "with nothing of the pick");
+  gone.delete(DEAD);
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662: a new conversation is not what the put-aside thread comes back over", async () => {
+  const OWN = "wrun_662_NEW";
+  await threadEnded(OWN);
+  await useStore.getState().openSession(ID, ALIVE);
+  await sleep(50);
+  assert.ok(useStore.getState().threadCopy[ID]);
+  useStore.setState({ threads: { [ID]: null } });
+  useStore.getState().startConversation(ID);
+  await sleep(50);
+  assert.equal(useStore.getState().threadCopy[ID], undefined, "dropped with the thread it belonged to");
+  thread = null;
+  useStore.setState({ threads: {} });
 });
