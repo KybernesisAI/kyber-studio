@@ -81,7 +81,7 @@ async function goneWithin(pid, ms) {
  * A checkout-shaped temp directory. `realpathSync` because the script resolves
  * its own root through symlinks and macOS hands out /var/folders -> /private.
  */
-function buildRig({ stubbornPlanted = false, previewParent = false } = {}) {
+function buildRig({ stubbornPlanted = false, previewParent = false, abortAfterMs = null } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "kyb588-")));
 
   mkdirSync(join(root, "scripts", "lib"), { recursive: true });
@@ -128,6 +128,18 @@ function buildRig({ stubbornPlanted = false, previewParent = false } = {}) {
   );
   chmodSync(join(root, "node_modules", ".bin", "electron-vite"), 0o755);
 
+  // An Electron that aborts at startup, the way one does when it fails its
+  // sandbox check: killed by a signal after `abortAfterMs`. Measured (KYB-661):
+  // the real one dies by SIGTRAP about 70 ms in. SIGKILL stands in for it
+  // because SIGTRAP dumps core, and a test suite should not leave core files
+  // or wake a crash reporter. To electron-vite and the runner a signal is a
+  // signal: the child closes with code null either way.
+  writeFileSync(
+    join(root, "aborts.cjs"),
+    `setTimeout(() => process.kill(process.pid, "SIGKILL"), ${Number(abortAfterMs ?? 0)});\n` +
+      "setTimeout(() => {}, 300000);\n",
+  );
+
   // Stub npm. `run build` succeeds silently; `run start` behaves like Studio —
   // a startup burst, a planted Electron, then a line after first paint.
   mkdirSync(join(root, "bin"), { recursive: true });
@@ -145,9 +157,14 @@ if (script === "start") {
   for (let i = 1; i <= ${BURST_LINES}; i++) console.log("startup line " + i);
   const planted = spawn(
     ${JSON.stringify(join(root, "node_modules", "electron", "dist", "electron"))},
-    [${JSON.stringify(join(root, stubbornPlanted ? "stubborn.cjs" : "idle.cjs"))}],
+    [${JSON.stringify(join(root, abortAfterMs !== null ? "aborts.cjs" : stubbornPlanted ? "stubborn.cjs" : "idle.cjs"))}],
     { stdio: "ignore" },
   );
+  ${
+    // What electron-vite 3.1.0 does: \`ps.on('close', process.exit)\`. An
+    // Electron killed by a signal closes with code null, and exit(null) is 0.
+    abortAfterMs !== null ? "planted.on(\"close\", process.exit);" : ""
+  }
   console.log("STUB " + process.pid);
   console.log("PLANTED " + planted.pid);
   ${
@@ -252,6 +269,72 @@ test(
       }
       rmSync(root, { recursive: true, force: true });
     }
+  },
+);
+
+/**
+ * Run the rig with an Electron that aborts, to the runner's own exit.
+ * KYB-661: the runner used to call one sighting "running", and took its exit
+ * status from a child that reports a signal death as 0.
+ */
+async function runAborting(abortAfterMs) {
+  const root = buildRig({ abortAfterMs });
+  const runner = startRunner(root);
+  try {
+    let timer;
+    const exited = new Promise((resolve) => runner.child.on("exit", (code) => resolve(code)));
+    const gaveUp = new Promise((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), 30_000);
+    });
+    try {
+      const code = await Promise.race([exited, gaveUp]);
+      return { code, text: runner.text() };
+    } finally {
+      clearTimeout(timer);
+    }
+  } finally {
+    runner.child.kill("SIGKILL");
+    const planted = pidFrom(runner.text(), "PLANTED");
+    if (planted) {
+      try {
+        process.kill(planted, "SIGKILL");
+      } catch {}
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function assertAbortReported({ code, text }) {
+  assert.notEqual(code, "timeout", `the runner never exited:\n${text}`);
+  assert.ok(!text.includes("one Studio running"), `OK was printed over an Electron that aborted:\n${text}`);
+  assert.ok(
+    text.includes("FAILED: Studio aborted during startup"),
+    `the runner did not report the abort:\n${text}`,
+  );
+  assert.notEqual(code, 0, `the runner exited 0 after an aborted launch:\n${text}`);
+}
+
+test(
+  "an Electron that aborts before the runner ever sees it is reported as a failure, not passed over",
+  { skip: POSIX ? false : "the rig uses a shebang stub; Windows is unverified, per KYB-588" },
+  async () => {
+    // RED WHEN: the early exit is not reported, or the exit status is taken
+    // from the child (which says 0). This is the commoner case: 29 of 40 real
+    // aborts were never sighted by a 250 ms poll.
+    const result = await runAborting(0);
+    assertAbortReported(result);
+    assert.match(result.text, /never seen running|was seen, then went away/);
+  },
+);
+
+test(
+  "an Electron that is sighted and then aborts is not called running",
+  { skip: POSIX ? false : "the rig uses a shebang stub; Windows is unverified, per KYB-588" },
+  async () => {
+    // Lives 500 ms: long enough for a 250 ms poll to count it, shorter than the
+    // one-second settle by half a second. RED WHEN: OK is printed on a single
+    // sighting, which is what the runner did before KYB-661.
+    assertAbortReported(await runAborting(500));
   },
 );
 
