@@ -299,27 +299,73 @@ test("positive control: the old redirect-sleep-tail shape loses both ends of the
   // A control on the SHAPE the runner replaced, not on the runner. It is what
   // makes "streaming" a claim with something to fail against: the same child,
   // sampled the old way, loses the beginning to `tail -15` and the end to a
-  // fixed sample point. Scaled down so the suite stays fast; the full
-  // eight-second case is run against the real script in the pull request.
-  const SAMPLE_AT_MS = 200;
+  // fixed sample point.
+  //
+  // The old shape's sample point was a wall-clock sleep, and this control used
+  // to reproduce it with one: sample at 200 ms, late line at 400 ms. That made
+  // its verdict a race between two timers in two processes, and it lost both
+  // ways under load (KYB-660): a slow child boot left the file empty at the
+  // sample, and a stalled test process sampled after the late line. So the
+  // sample point is now defined by the child's output instead of by the clock:
+  // the child writes its burst, then holds the late line until the sample has
+  // been taken. "The late line lands after the sample" is the premise of the
+  // old shape's failure, and this states it outright rather than hoping a
+  // timer honours it.
+  //
+  // RED WHEN: the sample is taken after the late line is released (it then
+  // starts at line 27 and ends with the late line), or the `tail` is dropped
+  // (it then starts at line 1).
   const TAIL_LINES = 15;
+  const RELEASE = "release";
   const emitter = `
     for (let i = 1; i <= ${BURST_LINES}; i++) console.log("startup line " + i);
-    setTimeout(() => { console.log(${JSON.stringify(LATE_LINE)}); process.exit(0); }, 400);
+    process.stdin.once("data", () => { console.log(${JSON.stringify(LATE_LINE)}); process.exit(0); });
   `;
 
   const logPath = join(tmpdir(), `kyb588-control-${process.pid}-${Date.now()}.log`);
   const fd = openSync(logPath, "w");
-  const child = spawn(process.execPath, ["-e", emitter], { stdio: ["ignore", fd, fd] });
+  const child = spawn(process.execPath, ["-e", emitter], { stdio: ["pipe", fd, fd] });
+  const readLog = () => readFileSync(logPath, "utf8");
+
+  const holdsLine = (needle) => `\n${readLog()}`.includes(`\n${needle}\n`);
+  /** Wait until the log holds `needle` as a whole line. Output, not time, decides. */
+  async function logHasLine(needle, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (holdsLine(needle)) return true;
+      if (child.exitCode !== null || child.signalCode !== null) break;
+      await sleep(20);
+    }
+    return holdsLine(needle);
+  }
+
   let sampled;
+  let whole;
   try {
-    await sleep(SAMPLE_AT_MS);
-    sampled = readFileSync(logPath, "utf8").split("\n").filter(Boolean).slice(-TAIL_LINES);
+    // The sample point: the whole burst is in the file, the late line is not.
+    assert.ok(
+      await logHasLine(`startup line ${BURST_LINES}`, 15_000),
+      `the child never wrote its startup burst:\n${readLog()}`,
+    );
+    sampled = readLog().split("\n").filter(Boolean).slice(-TAIL_LINES);
+
+    // Then let the late line through, and check it really arrives: what the
+    // sample lacks has to be something the file goes on to hold, or the
+    // control would pass for a child that never printed it.
+    child.stdin.end(RELEASE);
+    assert.ok(
+      await logHasLine(LATE_LINE, 15_000),
+      `the child never wrote the late line:\n${readLog()}`,
+    );
+    whole = readLog().split("\n").filter(Boolean);
   } finally {
     child.kill("SIGKILL");
     closeSync(fd);
     rmSync(logPath, { force: true });
   }
+
+  assert.equal(whole[0], "startup line 1");
+  assert.equal(whole.at(-1), LATE_LINE);
 
   assert.equal(sampled.length, TAIL_LINES);
   assert.equal(sampled[0], `startup line ${BURST_LINES - TAIL_LINES + 1}`);
