@@ -46,6 +46,28 @@ const NPM = IS_WINDOWS ? "npm.cmd" : "npm";
 /** Ready when the count settles at one. Polled, not slept for. */
 const READY_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 250;
+/**
+ * How long, and across how many polls, the count has to hold at one before
+ * Studio is called running. A main process that is aborting is still this
+ * checkout's Electron and still not a helper, so one sighting proves only that
+ * it existed for an instant. Measured (KYB-661): an Electron that fails its
+ * sandbox check lives about 70 ms, and a single-sighting check called it
+ * running in 11 runs of 40.
+ */
+const SETTLE_MS = 1_000;
+const SETTLE_POLLS = 3;
+
+/**
+ * Where the launch got to: "pending" until reportWhenReady decides, then
+ * "ready", "ambiguous" (more than one Studio), "timeout" or "unknown" (the
+ * process table could not be read). Anything but "ready" makes the child's
+ * exit a failure, since OK was never printed, and reportFailedExit says so at
+ * the moment it happens: a warning printed when the poll gave up may be an
+ * hour old by then.
+ */
+let readiness = "pending";
+/** Whether a main Studio process was ever counted, for the failure message. */
+let sawMainProcess = false;
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
@@ -164,30 +186,84 @@ function runBuild() {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
+const childHasExited = (child) => child.exitCode !== null || child.signalCode !== null;
+
 /**
- * Poll until exactly one Studio is up, streaming continuing the whole time.
+ * Poll until exactly one Studio has stayed up, streaming continuing the whole
+ * time.
  *
  * Polling rather than sleeping is the point: it reports as soon as the
  * condition holds instead of at a fixed moment chosen to be generous, and a
  * timeout is a real answer rather than a sample that happened to miss.
+ *
+ * The condition is that the count has HELD at one, for SETTLE_MS and across
+ * SETTLE_POLLS polls, with the child still alive when the line is printed.
+ * Existing at one instant is not running (KYB-661). The opposite case, an
+ * Electron that dies before this ever sees it, is reported by the child's exit
+ * handler, because only that handler is guaranteed to run.
  */
 async function reportWhenReady(child) {
   const deadline = Date.now() + READY_TIMEOUT_MS;
+  let heldSince = null;
+  let sightings = 0;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null || child.signalCode !== null) return;
+    if (childHasExited(child)) return;
     const count = countStudio();
     if (count === 1) {
-      console.log("\n[dev] OK: one Studio running, output streaming above");
-      return;
-    }
-    if (count > 1) {
-      console.error(`\n[dev] ${checkStudioCount(count, 1).message} — the next thing you test is ambiguous`);
-      return;
+      sawMainProcess = true;
+      heldSince ??= Date.now();
+      sightings += 1;
+      const held = sightings >= SETTLE_POLLS && Date.now() - heldSince >= SETTLE_MS;
+      if (held && !childHasExited(child)) {
+        readiness = "ready";
+        console.log("\n[dev] OK: one Studio running, output streaming above");
+        return;
+      }
+    } else {
+      heldSince = null;
+      sightings = 0;
+      if (count > 1) {
+        readiness = "ambiguous";
+        console.error(`\n[dev] ${checkStudioCount(count, 1).message} — the next thing you test is ambiguous`);
+        return;
+      }
     }
     await sleep(POLL_INTERVAL_MS);
   }
+  readiness = "timeout";
+  const what = sawMainProcess ? "Studio was seen but did not settle" : "no Studio process appeared";
+  console.error(`\n[dev] ${what} within ${READY_TIMEOUT_MS / 1000}s - see the output above`);
+}
+
+/**
+ * The child exited and OK was never printed, so this run is a failure whatever
+ * the child's exit status says. That status says nothing: electron-vite runs
+ * Electron with `ps.on('close', process.exit)`, so an Electron killed by a
+ * signal (SIGTRAP when it fails its sandbox check) makes `npm run start` exit
+ * 0 (KYB-661). Every failed exit gets a line here, at the moment it happens.
+ */
+function reportFailedExit(code, signal) {
+  const how = signal ? `signal ${signal}` : `code ${code}`;
+  if (readiness === "pending") {
+    const seen = sawMainProcess
+      ? "its main process was seen, then went away"
+      : "its main process was never seen running";
+    console.error(
+      `\n[dev] FAILED: Studio aborted during startup (${seen}; \`npm run start\` exited with ${how}). ` +
+        "See the output above for why.",
+    );
+    return;
+  }
+  // The poll already gave up and warned, possibly long ago. Studio may have
+  // run fine since; what failed is the runner's confirmation that it did.
+  const why = {
+    timeout: "it did not settle within the time allowed",
+    ambiguous: "more than one Studio was running",
+    unknown: "the process table could not be read",
+  }[readiness];
   console.error(
-    `\n[dev] no Studio process appeared within ${READY_TIMEOUT_MS / 1000}s — see the output above`,
+    `\n[dev] FAILED: \`npm run start\` exited with ${how}, and Studio was never confirmed running (${why}). ` +
+      "Exiting non-zero so this run is not mistaken for a good one.",
   );
 }
 
@@ -200,7 +276,7 @@ async function reportWhenReady(child) {
  * delivered but nothing ever looks to see whether it worked, which is how
  * stale windows survived a "clean" exit in the first place.
  */
-async function shutdown(code, signal) {
+async function shutdown(code, signal, failed = false) {
   try {
     if (killStudio("SIGTERM") > 0) {
       await sleep(500);
@@ -215,7 +291,8 @@ async function shutdown(code, signal) {
     // Reaping is best effort: never turn a clean exit into a crash.
     console.error(`[dev] could not verify clean-up: ${error.message}`);
   }
-  process.exit(signal ? 1 : (code ?? 0));
+  const status = signal ? 1 : (code ?? 0);
+  process.exit(failed && status === 0 ? 1 : status);
 }
 
 async function main() {
@@ -255,12 +332,16 @@ async function main() {
   // reproduced that, and the likeliest trigger is the Windows process-table
   // read, on the platform nobody has run.
   reportWhenReady(child).catch((error) => {
+    readiness = "unknown";
     console.error(`\n[dev] could not confirm how many Studios are running: ${error.message}`);
   });
 
   child.on("error", (error) => fail(`could not run \`npm run start\`: ${error.message}`));
   child.on("exit", (code, signal) => {
-    shutdown(code, signal).catch((error) => {
+    // Stopping on purpose before Studio was ready is not a failed launch.
+    const failed = readiness !== "ready" && !stopping;
+    if (failed) reportFailedExit(code, signal);
+    shutdown(code, signal, failed).catch((error) => {
       console.error(`[dev] clean-up failed: ${error.message}`);
       process.exit(1);
     });
