@@ -772,6 +772,10 @@ test("KYB-662 B2: a relaunch on a pick does not let the directory adopt over it,
   useStore.setState({ threads: {} });
 });
 
+/** A turn of the thread's new conversation already on screen, here and nowhere else. */
+const SAID = { kind: "text", id: "u-said-next", role: "user", text: "said before the thread was read", at: 2 };
+const shows = (conv, block) => conv.some((b) => b.id === block.id);
+
 test("KYB-662 B2: a copy stranded on the thread's own conversation is put back when the thread is read", async () => {
   const OWN = "wrun_662_STRAND";
   const NEXT = "wrun_662_STRAND_NEXT";
@@ -782,7 +786,7 @@ test("KYB-662 B2: a copy stranded on the thread's own conversation is put back w
   useStore.setState((s) => ({
     sessions: { ...s.sessions, [ID]: NEXT },
     sessionChoice: {},
-    conversations: { ...s.conversations, [ID]: [] },
+    conversations: { ...s.conversations, [ID]: [SAID] },
     threadCopy: { [ID]: before },
     threads: {},
   }));
@@ -791,9 +795,10 @@ test("KYB-662 B2: a copy stranded on the thread's own conversation is put back w
   await sleep(50);
   const conv = useStore.getState().conversations[ID];
   assert.ok(holdsAll(conv, before), "the thread's transcript is back");
+  assert.ok(shows(conv, SAID), "what was on screen stays");
   assert.ok(merged(NEXT), "with what is new");
   assert.equal(useStore.getState().threadCopy[ID], undefined);
-  assert.ok(holdsAll(saved().conversations[ID], before), "and saved");
+  assert.ok(holdsAll(saved().conversations[ID], [...before, SAID]), "and saved");
   thread = null;
   useStore.setState({ threads: {} });
 });
@@ -843,7 +848,7 @@ test("KYB-662 B3: while a conversation is read for the first time the chat says 
   useStore.setState({ threads: {} });
 });
 
-test("KYB-662 B2: a copy held while the screen is not a pick is never overwritten by the next pick", async () => {
+test("KYB-662 B2: a copy held while the screen is not a pick is never overwritten by the next pick, and the screen is kept with it", async () => {
   const OWN = "wrun_662_KEEP";
   const NEXT = "wrun_662_KEEP_NEXT";
   await threadEnded(OWN);
@@ -853,18 +858,124 @@ test("KYB-662 B2: a copy held while the screen is not a pick is never overwritte
   useStore.setState((s) => ({
     sessions: { ...s.sessions, [ID]: NEXT },
     sessionChoice: {},
-    conversations: { ...s.conversations, [ID]: [] },
+    conversations: { ...s.conversations, [ID]: [SAID] },
     threadCopy: { [ID]: before },
     threads: {},
   }));
   await useStore.getState().openSession(ID, ALIVE);
   await sleep(50);
-  assert.deepEqual(useStore.getState().threadCopy[ID], before, "the copy aside is the thread's, unchanged");
+  const aside = useStore.getState().threadCopy[ID];
+  assert.deepEqual(aside.slice(0, before.length), before, "the copy aside is the thread's, unchanged");
+  assert.ok(shows(aside, SAID), "with the screen that was left added under it");
   thread = { ...EMPTY_THREAD, current: NEXT };
   await useStore.getState().loadThread(ID);
   await useStore.getState().openThread(ID);
   await sleep(50);
-  assert.ok(holdsAll(useStore.getState().conversations[ID], before), "and Back brings it back");
+  const conv = useStore.getState().conversations[ID];
+  assert.ok(holdsAll(conv, before), "and Back brings it back");
+  assert.ok(shows(conv, SAID), "screen and all");
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+/**
+ * Review round 2, N1. The thread has ended and a pick was open; after a
+ * relaunch the thread's new conversation is opened before `/thread` answers
+ * (the newest row of the list shown then), so it is recorded as a pick.
+ */
+async function ownOpenedBeforeRead(own, next) {
+  await threadEnded(own);
+  const before = useStore.getState().conversations[ID];
+  await useStore.getState().openSession(ID, ALIVE);
+  await sleep(50);
+  await relaunch();
+  useStore.setState({ threads: {} });
+  await useStore.getState().openSession(ID, next);
+  await sleep(50);
+  assert.ok(merged(next), "the thread's new conversation is read");
+  assert.equal(useStore.getState().sessionChoice[ID]?.fromDrawer, true, "recorded as a pick, as nothing yet says otherwise");
+  thread = { ...EMPTY_THREAD, current: next };
+  await useStore.getState().loadThread(ID);
+  await sleep(50);
+  return before;
+}
+
+test("KYB-662 N1: the thread's own conversation, opened before the thread is read, is the thread once it is, with both transcripts", async () => {
+  const OWN = "wrun_662_N1";
+  const NEXT = "wrun_662_N1_NEXT";
+  const before = await ownOpenedBeforeRead(OWN, NEXT);
+  let st = useStore.getState();
+  assert.equal(st.sessions[ID], NEXT);
+  assert.notEqual(st.sessionChoice[ID]?.fromDrawer, true, "no longer a pick");
+  assert.equal(st.threadCopy[ID], undefined, "nothing left aside");
+  assert.ok(holdsAll(st.conversations[ID], before), "the ended conversation's transcript is on screen");
+  assert.ok(merged(NEXT), "and so is the new one's");
+  assert.equal(readOnlyReason(st, ID), null, "and the thread can be written to");
+  await useStore.getState().openThread(ID);
+  await sleep(50);
+  assert.ok(holdsAll(useStore.getState().conversations[ID], before) && merged(NEXT), "Back changes nothing");
+
+  // The new conversation ends too: neither transcript is lost (AC1).
+  thread = EMPTY_THREAD;
+  useStore.setState({ threads: { [ID]: EMPTY_THREAD } });
+  await refuseByWatch(NEXT);
+  await useStore.getState().loadThread(ID);
+  st = useStore.getState();
+  assert.ok(holdsAll(st.conversations[ID], before), "the first ended conversation is kept");
+  assert.ok(merged(NEXT), "and the second");
+  assert.ok(holdsAll(saved().conversations[ID], st.conversations[ID].filter((b) => b.kind !== "divider")), "and saved");
+  await relaunch();
+  assert.ok(holdsAll(useStore.getState().conversations[ID], before) && merged(NEXT), "still there after a relaunch");
+  gone.delete(NEXT);
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 N1: from there, a pick, the thread's conversation ending, and Back keep both transcripts", async () => {
+  const OWN = "wrun_662_N1B";
+  const NEXT = "wrun_662_N1B_NEXT";
+  const before = await ownOpenedBeforeRead(OWN, NEXT);
+  await useStore.getState().openSession(ID, ALIVE);
+  await sleep(50);
+  assert.ok(merged(ALIVE) && !merged(NEXT), "the pick is on screen, on its own");
+  // The thread's conversation ends while the pick is open.
+  gone.set(NEXT, "expired");
+  thread = EMPTY_THREAD;
+  await useStore.getState().loadThread(ID);
+  await useStore.getState().openThread(ID);
+  await sleep(50);
+  const st = useStore.getState();
+  assert.equal(st.sessions[ID], undefined, "back on the thread");
+  assert.ok(holdsAll(st.conversations[ID], before), "the first ended conversation is kept");
+  assert.ok(merged(NEXT), "and the second");
+  assert.ok(!merged(ALIVE), "and nothing of the pick");
+  assert.equal(st.threadCopy[ID], undefined);
+  gone.delete(NEXT);
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 N1: ending the conversation on screen while a copy is stranded keeps the screen with the copy", async () => {
+  const OWN = "wrun_662_N1END";
+  const NEXT = "wrun_662_N1END_NEXT";
+  await threadEnded(OWN);
+  const before = useStore.getState().conversations[ID];
+  // Stranded, as at a launch before `/thread` is read: the screen is the
+  // thread's new conversation, not a recorded pick, and the transcript is aside.
+  useStore.setState((s) => ({
+    sessions: { ...s.sessions, [ID]: NEXT },
+    sessionChoice: {},
+    conversations: { ...s.conversations, [ID]: [SAID] },
+    threadCopy: { [ID]: before },
+    threads: {},
+  }));
+  useStore.getState().endConversation(ID, NEXT);
+  await sleep(50);
+  const st = useStore.getState();
+  assert.ok(holdsAll(st.conversations[ID], before), "the thread's transcript is back");
+  assert.ok(shows(st.conversations[ID], SAID), "and what was on screen is not thrown away");
+  assert.equal(st.threadCopy[ID], undefined, "the copy is used once");
+  assert.ok(holdsAll(saved().conversations[ID], [...before, SAID]), "and saved");
   thread = null;
   useStore.setState({ threads: {} });
 });

@@ -847,7 +847,8 @@ function leaveForNewConversation(
     // Settings), or asking for a new conversation before the thread has been
     // read this launch, goes back to the thread. Its transcript comes back on
     // screen: once the thread's conversation has ended it is the only copy,
-    // and dropping it here would lose it for good (KYB-662).
+    // and dropping it here would lose it for good (KYB-662). `takeThreadCopy`
+    // keeps the screen too, unless it is a recorded pick.
     if (st.threadCopy[agentId]) {
       const sessionChoice = { ...st.sessionChoice };
       delete sessionChoice[agentId];
@@ -1022,13 +1023,35 @@ export function readOnlyReason(
 }
 
 /**
- * The chat leaves a drawer pick for the thread: what goes back on screen is the
- * thread's transcript as it was put aside, or, with none put aside (a pick
- * saved before KYB-662), nothing. The copy is used once.
+ * The thread's put-aside transcript with `screen` added under it: every block
+ * of the copy, then whatever of the screen the copy does not already hold.
+ * Nothing either side had is dropped.
+ */
+function withScreen(copy: Block[], screen: Block[]): Block[] {
+  const held = new Set(copy.map((b) => b.id));
+  return [...copy, ...screen.filter((b) => !held.has(b.id))];
+}
+
+/**
+ * The thread's transcript goes back on screen, and the copy is used once.
+ *
+ * Over a recorded drawer pick it REPLACES the screen: a pick is opened onto an
+ * empty chat, so all it shows is what the agent sent back for it, or its gone
+ * notice, and none of that belongs in the thread. Over anything else it is
+ * MERGED with the screen, because then the screen is the thread's too: its
+ * new conversation, reached before `/thread` answered, which may be the only
+ * copy of that conversation once it ends (KYB-662). Merging when unsure can
+ * only show too much; replacing when unsure can lose a transcript for good.
+ *
+ * Read from `st` as it is before the chat moves, so `st.sessions` is still the
+ * screen being left.
  */
 function takeThreadCopy(st: State, agentId: string): Pick<State, "conversations" | "threadCopy"> {
+  const copy = st.threadCopy[agentId] ?? [];
+  const screen = st.conversations[agentId] ?? [];
+  const pick = isDrawerPick(st, agentId, st.sessions[agentId]);
   return {
-    conversations: { ...st.conversations, [agentId]: st.threadCopy[agentId] ?? [] },
+    conversations: { ...st.conversations, [agentId]: pick ? copy : withScreen(copy, screen) },
     threadCopy: { ...st.threadCopy, [agentId]: undefined },
   };
 }
@@ -2154,6 +2177,18 @@ export const useStore = create<State>((set, get) => ({
      * Not while a turn runs, and not over a conversation the person opened
      * from the drawer on purpose: that is theirs to read until they send.
      */
+    // A conversation recorded as a pick that the thread names now is the
+    // thread. It was opened before `/thread` answered this launch (say, the
+    // newest row of the list shown then), when which conversation the thread
+    // names was not known. It stops being a pick, and a transcript put aside
+    // goes back on screen under it, nothing of either dropped (KYB-662).
+    if (view.current && get().sessions[agentId] === view.current && get().sessionChoice[agentId]?.fromDrawer) {
+      console.log(`[thread] ${agentId}: the conversation on screen is the thread's own; it is not a pick`);
+      set((st) => ({
+        sessionChoice: { ...st.sessionChoice, [agentId]: { sessionId: view.current, at: st.sessionChoice[agentId]?.at ?? Date.now() } },
+        ...(st.threadCopy[agentId] ? takeThreadCopy(st, agentId) : {}),
+      }));
+    }
     const held = get().sessions[agentId];
     // A drawer pick is the person's to read until they leave it, even one of
     // the thread's own earlier conversations (KYB-662).
@@ -2235,14 +2270,17 @@ export const useStore = create<State>((set, get) => ({
       // Leaving the thread for a pick puts its transcript aside rather than
       // wiping it: once its conversation has ended it is the only copy. From
       // one pick to another, what is aside is still the thread's, and stays.
-      // A copy already held is never overwritten: while one is held, the
-      // screen is not the thread (KYB-662).
-      const leavingThread = fromDrawer && !isDrawerPick(st, agentId, st.sessions[agentId]) && !st.threadCopy[agentId];
+      // A copy already held is never overwritten. Should the screen being
+      // left not be a recorded pick while one is held, it is the thread's
+      // too, and is added under the copy rather than dropped (KYB-662).
+      const leavingThread = fromDrawer && !isDrawerPick(st, agentId, st.sessions[agentId]);
+      const held = st.threadCopy[agentId];
+      const aside = leavingThread ? (held ? withScreen(held, st.conversations[agentId] ?? []) : st.conversations[agentId] ?? []) : held;
       const screen: Partial<State> = returning
         ? takeThreadCopy(st, agentId)
         : {
             conversations: { ...st.conversations, [agentId]: [] },
-            ...(leavingThread ? { threadCopy: { ...st.threadCopy, [agentId]: st.conversations[agentId] ?? [] } } : {}),
+            ...(leavingThread ? { threadCopy: { ...st.threadCopy, [agentId]: aside } } : {}),
           };
       return {
         sessions: { ...st.sessions, [agentId]: sessionId },
