@@ -28,6 +28,8 @@ let thread = null;
 let emitLive = null;
 /** While set, every history read waits for it: the moment a read is in flight. */
 let replayGate = null;
+/** While set, the agent answers a send on this conversation, as when it had ended the one sent into. */
+let sendAs = null;
 const bridge = window.studio;
 window.studio = new Proxy(bridge, {
   get: (target, key) => {
@@ -40,6 +42,11 @@ window.studio = new Proxy(bridge, {
         if (replayGate) await replayGate;
         if (gone.has(input.sessionId)) return { gone: gone.get(input.sessionId) };
         return target.replaySession(input);
+      };
+    if (key === "send" && sendAs)
+      return async (input) => {
+        sends.push(input);
+        return { sessionId: sendAs, streamIndex: 9, reply: "OK" };
       };
     if (key === "manage")
       return async (input) => {
@@ -513,7 +520,7 @@ async function threadEnded(own) {
 /** Relaunch: the store is read back from what was saved. */
 async function relaunch() {
   live.state = structuredClone(saved());
-  useStore.setState({ conversations: {}, sessions: {}, sessionChoice: {}, threadCopy: {}, goneSessions: {} });
+  useStore.setState({ conversations: {}, sessions: {}, sessionChoice: {}, threadCopy: {}, goneSessions: {}, keepsThread: {} });
   await useStore.getState().restore();
   useStore.setState({ activeAgentId: ID });
 }
@@ -976,6 +983,122 @@ test("KYB-662 N1: ending the conversation on screen while a copy is stranded kee
   assert.ok(shows(st.conversations[ID], SAID), "and what was on screen is not thrown away");
   assert.equal(st.threadCopy[ID], undefined, "the copy is used once");
   assert.ok(holdsAll(saved().conversations[ID], [...before, SAID]), "and saved");
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 N3: after a relaunch, a conversation opened before the thread is read is a pick, and the thread's only copy is kept", async () => {
+  const OWN = "wrun_662_N3";
+  await threadEnded(OWN);
+  const before = useStore.getState().conversations[ID];
+  assert.equal(saved().keepsThread?.[ID], true, "that the agent keeps one thread is saved");
+  await relaunch();
+  useStore.setState({ threads: {} });
+  assert.equal(useStore.getState().threadCopy[ID], undefined, "nothing is put aside yet");
+  await useStore.getState().openSession(ID, ALIVE);
+  await sleep(50);
+  let st = useStore.getState();
+  assert.equal(st.sessionChoice[ID]?.fromDrawer, true, "it is recorded as a pick");
+  assert.deepEqual(st.threadCopy[ID], before, "the thread's transcript is put aside");
+  assert.deepEqual(saved().threadCopy[ID], before, "and saved");
+  assert.ok(merged(ALIVE) && !merged(OWN), "the pick is on screen, on its own");
+  await relaunch();
+  thread = EMPTY_THREAD;
+  await useStore.getState().loadThread(ID);
+  await useStore.getState().openThread(ID);
+  threadBack(before, "after Back");
+  await relaunch();
+  assert.deepEqual(useStore.getState().conversations[ID], before, "still there after a relaunch");
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 N3: an agent found to keep no thread stops being taken for one", async () => {
+  holding(ALIVE, { keepsThread: { [ID]: true }, threads: {} });
+  thread = null; // `/thread` answers 404
+  await useStore.getState().loadThread(ID);
+  await sleep(20);
+  assert.equal(useStore.getState().keepsThread[ID], undefined);
+  assert.equal(saved().keepsThread?.[ID], undefined, "and that is saved");
+  await useStore.getState().openSession(ID, DEAD);
+  await sleep(50);
+  assert.notEqual(useStore.getState().sessionChoice[ID]?.fromDrawer, true, "a conversation opened is not a pick");
+  assert.equal(useStore.getState().threadCopy[ID], undefined, "and nothing is put aside");
+  useStore.setState({ threads: {}, keepsThread: {} });
+});
+
+test("KYB-662 H2: signed out on a pick, the thread's read after signing in puts the thread back, not the pick", async () => {
+  const OWN = "wrun_662_H2";
+  await threadEnded(OWN);
+  const before = useStore.getState().conversations[ID];
+  await useStore.getState().openSession(ID, ALIVE);
+  await sleep(50);
+  // As a sign-out leaves it: no session held, the choice, screen and copy kept.
+  useStore.setState({ sessions: {}, threads: {} });
+  thread = EMPTY_THREAD;
+  await useStore.getState().loadThread(ID);
+  await sleep(50);
+  const st = useStore.getState();
+  assert.deepEqual(st.conversations[ID], before, "the thread's transcript is on screen");
+  assert.ok(!merged(ALIVE), "and nothing of the pick");
+  assert.equal(st.threadCopy[ID], undefined);
+  assert.equal(st.sessionChoice[ID], undefined, "the pick is left");
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 H1: a pick answered on a new conversation before the thread is read stays a pick", async () => {
+  const OWN = "wrun_662_H1";
+  const NEW = "wrun_662_H1_NEW";
+  await threadEnded(OWN);
+  const before = useStore.getState().conversations[ID];
+  await useStore.getState().openSession(ID, ALIVE);
+  await sleep(50);
+  await relaunch();
+  useStore.setState({ threads: {} });
+  sendAs = NEW;
+  useStore.getState().send(ID, "typed on the pick");
+  await sleep(100);
+  sendAs = null;
+  let st = useStore.getState();
+  assert.equal(st.sessions[ID], NEW);
+  assert.equal(st.sessionChoice[ID]?.sessionId, NEW, "the choice follows the conversation the agent answered on");
+  assert.equal(st.sessionChoice[ID]?.fromDrawer, true, "still a pick");
+  thread = EMPTY_THREAD;
+  await useStore.getState().loadThread(ID);
+  await sleep(50);
+  st = useStore.getState();
+  assert.deepEqual(st.threadCopy[ID], before, "the thread's transcript stays aside");
+  await useStore.getState().openThread(ID);
+  threadBack(before, "after Back");
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 R: the thread's new conversation, still being read when the thread names it, shows its turns", async () => {
+  const OWN = "wrun_662_R";
+  const NEXT = "wrun_662_R_NEXT";
+  await threadEnded(OWN);
+  const before = useStore.getState().conversations[ID];
+  await useStore.getState().openSession(ID, ALIVE);
+  await sleep(50);
+  await relaunch();
+  useStore.setState({ threads: {} });
+  let open;
+  replayGate = new Promise((resolve) => (open = resolve));
+  const opening = useStore.getState().openSession(ID, NEXT);
+  await sleep(20);
+  thread = { ...EMPTY_THREAD, current: NEXT };
+  const reading = useStore.getState().loadThread(ID);
+  await sleep(20);
+  replayGate = null;
+  open();
+  await opening;
+  await reading;
+  await sleep(50);
+  const conv = useStore.getState().conversations[ID];
+  assert.ok(holdsAll(conv, before), "the ended conversation's transcript is on screen");
+  assert.ok(merged(NEXT), "and the new one's turns, without waiting for the next merge");
   thread = null;
   useStore.setState({ threads: {} });
 });

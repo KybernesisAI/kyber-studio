@@ -964,14 +964,16 @@ export function afreshLine(agentName: string, sessionId: string, at = Date.now()
 
 /**
  * The agent keeps one thread per person, as far as this device can tell yet.
- * Read from the thread view once it has been read this launch; before that, a
- * transcript put aside for a drawer pick proves it, since only such agents
- * have one (KYB-662). Without this, a launch that adopts or opens a
- * conversation before `/thread` answers treats the agent as one with many, and
- * the put-aside copy is stranded, overwritten or mixed with another.
+ * Read from the thread view once it has been read this launch. Before that,
+ * from what was saved: that `/thread` answered with a view on an earlier
+ * launch, or a transcript put aside for a drawer pick, which only such agents
+ * have (KYB-662). Without this, a launch that adopts or opens a conversation
+ * before `/thread` answers treats the agent as one with many: the thread's
+ * transcript is wiped, though once its conversation has ended it is the only
+ * copy, or a put-aside copy is stranded, overwritten or mixed with another.
  */
-function keepsOneThread(s: Pick<State, "threads" | "threadCopy">, agentId: string): boolean {
-  return Boolean(s.threads[agentId]) || Boolean(s.threadCopy[agentId]);
+function keepsOneThread(s: Pick<State, "threads" | "threadCopy" | "keepsThread">, agentId: string): boolean {
+  return Boolean(s.threads[agentId]) || Boolean(s.threadCopy[agentId]) || (s.threads[agentId] === undefined && s.keepsThread[agentId] === true);
 }
 
 /**
@@ -1049,7 +1051,10 @@ function withScreen(copy: Block[], screen: Block[]): Block[] {
 function takeThreadCopy(st: State, agentId: string): Pick<State, "conversations" | "threadCopy"> {
   const copy = st.threadCopy[agentId] ?? [];
   const screen = st.conversations[agentId] ?? [];
-  const pick = isDrawerPick(st, agentId, st.sessions[agentId]);
+  // With no session held (signed out, say) the saved choice says what the
+  // screen is: one recorded from the drawer is a pick.
+  const held = st.sessions[agentId];
+  const pick = held ? isDrawerPick(st, agentId, held) : st.sessionChoice[agentId]?.fromDrawer === true;
   return {
     conversations: { ...st.conversations, [agentId]: pick ? copy : withScreen(copy, screen) },
     threadCopy: { ...st.threadCopy, [agentId]: undefined },
@@ -1381,6 +1386,12 @@ interface State {
    */
   threadCopy: Record<string, Block[] | undefined>;
   /**
+   * Agents whose `/thread` has answered with a view, saved so that the next
+   * launch knows the agent keeps one thread before `/thread` answers again
+   * (KYB-662). Cleared when it answers that the agent has none.
+   */
+  keepsThread: Record<string, true | undefined>;
+  /**
    * Conversations each agent no longer has (KYB-657), newest last. Since eve
    * 0.80 a private conversation's history is deleted when its run ends, and
    * every read of it after that is refused. None of these is read, watched or
@@ -1613,6 +1624,7 @@ export const useStore = create<State>((set, get) => ({
   sessionChoice: {},
   goneSessions: {},
   threadCopy: {},
+  keepsThread: {},
   streamIndexes: {},
   rooms: [],
   roomQueue: {},
@@ -2153,7 +2165,11 @@ export const useStore = create<State>((set, get) => ({
     // Anything else (offline, a sign-in to renew) says nothing new.
     const view = res.ok ? readThreadView(res.data) : null;
     if (!view) {
-      if (res.ok || res.status === 404) set((s) => ({ threads: { ...s.threads, [agentId]: null } }));
+      if (res.ok || res.status === 404) {
+        const known = get().keepsThread[agentId];
+        set((s) => ({ threads: { ...s.threads, [agentId]: null }, keepsThread: { ...s.keepsThread, [agentId]: undefined } }));
+        if (known) get().persist();
+      }
       return;
     }
 
@@ -2166,7 +2182,9 @@ export const useStore = create<State>((set, get) => ({
       }
     }
     seenReports.set(agentId, new Set(view.reports.map((r) => r.id)));
-    set((s) => ({ threads: { ...s.threads, [agentId]: view } }));
+    const known = get().keepsThread[agentId];
+    set((s) => ({ threads: { ...s.threads, [agentId]: view }, keepsThread: { ...s.keepsThread, [agentId]: true } }));
+    if (!known) get().persist();
 
     /**
      * Follow the thread to the session it holds now. The desktop and the phone
@@ -2188,6 +2206,10 @@ export const useStore = create<State>((set, get) => ({
         sessionChoice: { ...st.sessionChoice, [agentId]: { sessionId: view.current, at: st.sessionChoice[agentId]?.at ?? Date.now() } },
         ...(st.threadCopy[agentId] ? takeThreadCopy(st, agentId) : {}),
       }));
+      get().persist();
+      // A first read of it may still be in flight, and it only fills an empty
+      // chat: what is new is added here instead.
+      await get().hydrate(agentId, "merge");
     }
     const held = get().sessions[agentId];
     // A drawer pick is the person's to read until they leave it, even one of
@@ -2216,7 +2238,14 @@ export const useStore = create<State>((set, get) => ({
       // thread's new conversation at launch, say). The screen is the thread,
       // so its transcript comes back, with what is new added below (KYB-662).
       console.log(`[thread] ${agentId}: putting the thread's transcript back on screen`);
-      set((st) => takeThreadCopy(st, agentId));
+      set((st) => {
+        // With nothing held, a pick the choice still names has been left (a
+        // sign-out keeps the choice): it is the thread on screen now.
+        if (st.sessions[agentId] || !st.sessionChoice[agentId]?.fromDrawer) return takeThreadCopy(st, agentId);
+        const sessionChoice = { ...st.sessionChoice };
+        delete sessionChoice[agentId];
+        return { ...takeThreadCopy(st, agentId), sessionChoice };
+      });
       await get().hydrate(agentId, "merge");
     }
 
@@ -2727,10 +2756,15 @@ export const useStore = create<State>((set, get) => ({
           streamIndexes: { ...s.streamIndexes, [agentId]: res.streamIndex },
           // The first message of a new conversation makes it a thread like any
           // other: the fresh-start hold gives way to an ordinary choice.
+          // A pick the agent answered on a new conversation (it had ended it)
+          // is still the pick: the choice follows it, so the thread's read
+          // does not take it for the thread (KYB-662).
           sessionChoice:
             s.sessionChoice[agentId]?.sessionId === null && res.sessionId
               ? { ...s.sessionChoice, [agentId]: { sessionId: res.sessionId, at: Date.now() } }
-              : s.sessionChoice,
+              : s.sessionChoice[agentId]?.fromDrawer && res.sessionId && s.sessionChoice[agentId]?.sessionId === s.sessions[agentId] && res.sessionId !== s.sessions[agentId]
+                ? { ...s.sessionChoice, [agentId]: { ...s.sessionChoice[agentId]!, sessionId: res.sessionId } }
+                : s.sessionChoice,
         }));
         /**
          * Tell the account where this conversation lives.
@@ -3201,6 +3235,7 @@ export const useStore = create<State>((set, get) => ({
       sessionChoice?: State["sessionChoice"];
       goneSessions?: State["goneSessions"];
       threadCopy?: State["threadCopy"];
+      keepsThread?: State["keepsThread"];
     }>("conversations.json");
     if (saved?.rooms) set({ rooms: saved.rooms });
     if (saved?.prefs && !saved?.conversations) set({ prefs: saved.prefs });
@@ -3211,6 +3246,7 @@ export const useStore = create<State>((set, get) => ({
         sessionChoice: saved.sessionChoice ?? {},
         goneSessions: saved.goneSessions ?? {},
         threadCopy: saved.threadCopy ?? {},
+        keepsThread: saved.keepsThread ?? {},
         streamIndexes: saved.streamIndexes ?? {},
         prefs: saved.prefs ?? {},
         rooms: saved.rooms ?? [],
@@ -3236,6 +3272,7 @@ export const useStore = create<State>((set, get) => ({
         sessionChoice: get().sessionChoice,
         goneSessions: get().goneSessions,
         threadCopy: get().threadCopy,
+        keepsThread: get().keepsThread,
       },
     });
   },
