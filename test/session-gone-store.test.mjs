@@ -1307,13 +1307,6 @@ test("KYB-662 G1: nor when /thread does not answer either", async () => {
 });
 
 /**
- * Found in UAT: on a live thread, a drawer pick and Back re-added the agent's
- * side of the thread's conversation, one copy per round trip. The way back
- * restored the transcript, so the first read found nothing new and kept no
- * cursor, and the watch the session change starts (App's effect) then followed
- * the conversation from its first event, drawing every reply again.
- */
-/**
  * Hange's UAT on 2dcdab0: on a live thread, a conversation opened from Other
  * conversations and then Back to your thread drew the agent's whole side of
  * the thread again, once per round trip, and saved it. Leaving the thread
@@ -1349,16 +1342,16 @@ test("KYB-662 UAT: Back to a live thread from a pick resumes the watch after wha
         onThread.every((w) => w.streamIndex === 7),
         `trip ${trip}: from after what was read, not from the start (${JSON.stringify(onThread.map((w) => w.streamIndex))})`,
       );
-      // ACs 1 and 2: each reply once, the same blocks in the same order.
+      // AC7: each reply once, the same blocks in the same order.
       assert.deepEqual(useStore.getState().conversations[ID], before, `trip ${trip}: the transcript is unchanged`);
     }
-    // AC3: what a relaunch reads back is the same, with the cursor after it.
+    // AC7, after a relaunch: what is read back is the same, with the cursor after it.
     useStore.getState().persist();
     await sleep(20);
     assert.deepEqual(saved().conversations[ID], before, "what is saved is the transcript, once");
     assert.equal(saved().streamIndexes[ID], 7, "and the cursor is saved after it");
 
-    // AC5: a new exchange on the thread appears once, and the watch moves past it.
+    // AC7, a new exchange: it appears once, and the watch moves past it.
     bridge.replaySession = async (input) => {
       const r = await realReplay(input);
       if (input.sessionId !== UAT_LIVE) return r;
@@ -1401,7 +1394,7 @@ test("KYB-662 UAT: with a transcript on screen and no cursor, a failed read does
   } finally {
     bridge.replaySession = realReplay;
   }
-  // The next refresh reads again, and then follows after it.
+  // As App's effect does at the next send or switch: read again, then follow after it.
   useStore.getState().watchActive();
   await sleep(50);
   assert.deepEqual(watches.map((w) => w.streamIndex), [7]);

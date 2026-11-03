@@ -2086,8 +2086,9 @@ export const useStore = create<State>((set, get) => ({
     }
     if (streamIndexes[agent.id] === undefined && shown) {
       // The read found no cursor (it failed, or the chat moved meanwhile).
-      // Following from the first event would draw what is on screen again:
-      // the next refresh tries once more.
+      // Following from the first event would draw what is on screen again.
+      // The cross-device refresh re-reads it and sets the cursor; the watch
+      // restarts at the next send, or the next switch of agent or conversation.
       console.log(`[live] not watching ${agent.name} ${wanted.sessionId.slice(0, 18)}: no cursor, and the chat is not empty`);
       return;
     }
