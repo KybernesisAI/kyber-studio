@@ -1305,3 +1305,122 @@ test("KYB-662 G1: nor when /thread does not answer either", async () => {
   thread = null;
   useStore.setState({ threads: {} });
 });
+
+/**
+ * Found in UAT: on a live thread, a drawer pick and Back re-added the agent's
+ * side of the thread's conversation, one copy per round trip. The way back
+ * restored the transcript, so the first read found nothing new and kept no
+ * cursor, and the watch the session change starts (App's effect) then followed
+ * the conversation from its first event, drawing every reply again.
+ */
+/**
+ * Hange's UAT on 2dcdab0: on a live thread, a conversation opened from Other
+ * conversations and then Back to your thread drew the agent's whole side of
+ * the thread again, once per round trip, and saved it. Leaving the thread
+ * dropped the watch's cursor; on Back the history read found nothing new and
+ * kept no cursor, so the watch followed from the first event.
+ */
+const UAT_LIVE = "wrun_662_UAT_LIVE";
+const replies = (id) => (useStore.getState().conversations[ID] ?? []).filter((b) => b.text === `history of ${id}`).length;
+
+test("KYB-662 UAT: Back to a live thread from a pick resumes the watch after what is on screen, and adds nothing", async () => {
+  const liveThread = { current: UAT_LIVE, sessions: [], reports: [], fresh: [] };
+  holding(undefined, { threads: { [ID]: liveThread } });
+  thread = liveThread;
+  // As App does: a change of session on screen starts the watch.
+  const unsub = useStore.subscribe((s, p) => {
+    if (s.sessions[ID] !== p.sessions[ID]) s.watchActive();
+  });
+  const realReplay = bridge.replaySession;
+  try {
+    await useStore.getState().openThread(ID);
+    await sleep(80);
+    assert.equal(replies(UAT_LIVE), 1, "the thread's history is drawn once");
+    const before = useStore.getState().conversations[ID];
+    for (let trip = 1; trip <= 3; trip += 1) {
+      await useStore.getState().openSession(ID, `wrun_662_UAT_PICK_${trip}`);
+      await sleep(50);
+      watches.length = 0;
+      await useStore.getState().openThread(ID);
+      await sleep(80);
+      const onThread = watches.filter((w) => w.sessionId === UAT_LIVE);
+      assert.ok(onThread.length > 0, `trip ${trip}: the thread's conversation is followed`);
+      assert.ok(
+        onThread.every((w) => w.streamIndex === 7),
+        `trip ${trip}: from after what was read, not from the start (${JSON.stringify(onThread.map((w) => w.streamIndex))})`,
+      );
+      // ACs 1 and 2: each reply once, the same blocks in the same order.
+      assert.deepEqual(useStore.getState().conversations[ID], before, `trip ${trip}: the transcript is unchanged`);
+    }
+    // AC3: what a relaunch reads back is the same, with the cursor after it.
+    useStore.getState().persist();
+    await sleep(20);
+    assert.deepEqual(saved().conversations[ID], before, "what is saved is the transcript, once");
+    assert.equal(saved().streamIndexes[ID], 7, "and the cursor is saved after it");
+
+    // AC5: a new exchange on the thread appears once, and the watch moves past it.
+    bridge.replaySession = async (input) => {
+      const r = await realReplay(input);
+      if (input.sessionId !== UAT_LIVE) return r;
+      return { ...r, blocks: [...r.blocks, { eventId: "e-662-new", role: "agent", text: "a new reply", at: 2 }], streamIndex: 9 };
+    };
+    watches.length = 0;
+    emitLive({ streamId: useStore.getState().watching.streamId, kind: "boundary" });
+    await sleep(80);
+    const conv = useStore.getState().conversations[ID];
+    assert.equal(conv.filter((b) => b.text === "a new reply").length, 1, "the new reply appears once");
+    assert.equal(replies(UAT_LIVE), 1, "and the old ones are not drawn again");
+    assert.deepEqual(watches.map((w) => w.streamIndex), [9], "followed from after the new reply");
+    const after = useStore.getState().conversations[ID];
+    await useStore.getState().openSession(ID, "wrun_662_UAT_PICK_4");
+    await sleep(50);
+    await useStore.getState().openThread(ID);
+    await sleep(80);
+    assert.deepEqual(useStore.getState().conversations[ID], after, "and a round trip after it adds nothing");
+  } finally {
+    bridge.replaySession = realReplay;
+    unsub();
+    useStore.getState().stopWatching();
+    thread = null;
+    useStore.setState({ threads: {} });
+  }
+});
+
+test("KYB-662 UAT: with a transcript on screen and no cursor, a failed read does not follow from the first event", async (t) => {
+  const logs = captureLogs(t);
+  holding(UAT_LIVE);
+  useStore.setState((s) => ({ streamIndexes: { ...s.streamIndexes, [ID]: undefined } }));
+  gone.clear();
+  const realReplay = bridge.replaySession;
+  bridge.replaySession = async () => null;
+  try {
+    useStore.getState().watchActive();
+    await sleep(50);
+    assert.deepEqual(watches, [], "not watched from 0 over what is on screen");
+    assert.ok(logs().some((l) => l.includes("no cursor, and the chat is not empty")));
+  } finally {
+    bridge.replaySession = realReplay;
+  }
+  // The next refresh reads again, and then follows after it.
+  useStore.getState().watchActive();
+  await sleep(50);
+  assert.deepEqual(watches.map((w) => w.streamIndex), [7]);
+  assert.equal(useStore.getState().conversations[ID].filter((b) => b.text === "hello").length, 1);
+  useStore.getState().stopWatching();
+});
+
+test("KYB-662 UAT: a read with nothing to draw still leaves the cursor where it ended, and the watch starts there", async () => {
+  holding(UAT_LIVE);
+  useStore.setState((s) => ({ streamIndexes: { ...s.streamIndexes, [ID]: undefined } }));
+  const realReplay = bridge.replaySession;
+  bridge.replaySession = async () => ({ blocks: [], peerBlocks: [], streamIndex: 3, truncated: false });
+  try {
+    useStore.getState().watchActive();
+    await sleep(50);
+    assert.equal(useStore.getState().streamIndexes[ID], 3);
+    assert.deepEqual(watches.map((w) => w.streamIndex), [3], "followed from where the read ended");
+  } finally {
+    bridge.replaySession = realReplay;
+    useStore.getState().stopWatching();
+  }
+});

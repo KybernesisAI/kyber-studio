@@ -1905,7 +1905,15 @@ export const useStore = create<State>((set, get) => ({
       conversationGone(get, set, agentId, sessionId, "read");
       return;
     }
-    if (!replayed || replayed.blocks.length === 0) return;
+    if (!replayed) return;
+    if (replayed.blocks.length === 0) {
+      // Nothing to draw, but the read still says where it ended: a watch that
+      // follows must start there, not at the first event.
+      if (get().sessions[agentId] === sessionId && get().streamIndexes[agentId] === undefined) {
+        set((s) => ({ streamIndexes: { ...s.streamIndexes, [agentId]: replayed.streamIndex } }));
+      }
+      return;
+    }
     // The chat moved on while this was being read — a new conversation, or
     // another thread. Writing now would put this thread's history into it.
     if (get().sessions[agentId] !== sessionId) return;
@@ -1975,7 +1983,13 @@ export const useStore = create<State>((set, get) => ({
     const next = reconcile(existing, fromAgent);
     // Nothing new to add, unless a turn's steps read differently now: a newer
     // steps reader can rename a chip or a label on a reply already on screen.
-    if (mode === "merge" && next.length === existing.length && stepsKey(next) === stepsKey(existing)) return;
+    // The cursor is kept either way: a later watch must start after this read.
+    if (mode === "merge" && next.length === existing.length && stepsKey(next) === stepsKey(existing)) {
+      if (get().streamIndexes[agentId] === undefined) {
+        set((s) => ({ streamIndexes: { ...s.streamIndexes, [agentId]: replayed.streamIndex } }));
+      }
+      return;
+    }
 
 
     set((s) => ({
@@ -2052,15 +2066,29 @@ export const useStore = create<State>((set, get) => ({
     if (watching && wanted && watching.agentId === wanted.agentId && watching.sessionId === wanted.sessionId) return;
     get().stopWatching();
     if (!wanted || !agent?.url || !window.studio) return;
+    // Something already on screen: a transcript brought back for the thread
+    // (KYB-662), or one restored at launch.
+    const shown = (get().conversations[agent.id] ?? []).length > 0;
     if (streamIndexes[agent.id] === undefined && !replayFirst.has(wanted.sessionId)) {
-      // No cursor yet: read what the agent holds first, then watch from where that read ended.
+      // No cursor yet: read what the agent holds first, then watch from where
+      // that read ended. Over a transcript already on screen the read merges,
+      // so it still ends with a cursor: "fill" would skip the read, and the
+      // watch would then follow from the first event and draw every reply
+      // again, once per return to the thread.
       replayFirst.add(wanted.sessionId);
       void get()
-        .hydrate(agent.id)
+        .hydrate(agent.id, shown ? "merge" : "fill")
         .finally(() => {
           get().watchActive();
           replayFirst.delete(wanted.sessionId);
         });
+      return;
+    }
+    if (streamIndexes[agent.id] === undefined && shown) {
+      // The read found no cursor (it failed, or the chat moved meanwhile).
+      // Following from the first event would draw what is on screen again:
+      // the next refresh tries once more.
+      console.log(`[live] not watching ${agent.name} ${wanted.sessionId.slice(0, 18)}: no cursor, and the chat is not empty`);
       return;
     }
     const streamId = `w${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
