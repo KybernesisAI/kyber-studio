@@ -1719,7 +1719,7 @@ export function manageTimeoutMs(requested: unknown): number {
 
 /**
  * For UAT only, and inert unless set: `KYBER_STUDIO_HOLD_MANAGE=/thread=30000`
- * holds management GETs of that exact path for the first 30 000 ms after the
+ * holds management GETs of that exact path for that many milliseconds from the
  * first one this launch, and none after. The moment before Studio has first
  * read an agent's thread lasts about half a second, too short to act in by
  * hand (KYB-662, AC6). A read made during the hold (a focus refreshes the
