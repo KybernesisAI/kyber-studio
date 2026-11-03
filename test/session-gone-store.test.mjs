@@ -1102,3 +1102,71 @@ test("KYB-662 R: the thread's new conversation, still being read when the thread
   thread = null;
   useStore.setState({ threads: {} });
 });
+
+const afreshFor = (id) => (useStore.getState().conversations[ID] ?? []).filter((b) => b.id === `afresh-${id}`);
+
+test("KYB-662 N2: Studio's own End on the thread's conversation keeps the transcript, with one line, as the agent ending it does", async () => {
+  holding(undefined, { threads: { [ID]: LIVE_THREAD } });
+  thread = LIVE_THREAD;
+  await useStore.getState().openThread(ID);
+  const before = useStore.getState().conversations[ID];
+  assert.ok(merged(ALIVE));
+  useStore.getState().endConversation(ID, ALIVE);
+  await sleep(50);
+  const st = useStore.getState();
+  assert.equal(st.sessions[ID], undefined, "the ended conversation is let go of");
+  assert.deepEqual(st.conversations[ID].slice(0, before.length), before, "the transcript stays");
+  assert.equal(afreshFor(ALIVE).length, 1, "with one line under it");
+  assert.equal(st.conversations[ID].length, before.length + 1, "and nothing else");
+  assert.equal(st.sessionChoice[ID], undefined, "not a new conversation: the thread carries on");
+  assert.equal(readOnlyReason(st, ID), null);
+  assert.deepEqual(saved().conversations[ID], st.conversations[ID], "and that is saved");
+  thread = EMPTY_THREAD;
+  useStore.setState({ threads: { [ID]: EMPTY_THREAD } });
+  sends.length = 0;
+  useStore.getState().send(ID, "after the end");
+  await sleep(100);
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].thread, true, "the next message goes to the thread");
+  assert.equal(sends[0].sessionId, undefined, "not into the ended conversation");
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 N2: End on the thread holding two ended conversations' copies keeps both", async () => {
+  const OWN = "wrun_662_N2";
+  const NEXT = "wrun_662_N2_NEXT";
+  const before = await ownOpenedBeforeRead(OWN, NEXT);
+  useStore.getState().endConversation(ID, NEXT);
+  await sleep(50);
+  const st = useStore.getState();
+  assert.ok(holdsAll(st.conversations[ID], before), "the first ended conversation is kept");
+  assert.ok(merged(NEXT), "and the second");
+  assert.equal(afreshFor(NEXT).length, 1, "with the line for the one just ended");
+  await relaunch();
+  assert.ok(holdsAll(useStore.getState().conversations[ID], before) && merged(NEXT), "still there after a relaunch");
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 N2: End before the thread is read this launch keeps the transcript too", async () => {
+  holding(ALIVE, { keepsThread: { [ID]: true }, threads: {} });
+  const before = useStore.getState().conversations[ID];
+  useStore.getState().endConversation(ID, ALIVE);
+  await sleep(50);
+  const st = useStore.getState();
+  assert.deepEqual(st.conversations[ID].slice(0, before.length), before, "the transcript stays");
+  assert.equal(afreshFor(ALIVE).length, 1);
+  assert.equal(st.sessionChoice[ID], undefined);
+  useStore.setState({ threads: {}, keepsThread: {} });
+});
+
+test("KYB-662 N2: End on a drawer pick with no copy aside still leaves it for an empty chat", async () => {
+  holding(ALIVE, { threads: { [ID]: EMPTY_THREAD }, sessionChoice: { [ID]: { sessionId: ALIVE, at: 1, fromDrawer: true } } });
+  useStore.getState().endConversation(ID, ALIVE);
+  await sleep(50);
+  const st = useStore.getState();
+  assert.deepEqual(st.conversations[ID], [], "nothing of the pick is kept as the thread");
+  assert.equal(afreshFor(ALIVE).length, 0, "and no line claims the thread started afresh");
+  useStore.setState({ threads: {} });
+});

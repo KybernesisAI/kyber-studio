@@ -821,12 +821,20 @@ function refreshListIfShown(get: () => State, agentId: string): void {
  * Records a fresh-start choice (`sessionId: null`) so neither adoption path —
  * the directory sync nor `loadAgentInfo` — fills the new conversation with
  * another thread before the person has said anything (KYB-649).
+ *
+ * `ended` names the conversation the person has just ended. On an agent that
+ * keeps one thread, ending the thread's own conversation is what the agent
+ * ending it is (KYB-662, AC1): the thread carries on, its transcript stays,
+ * and one line says the agent has started afresh. Since eve 0.80 the agent
+ * deletes what it ended, so emptying the chat here would lose the only copy.
  */
 function leaveForNewConversation(
   get: () => State,
   set: (partial: Partial<State> | ((s: State) => Partial<State>)) => void,
   agentId: string,
+  ended?: string,
 ): void {
+  const agentName = get().agents.find((a) => a.id === agentId)?.name ?? "The agent";
   retireGeneration(agentId);
   if (get().watching?.agentId === agentId) get().stopWatching();
   // A turn stopped in the thread being left can still stream and settle: eve
@@ -853,6 +861,17 @@ function leaveForNewConversation(
       const sessionChoice = { ...st.sessionChoice };
       delete sessionChoice[agentId];
       return { ...leaving, ...takeThreadCopy(st, agentId), sessionChoice };
+    }
+    if (ended && keepsOneThread(st, agentId) && !isDrawerPick(st, agentId, ended)) {
+      const sessionChoice = { ...st.sessionChoice };
+      delete sessionChoice[agentId];
+      const conv = st.conversations[agentId] ?? [];
+      const line = afreshLine(agentName, ended);
+      return {
+        ...leaving,
+        sessionChoice,
+        conversations: { ...st.conversations, [agentId]: conv.some((b) => b.id === line.id) ? conv : [...conv, line] },
+      };
     }
     return {
       ...leaving,
@@ -2906,7 +2925,7 @@ export const useStore = create<State>((set, get) => ({
     if (get().sessions[agentId] === sessionId) {
       disarmDeadMan(agentId);
       set((s) => ({ inflight: { ...s.inflight, [agentId]: undefined } }));
-      leaveForNewConversation(get, set, agentId);
+      leaveForNewConversation(get, set, agentId, sessionId);
     }
     console.log(`[sessions] ending ${agentId} ${sessionId.slice(0, 18)} (confirmed)`);
     // Nothing is destroyed if this fails — the thread stays alive on the agent
