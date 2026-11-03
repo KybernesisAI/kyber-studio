@@ -1718,6 +1718,23 @@ export function manageTimeoutMs(requested: unknown): number {
 }
 
 /**
+ * For UAT only, and inert unless set: `KYBER_STUDIO_HOLD_MANAGE=/thread=30000`
+ * holds the FIRST management GET of that exact path this launch for that many
+ * milliseconds, and no later one. The moment before Studio has first read an
+ * agent's thread lasts about half a second, too short to act in by hand
+ * (KYB-662, AC6); holding every read instead would keep the thread stale for
+ * the whole run, since the cross-device refresh reads it again on each tick.
+ */
+let uatHeld = false;
+function uatHoldMs(path: string, get: boolean): number {
+  if (uatHeld || !get) return 0;
+  const hold = /^(\/[^=]+)=(\d+)$/.exec(process.env.KYBER_STUDIO_HOLD_MANAGE ?? "");
+  if (!hold || hold[1] !== path) return 0;
+  uatHeld = true;
+  return Number(hold[2]);
+}
+
+/**
  * Management calls against an agent's own /eve/v1/kyb routes.
  *
  * These carry the SAME identity and policy bundle as every other call to the
@@ -1739,6 +1756,11 @@ export async function manageCall(input: {
     return { ok: false, status: 440, data: { error: "Your sign-in has expired." } };
   }
   const base = input.url.replace(/\/$/, "");
+  const held = uatHoldMs(input.path, input.body === undefined);
+  if (held > 0) {
+    console.log(`[uat] holding the first GET ${input.path} for ${held} ms (KYBER_STUDIO_HOLD_MANAGE)`);
+    await new Promise((resolve) => setTimeout(resolve, held));
+  }
   const res = await fetch(`${base}/eve/v1/kyb${input.path}`, {
     method: input.body === undefined ? "GET" : "POST",
     headers: authHeaders(s, { bundle: true, json: input.body !== undefined }),
