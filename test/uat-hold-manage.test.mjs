@@ -5,15 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
- * KYB-647: a management call keeps the 420 s bound sized for installs unless
- * the caller asks for less, and the `/sessions` read asks for less.
- *
- * `manageCall` is driven for real, against a stubbed `fetch`, with a stored
- * session that carries a bundle, and `AbortSignal.timeout` watched to see the
- * bound each request was given.
+ * The UAT-only `KYBER_STUDIO_HOLD_MANAGE` switch. `manageCall` is driven for
+ * real, against a stubbed `fetch`, with a stored session that carries a bundle,
+ * and each call timed.
  */
 
-const dir = mkdtempSync(join(tmpdir(), "kyb-manage-timeout-"));
+const dir = mkdtempSync(join(tmpdir(), "kyb-uat-hold-"));
 
 mock.module("electron", {
   exports: {
