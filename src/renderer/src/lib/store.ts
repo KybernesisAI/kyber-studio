@@ -991,7 +991,7 @@ export function afreshLine(agentName: string, sessionId: string, at = Date.now()
  * transcript is wiped, though once its conversation has ended it is the only
  * copy, or a put-aside copy is stranded, overwritten or mixed with another.
  */
-function keepsOneThread(s: Pick<State, "threads" | "threadCopy" | "keepsThread">, agentId: string): boolean {
+export function keepsOneThread(s: Pick<State, "threads" | "threadCopy" | "keepsThread">, agentId: string): boolean {
   return Boolean(s.threads[agentId]) || Boolean(s.threadCopy[agentId]) || (s.threads[agentId] === undefined && s.keepsThread[agentId] === true);
 }
 
@@ -1031,14 +1031,16 @@ export function isDrawerPick(
  * thread has been read this launch: only those agents record one.
  */
 export function readOnlyReason(
-  s: Pick<State, "sessions" | "sessionChoice" | "threads" | "threadIndex" | "goneSessions">,
+  s: Pick<State, "sessions" | "sessionChoice" | "threads" | "threadIndex" | "goneSessions" | "threadCopy" | "keepsThread">,
   agentId: string,
 ): "gone" | "ended" | null {
   const held = s.sessions[agentId];
   if (!held) return null;
   const pick = isDrawerPick(s, agentId, held);
   if (pick && (s.goneSessions[agentId] ?? []).includes(held)) return "gone";
-  const oneThread = Boolean(s.threads[agentId]) || pick;
+  // Known before the thread is read this launch from what was saved, so the
+  // thread's own conversation is not closed off then either (KYB-662).
+  const oneThread = keepsOneThread(s, agentId) || pick;
   if (isRetired(s.threadIndex[agentId]?.[held]) && (!oneThread || pick)) return "ended";
   return null;
 }
@@ -2419,13 +2421,26 @@ export const useStore = create<State>((set, get) => ({
     // A turn is running in the current thread; let it finish (as openSession).
     if (get().inflight[agentId]) return;
     const agent = get().agents.find((a) => a.id === agentId);
-    if (get().threads[agentId] && window.studio && agent?.url) {
+    // Known to keep one thread from what was saved, before `/thread` answers
+    // this launch. Not with a transcript put aside: then the chat is on a pick,
+    // and leaving it goes back to the thread (KYB-662).
+    const unread = get().threads[agentId] === undefined && get().keepsThread[agentId] === true && !get().threadCopy[agentId];
+    if ((get().threads[agentId] || unread) && window.studio && agent?.url) {
       /**
        * Start fresh. There is one thread, so nothing is left behind: the agent
        * lets go of what it was holding in mind, everything said stays on
        * screen, and a line marks where the fresh start began.
        */
-      void window.studio.manage({ url: agent.url, path: "/thread/fresh", body: {} }).then(() => get().loadThread(agentId));
+      void window.studio.manage({ url: agent.url, path: "/thread/fresh", body: {} }).then((res) => {
+        // Asked before the thread was read, and the agent has no thread after
+        // all: it is one with many conversations, and gets a new one.
+        if (unread && !res.ok && res.status === 404) {
+          set((s) => ({ keepsThread: { ...s.keepsThread, [agentId]: undefined } }));
+          leaveForNewConversation(get, set, agentId);
+          return;
+        }
+        return get().loadThread(agentId);
+      });
       return;
     }
     leaveForNewConversation(get, set, agentId);
@@ -3519,7 +3534,12 @@ export const useStore = create<State>((set, get) => ({
     const fresh = get().sessionChoice[agentId]?.sessionId === null;
     // An agent that keeps the person's thread names the session itself.
     await get().loadThread(agentId);
-    if (!get().threads[agentId] && !get().sessions[agentId] && !fresh) {
+    // Not on an agent known to keep one thread, even when `/thread` has not
+    // answered this launch: its chat is the thread, which names its own
+    // session, and with nothing held the screen is the thread's transcript,
+    // the only copy once its conversation has ended (KYB-662). The same rule
+    // as the directory sync.
+    if (!keepsOneThread(get(), agentId) && !get().sessions[agentId] && !fresh) {
       const newest = listed.find((x) => x.surface === "chat" && x.status === "alive");
       if (newest) {
         console.log(`[sessions] ${agentId}: no thread held; adopted the newest live chat thread ${newest.id.slice(0, 18)}`);

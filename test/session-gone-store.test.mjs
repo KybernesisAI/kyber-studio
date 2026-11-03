@@ -30,6 +30,11 @@ let emitLive = null;
 let replayGate = null;
 /** While set, the agent answers a send on this conversation, as when it had ended the one sent into. */
 let sendAs = null;
+/** While set, `/thread` fails with this status, as a timeout or a sign-in to renew leaves it. */
+let threadDown = null;
+/** Each `POST /thread/fresh`, and whether the agent has a thread to start afresh. */
+const freshes = [];
+let freshOk = false;
 const bridge = window.studio;
 window.studio = new Proxy(bridge, {
   get: (target, key) => {
@@ -50,7 +55,12 @@ window.studio = new Proxy(bridge, {
       };
     if (key === "manage")
       return async (input) => {
+        if (input.path === "/thread" && threadDown) return { ok: false, status: threadDown, data: null };
         if (input.path === "/thread" && thread) return { ok: true, status: 200, data: thread };
+        if (input.path === "/thread/fresh") {
+          freshes.push(input);
+          if (freshOk) return { ok: true, status: 200, data: {} };
+        }
         return target.manage(input);
       };
     return target[key];
@@ -742,8 +752,10 @@ test("KYB-662 B1: New conversation on a pick, before the thread is read after a 
   await sleep(50);
   await relaunch();
   useStore.setState({ threads: {} });
+  freshes.length = 0;
   useStore.getState().startConversation(ID);
   await sleep(50);
+  assert.equal(freshes.length, 0, "on a pick, New conversation leaves it; the agent is not asked to start afresh");
   threadBack(before, "after New conversation");
   thread = null;
   useStore.setState({ threads: {} });
@@ -1169,4 +1181,89 @@ test("KYB-662 N2: End on a drawer pick with no copy aside still leaves it for an
   assert.deepEqual(st.conversations[ID], [], "nothing of the pick is kept as the thread");
   assert.equal(afreshFor(ALIVE).length, 0, "and no line claims the thread started afresh");
   useStore.setState({ threads: {} });
+});
+
+/** The agent's list answers with a live chat that is not the thread's: what `loadAgentInfo` would adopt. */
+const LIVE_OTHER = { id: "wrun_662_OTHER_LIVE", status: "alive", surface: "chat", lastMessageAt: "2026-11-02T10:00:00Z" };
+
+test("KYB-662 F1: a launch where /thread does not answer adopts nothing over the thread's transcript", async () => {
+  const OWN = "wrun_662_F1";
+  await threadEnded(OWN);
+  const before = useStore.getState().conversations[ID];
+  await relaunch();
+  useStore.setState({ threads: {} });
+  live.agentSessions = [LIVE_OTHER];
+  threadDown = 503;
+  await useStore.getState().loadAgentInfo(ID);
+  await sleep(50);
+  threadDown = null;
+  live.agentSessions = [];
+  const st = useStore.getState();
+  assert.equal(st.sessions[ID], undefined, "no conversation adopted");
+  assert.deepEqual(st.conversations[ID], before, "the thread's transcript stays");
+  assert.deepEqual(saved().conversations[ID], before, "and is what is saved");
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 F1: after Studio's own End, a launch where /thread does not answer keeps the transcript too", async () => {
+  holding(undefined, { threads: { [ID]: LIVE_THREAD } });
+  thread = LIVE_THREAD;
+  await useStore.getState().openThread(ID);
+  useStore.getState().endConversation(ID, ALIVE);
+  await sleep(50);
+  const before = useStore.getState().conversations[ID];
+  assert.ok(merged(ALIVE) && afreshFor(ALIVE).length === 1);
+  await relaunch();
+  useStore.setState({ threads: {} });
+  live.agentSessions = [LIVE_OTHER];
+  threadDown = 503;
+  await useStore.getState().loadAgentInfo(ID);
+  await sleep(50);
+  threadDown = null;
+  live.agentSessions = [];
+  const st = useStore.getState();
+  assert.equal(st.sessions[ID], undefined, "no conversation adopted");
+  assert.deepEqual(st.conversations[ID], before, "the transcript and its line stay");
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 F2: before the thread is read, its own conversation listed as ended is not closed off", async () => {
+  holding(ALIVE, { keepsThread: { [ID]: true }, threads: {}, threadIndex: { [ID]: { [ALIVE]: { id: ALIVE, status: "ended" } } } });
+  assert.equal(readOnlyReason(useStore.getState(), ID), null, "no bar, so no New conversation offered over the thread");
+  useStore.setState({ threads: {}, keepsThread: {}, threadIndex: {} });
+});
+
+test("KYB-662 F2: New conversation before the thread is read starts afresh in the thread, and keeps its transcript", async () => {
+  const OWN = "wrun_662_F2";
+  await threadEnded(OWN);
+  const before = useStore.getState().conversations[ID];
+  await relaunch();
+  useStore.setState({ threads: {} });
+  freshes.length = 0;
+  freshOk = true;
+  useStore.getState().startConversation(ID);
+  await sleep(50);
+  freshOk = false;
+  const st = useStore.getState();
+  assert.equal(freshes.length, 1, "the agent is asked to start afresh in the thread");
+  assert.ok(holdsAll(st.conversations[ID], before), "the thread's transcript stays");
+  assert.notEqual(st.sessionChoice[ID]?.sessionId, null, "no new conversation is saved over it");
+  assert.ok(holdsAll(saved().conversations[ID], before), "and it is saved");
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 F2: New conversation before the thread is read, on an agent that turns out to keep none, starts a new conversation", async () => {
+  holding(ALIVE, { keepsThread: { [ID]: true }, threads: {} });
+  freshes.length = 0;
+  useStore.getState().startConversation(ID);
+  await sleep(50);
+  const st = useStore.getState();
+  assert.equal(freshes.length, 1);
+  assert.equal(st.keepsThread[ID], undefined, "it is no longer taken for one that keeps a thread");
+  assert.deepEqual(st.conversations[ID], [], "and the chat is a new conversation, as on any such agent");
+  assert.equal(st.sessionChoice[ID]?.sessionId, null);
+  useStore.setState({ threads: {}, keepsThread: {} });
 });
