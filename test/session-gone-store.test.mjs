@@ -1267,3 +1267,41 @@ test("KYB-662 F2: New conversation before the thread is read, on an agent that t
   assert.equal(st.sessionChoice[ID]?.sessionId, null);
   useStore.setState({ threads: {}, keepsThread: {} });
 });
+
+test("KYB-662 G1: a 404 from /thread/fresh does not empty the thread when /thread shows the agent keeps one", async () => {
+  const OWN = "wrun_662_G1";
+  await threadEnded(OWN);
+  const before = useStore.getState().conversations[ID];
+  await relaunch();
+  useStore.setState({ threads: {} });
+  freshes.length = 0;
+  // `/thread/fresh` answers 404 (freshOk unset), `/thread` answers with a view.
+  thread = EMPTY_THREAD;
+  useStore.getState().startConversation(ID);
+  await sleep(50);
+  const st = useStore.getState();
+  assert.equal(freshes.length, 1);
+  assert.ok(st.threads[ID], "the thread is known");
+  assert.ok(holdsAll(st.conversations[ID], before), "the thread's transcript stays");
+  assert.equal(st.keepsThread[ID], true, "and the agent is still taken to keep one");
+  assert.notEqual(st.sessionChoice[ID]?.sessionId, null, "no new conversation is saved over it");
+  thread = null;
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-662 G1: nor when /thread does not answer either", async () => {
+  const OWN = "wrun_662_G1B";
+  await threadEnded(OWN);
+  const before = useStore.getState().conversations[ID];
+  await relaunch();
+  useStore.setState({ threads: {} });
+  threadDown = 503;
+  useStore.getState().startConversation(ID);
+  await sleep(50);
+  threadDown = null;
+  const st = useStore.getState();
+  assert.deepEqual(st.conversations[ID], before, "the thread's transcript stays");
+  assert.equal(st.keepsThread[ID], true);
+  thread = null;
+  useStore.setState({ threads: {} });
+});

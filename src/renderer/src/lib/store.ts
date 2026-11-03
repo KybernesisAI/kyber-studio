@@ -2431,16 +2431,20 @@ export const useStore = create<State>((set, get) => ({
        * lets go of what it was holding in mind, everything said stays on
        * screen, and a line marks where the fresh start began.
        */
-      void window.studio.manage({ url: agent.url, path: "/thread/fresh", body: {} }).then((res) => {
-        // Asked before the thread was read, and the agent has no thread after
-        // all: it is one with many conversations, and gets a new one.
-        if (unread && !res.ok && res.status === 404) {
-          set((s) => ({ keepsThread: { ...s.keepsThread, [agentId]: undefined } }));
-          leaveForNewConversation(get, set, agentId);
-          return;
-        }
-        return get().loadThread(agentId);
-      });
+      void window.studio
+        .manage({ url: agent.url, path: "/thread/fresh", body: {} })
+        .then(async (res) => {
+          await get().loadThread(agentId);
+          // Asked before the thread was read, and refused as unknown. Only
+          // `/thread` itself saying the agent has no thread makes it one with
+          // many conversations, which gets a new one: anything else (a proxy
+          // answering 404 while the agent restarts, `/thread` not answering)
+          // leaves the screen as it is, since it may be the only copy.
+          if (unread && !res.ok && res.status === 404 && get().threads[agentId] === null && !get().inflight[agentId]) {
+            leaveForNewConversation(get, set, agentId);
+          }
+        })
+        .catch((error: unknown) => console.log(`[thread] ${agentId}: starting afresh failed: ${String(error)}`));
       return;
     }
     leaveForNewConversation(get, set, agentId);
