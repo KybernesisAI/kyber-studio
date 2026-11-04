@@ -1523,12 +1523,15 @@ test("KYB-667: after a turn ends, the refresh leaves restarting the watch to the
   assert.deepEqual(watches.map((w) => w.streamIndex), [107]);
   const realReplay = bridge.replaySession;
   let call = 0;
-  // The read after the turn's end is slow; the refresh's is quick.
+  // The read after the turn's end is slow and carries the turn's reply,
+  // ending at 9; the refresh's is quick and ends at 7.
   bridge.replaySession = async (input) => {
     const slow = call === 0;
     call += 1;
     await sleep(slow ? 400 : 10);
-    return realReplay(input);
+    const r = await realReplay(input);
+    if (!slow || !r || "gone" in r) return r;
+    return { ...r, blocks: [...r.blocks, { kind: "text", id: "e-667-turn-reply", role: "agent", text: "the turn's reply", at: 3 }], streamIndex: 9 };
   };
   try {
     emitLive({ streamId: watches[0].streamId, kind: "ended" });
@@ -1536,7 +1539,7 @@ test("KYB-667: after a turn ends, the refresh leaves restarting the watch to the
     await sleep(30);
     assert.deepEqual(watches.map((w) => w.streamIndex), [107], "not restarted by the refresh");
     await sleep(500);
-    assert.deepEqual(watches.map((w) => w.streamIndex), [107, 7], "restarted once the turn's own read ended");
+    assert.deepEqual(watches.map((w) => w.streamIndex), [107, 9], "restarted from where the turn's own read ended");
   } finally {
     bridge.replaySession = realReplay;
     useStore.getState().stopWatching();
@@ -1567,5 +1570,38 @@ test("KYB-667: a switch of agent during the refresh's read starts nothing for th
   } finally {
     replayGate = null;
     useStore.setState((s) => ({ activeAgentId: ID, agents: s.agents.filter((a) => a.id !== SECOND.id) }));
+  }
+});
+
+test("KYB-667 AC2: when the thread's own read inside the refresh supplies the cursor, the refresh still starts the watch", async () => {
+  holding(UAT_LIVE, {
+    conversations: { [ID]: [] },
+    sessionChoice: { [ID]: { sessionId: UAT_LIVE, fromDrawer: true, at: 1 } },
+    threads: {},
+  });
+  useStore.setState((s) => ({ streamIndexes: { ...s.streamIndexes, [ID]: undefined } }));
+  const realReplay = bridge.replaySession;
+  bridge.replaySession = async () => null;
+  try {
+    useStore.getState().watchActive();
+    await sleep(50);
+    assert.deepEqual(watches, []);
+  } finally {
+    bridge.replaySession = realReplay;
+  }
+  thread = { current: UAT_LIVE, sessions: [], reports: [], fresh: [] };
+  try {
+    await useStore.getState().refreshFromOthers();
+    await sleep(50);
+    assert.equal(useStore.getState().streamIndexes[ID], 7);
+    assert.deepEqual(watches.map((w) => w.streamIndex), [7], "followed from the refresh's cursor");
+    await useStore.getState().refreshFromOthers();
+    await sleep(50);
+    assert.deepEqual(watches.map((w) => w.streamIndex), [7], "and still followed, once");
+    assert.equal(replies(UAT_LIVE), 1);
+  } finally {
+    thread = null;
+    useStore.getState().stopWatching();
+    useStore.setState({ threads: {} });
   }
 });

@@ -2126,14 +2126,15 @@ export const useStore = create<State>((set, get) => ({
     await get().refreshRooms();
     await get().syncSessions();
     const active = get().activeAgentId;
+    // Before the thread is read: its reads can supply the cursor too (KYB-667).
+    const hadCursor = active ? get().streamIndexes[active] !== undefined : true;
     if (active && !isRoomId(active)) await get().loadThread(active);
     // The open conversation only. Refreshing every thread would multiply the
     // cost by the size of the sidebar to update something nobody is looking at.
     if (active && !isRoomId(active) && !get().inflight[active]) {
-      const hadCursor = get().streamIndexes[active] !== undefined;
       await get().hydrate(active, "merge");
       // A conversation left unwatched for want of a cursor is followed again
-      // once this read has supplied one, without waiting for a send or a
+      // once this refresh has supplied one, without waiting for a send or a
       // switch (KYB-667). Only then: with no cursor `watchActive` would start
       // a read of its own, and where there was one already, the read that
       // follows a turn's end restarts the watch from where it ends.
