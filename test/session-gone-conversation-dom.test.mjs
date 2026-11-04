@@ -1,0 +1,171 @@
+import { after, test } from "node:test";
+import assert from "node:assert/strict";
+import { JSDOM } from "jsdom";
+
+/**
+ * KYB-657: the gone notice and the composer inside the real conversation
+ * view, MOUNTED and PRESSED. On an agent that keeps one thread, a gone
+ * conversation opened from the drawer is read-only and offers the way back to
+ * the thread; the notice says whether anything of it is on this device.
+ */
+
+const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/", pretendToBeVisual: true });
+globalThis.window = dom.window;
+globalThis.document = dom.window.document;
+Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator, configurable: true });
+for (const name of ["HTMLElement", "Element", "Node", "Event", "MouseEvent", "CustomEvent", "MutationObserver", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"]) {
+  globalThis[name] = dom.window[name];
+}
+globalThis.ResizeObserver = window.ResizeObserver = class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+const realSetTimeout = globalThis.setTimeout;
+const sleep = (ms) => new Promise((resolve) => realSetTimeout(resolve, ms));
+
+window.studio = new Proxy(
+  {
+    manage: async () => ({ ok: false, status: 404 }),
+    send: async () => new Promise(() => {}),
+    saveState: async () => true,
+    loadState: async () => null,
+  },
+  {
+    get: (target, key) =>
+      key in target ? target[key] : typeof key === "string" && key.startsWith("on") ? () => () => {} : async () => undefined,
+  },
+);
+
+const { act, createElement } = await import("react");
+const { createRoot } = await import("react-dom/client");
+const { Conversation } = await import("../src/renderer/src/components/Conversation.tsx");
+const { useStore } = await import("@/lib/store");
+
+after(() => dom.window.close());
+
+const A = { id: "agent-a", name: "a", registeredName: "a", url: "https://a.example", accent: "#000", status: "online" };
+const DEAD = "wrun_DEAD";
+const hello = { kind: "text", id: "u1", role: "user", text: "hello", at: 1 };
+const notice = { kind: "gone", id: `gone-${DEAD}`, at: 2, sessionId: DEAD };
+
+function reset({ thread, conversation, held = true }) {
+  const sessionId = held ? DEAD : undefined;
+  useStore.setState({
+    agents: [A],
+    activeAgentId: A.id,
+    panel: "none",
+    threads: { [A.id]: thread },
+    threadIndex: {},
+    sessions: { [A.id]: sessionId },
+    sessionChoice: held ? { [A.id]: { sessionId, at: 1, fromDrawer: true } } : { [A.id]: { sessionId: null, at: 1 } },
+    goneSessions: { [A.id]: [DEAD] },
+    conversations: { [A.id]: conversation },
+    inflight: {},
+    details: {},
+  });
+}
+
+async function mount() {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  await act(async () => root.render(createElement(Conversation)));
+  await act(async () => sleep(0));
+  return {
+    host,
+    text: () => host.textContent ?? "",
+    button: (label) => [...host.querySelectorAll("button")].find((b) => (b.textContent ?? "").trim() === label),
+    unmount: () => act(() => root.unmount()).then(() => host.remove()),
+  };
+}
+
+test("one thread: a gone drawer pick is read-only, says this device's copy is above, and Back to your thread leaves it", async () => {
+  reset({ thread: { current: null, sessions: [], reports: [], fresh: [] }, conversation: [hello, notice] });
+  const view = await mount();
+  assert.ok(!view.host.querySelector('[role="textbox"]'), "no composer on a conversation the agent no longer has");
+  assert.match(view.text(), /What is above is this device's copy/);
+  assert.match(view.text(), /It cannot be continued\./);
+  assert.doesNotMatch(view.text(), /You can read it/, "not said under a notice that may say there is no copy");
+  assert.doesNotMatch(view.text(), /Anything you send/);
+  assert.equal(view.button("New conversation"), undefined, "no Start fresh in disguise");
+  const back = view.button("Back to your thread");
+  assert.ok(back, "the way back is offered");
+  await act(async () => back.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })));
+  await act(async () => sleep(0));
+  assert.equal(useStore.getState().sessions[A.id], undefined, "on the thread");
+  await view.unmount();
+});
+
+test("one thread: with nothing of it on this device, the notice says so", async () => {
+  reset({ thread: { current: null, sessions: [], reports: [], fresh: [] }, conversation: [notice] });
+  const view = await mount();
+  assert.match(view.text(), /Studio has no copy of it on this device/);
+  await view.unmount();
+});
+
+test("many conversations: the notice keeps its New conversation, and the composer stays", async () => {
+  reset({ thread: null, conversation: [hello, notice], held: false });
+  const view = await mount();
+  assert.ok(view.host.querySelector('[role="textbox"]'), `the composer is there: ${view.text()}`);
+  assert.ok(view.button("New conversation"));
+  assert.match(view.text(), /starts a new conversation/);
+  await view.unmount();
+});
+
+test("R2-B3: before the thread is read, a gone drawer pick reads as one thread and offers nothing wrong", async () => {
+  reset({ thread: undefined, conversation: [hello, notice] });
+  useStore.setState({ threads: {} });
+  const view = await mount();
+  try {
+    assert.ok(!view.host.querySelector('[role="textbox"]'), "still read-only");
+    assert.equal(view.button("New conversation"), undefined, "no Start fresh offered");
+    assert.doesNotMatch(view.text(), /starts a new conversation/);
+    assert.equal(view.button("Back to your thread"), undefined, "and no way back until the thread is known");
+    assert.match(view.text(), /What is above is this device's copy/);
+  } finally {
+    await view.unmount();
+  }
+});
+
+test("R2-B2: a gone conversation held mid-turn on the thread keeps the composer", async () => {
+  reset({ thread: { current: null, sessions: [], reports: [], fresh: [] }, conversation: [hello] });
+  useStore.setState({ sessionChoice: { [A.id]: { sessionId: DEAD, at: 1 } }, inflight: { [A.id]: "turn" } });
+  const view = await mount();
+  assert.ok(view.host.querySelector('[role="textbox"]'), view.text());
+  assert.doesNotMatch(view.text(), /cannot be continued/);
+  await view.unmount();
+  useStore.setState({ inflight: {} });
+});
+
+test("KYB-662 AC1: the thread's own conversation ended: the transcript, one line, the composer, and no button", async () => {
+  const { afreshLine } = await import("@/lib/store");
+  reset({ thread: { current: null, sessions: [], reports: [], fresh: [] }, conversation: [hello, afreshLine(A.name, DEAD, 2)], held: false });
+  useStore.setState({ sessionChoice: {} });
+  const view = await mount();
+  try {
+    assert.match(view.text(), /hello/, "the transcript stays");
+    assert.match(view.text(), /has started afresh in your thread/);
+    assert.ok(view.host.querySelector('[role="textbox"]'), "the composer is there");
+    assert.doesNotMatch(view.text(), /no longer available/, "no gone notice");
+    assert.equal(view.button("Back to your thread"), undefined, "and no button");
+    assert.equal(view.button("New conversation"), undefined);
+  } finally {
+    await view.unmount();
+  }
+});
+
+test("KYB-662 B3: an empty chat being read says it is loading, not that it has no messages", async () => {
+  reset({ thread: { current: null, sessions: [], reports: [], fresh: [] }, conversation: [], held: true });
+  useStore.setState({ historyReading: { [A.id]: DEAD } });
+  const view = await mount();
+  try {
+    assert.match(view.text(), /Loading messages/);
+    assert.doesNotMatch(view.text(), /No messages yet/);
+  } finally {
+    await view.unmount();
+    useStore.setState({ historyReading: {} });
+  }
+});
