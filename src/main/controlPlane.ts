@@ -1718,6 +1718,24 @@ export function manageTimeoutMs(requested: unknown): number {
 }
 
 /**
+ * For UAT only, and inert unless set: `KYBER_STUDIO_HOLD_MANAGE=/thread=30000`
+ * holds management GETs of that exact path for that many milliseconds from the
+ * first one this launch, and none after. The moment before Studio has first
+ * read an agent's thread lasts about half a second, too short to act in by
+ * hand (KYB-662, AC6). A read made during the hold (a focus refreshes the
+ * thread) waits with the first, or it would end the moment early; one made
+ * after goes straight through, or the thread would stay stale for the run.
+ */
+let uatHoldEnds: number | undefined;
+function uatHoldMs(path: string, get: boolean, now = Date.now()): number {
+  if (!get) return 0;
+  const hold = /^(\/[^=]+)=(\d+)$/.exec(process.env.KYBER_STUDIO_HOLD_MANAGE ?? "");
+  if (!hold || hold[1] !== path) return 0;
+  uatHoldEnds ??= now + Number(hold[2]);
+  return Math.max(0, uatHoldEnds - now);
+}
+
+/**
  * Management calls against an agent's own /eve/v1/kyb routes.
  *
  * These carry the SAME identity and policy bundle as every other call to the
@@ -1731,6 +1749,12 @@ export async function manageCall(input: {
   body?: unknown;
   timeoutMs?: number;
 }): Promise<{ ok: boolean; status: number; data: unknown }> {
+  // Before the session is read, so a held request goes out as one sent then.
+  const held = uatHoldMs(input.path, input.body === undefined);
+  if (held > 0) {
+    console.log(`[uat] holding GET ${input.path} for ${held} ms (KYBER_STUDIO_HOLD_MANAGE)`);
+    await new Promise((resolve) => setTimeout(resolve, held));
+  }
   const s = await activeSession();
   if (!s?.bundle) {
     // 440, not 401: the agent never saw this request. Reporting it as the
