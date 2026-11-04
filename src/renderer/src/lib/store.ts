@@ -2130,12 +2130,14 @@ export const useStore = create<State>((set, get) => ({
     // The open conversation only. Refreshing every thread would multiply the
     // cost by the size of the sidebar to update something nobody is looking at.
     if (active && !isRoomId(active) && !get().inflight[active]) {
+      const hadCursor = get().streamIndexes[active] !== undefined;
       await get().hydrate(active, "merge");
       // A conversation left unwatched for want of a cursor is followed again
-      // once this read has left one, without waiting for a send or a switch
-      // (KYB-667). Only then: with no cursor `watchActive` would start a read
-      // of its own. One already followed is left as it is.
-      if (get().streamIndexes[active] !== undefined) get().watchActive();
+      // once this read has supplied one, without waiting for a send or a
+      // switch (KYB-667). Only then: with no cursor `watchActive` would start
+      // a read of its own, and where there was one already, the read that
+      // follows a turn's end restarts the watch from where it ends.
+      if (!hadCursor && get().activeAgentId === active && get().streamIndexes[active] !== undefined) get().watchActive();
     }
     // Threads started on another surface, and lifecycle changes, reach a list
     // on screen within one tick (KYB-649, AC9).

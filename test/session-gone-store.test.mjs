@@ -1515,3 +1515,57 @@ test("KYB-667: a refresh leaves a conversation already followed as it is", async
   assert.deepEqual(unwatches, [], "and the first is not stopped");
   useStore.getState().stopWatching();
 });
+
+test("KYB-667: after a turn ends, the refresh leaves restarting the watch to the turn's own read", async () => {
+  holding(UAT_LIVE);
+  useStore.getState().watchActive();
+  await sleep(50);
+  assert.deepEqual(watches.map((w) => w.streamIndex), [107]);
+  const realReplay = bridge.replaySession;
+  let call = 0;
+  // The read after the turn's end is slow; the refresh's is quick.
+  bridge.replaySession = async (input) => {
+    const slow = call === 0;
+    call += 1;
+    await sleep(slow ? 400 : 10);
+    return realReplay(input);
+  };
+  try {
+    emitLive({ streamId: watches[0].streamId, kind: "ended" });
+    await useStore.getState().refreshFromOthers();
+    await sleep(30);
+    assert.deepEqual(watches.map((w) => w.streamIndex), [107], "not restarted by the refresh");
+    await sleep(500);
+    assert.deepEqual(watches.map((w) => w.streamIndex), [107, 7], "restarted once the turn's own read ended");
+  } finally {
+    bridge.replaySession = realReplay;
+    useStore.getState().stopWatching();
+  }
+});
+
+test("KYB-667: a switch of agent during the refresh's read starts nothing for the agent switched to", async () => {
+  const SECOND = { id: "agent-667-second", name: "second", url: "https://second.example" };
+  const SECOND_SESSION = "wrun_667_SECOND";
+  holding(UAT_LIVE, { conversations: { [ID]: [] } });
+  useStore.setState((s) => ({
+    agents: [...s.agents, SECOND],
+    sessions: { ...s.sessions, [SECOND.id]: SECOND_SESSION },
+    streamIndexes: { ...s.streamIndexes, [ID]: undefined, [SECOND.id]: undefined },
+  }));
+  let release;
+  replayGate = new Promise((r) => (release = r));
+  try {
+    const refreshing = useStore.getState().refreshFromOthers();
+    await sleep(50);
+    useStore.setState({ activeAgentId: SECOND.id });
+    replayGate = null;
+    release();
+    await refreshing;
+    await sleep(50);
+    assert.deepEqual(replays.filter((id) => id === SECOND_SESSION), [], "the second agent's conversation is not read by the refresh");
+    assert.deepEqual(watches, []);
+  } finally {
+    replayGate = null;
+    useStore.setState((s) => ({ activeAgentId: ID, agents: s.agents.filter((a) => a.id !== SECOND.id) }));
+  }
+});
