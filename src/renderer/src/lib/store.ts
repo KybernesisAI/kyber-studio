@@ -41,6 +41,10 @@ const streamOwners = new Map<string, string>();
  * thread's first answer showed up at the bottom with no question above it.
  */
 const replayFirst = new Set<string>();
+// Per agent, the reads after a turn's end still running. Each restarts the
+// watch from where it ends, so the cross-device refresh leaves that to them
+// rather than restart it from an earlier cursor of its own (KYB-667).
+const turnEndReads = new Map<string, number>();
 
 /**
  * Which agent is behind a stream, when the conversation has more than one.
@@ -417,7 +421,15 @@ function ensureListeners(
       get().stopWatching();
     }
     if (!get().inflight[agentId]) {
-      void get().hydrate(agentId, "merge").then(() => get().watchActive());
+      turnEndReads.set(agentId, (turnEndReads.get(agentId) ?? 0) + 1);
+      void get()
+        .hydrate(agentId, "merge")
+        .then(() => get().watchActive())
+        .finally(() => {
+          const left = (turnEndReads.get(agentId) ?? 1) - 1;
+          if (left > 0) turnEndReads.set(agentId, left);
+          else turnEndReads.delete(agentId);
+        });
     }
   });
 
@@ -2084,12 +2096,15 @@ export const useStore = create<State>((set, get) => ({
         });
       return;
     }
-    if (streamIndexes[agent.id] === undefined && shown) {
+    if (streamIndexes[agent.id] === undefined) {
       // The read found no cursor (it failed, or the chat moved meanwhile).
-      // Following from the first event would draw what is on screen again.
-      // The cross-device refresh re-reads it and sets the cursor; the watch
-      // restarts at the next send, or the next switch of agent or conversation.
-      console.log(`[live] not watching ${agent.name} ${wanted.sessionId.slice(0, 18)}: no cursor, and the chat is not empty`);
+      // Following from the first event would draw the agent's side again over
+      // a transcript on screen, and over an empty chat would show replies
+      // without the messages they answer (KYB-667). The cross-device refresh
+      // re-reads it, and once that read leaves a cursor it starts the watch.
+      console.log(
+        `[live] not watching ${agent.name} ${wanted.sessionId.slice(0, 18)}: no cursor, and the chat is ${shown ? "not empty" : "empty"}`,
+      );
       return;
     }
     const streamId = `w${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
@@ -2128,6 +2143,13 @@ export const useStore = create<State>((set, get) => ({
     // cost by the size of the sidebar to update something nobody is looking at.
     if (active && !isRoomId(active) && !get().inflight[active]) {
       await get().hydrate(active, "merge");
+      // A conversation left unwatched for want of a cursor is followed once
+      // a read has supplied one, without waiting for a send or a switch
+      // (KYB-667). Not with no cursor, where `watchActive` would start a read
+      // of its own; not while a read after a turn's end is running, which
+      // restarts the watch from where it ends; and not for an agent left
+      // meanwhile. A conversation already followed is left as it is.
+      if ((turnEndReads.get(active) ?? 0) === 0 && get().activeAgentId === active && get().streamIndexes[active] !== undefined) get().watchActive();
     }
     // Threads started on another surface, and lifecycle changes, reach a list
     // on screen within one tick (KYB-649, AC9).
