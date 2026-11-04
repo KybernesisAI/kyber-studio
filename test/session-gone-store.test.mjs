@@ -1417,3 +1417,101 @@ test("KYB-662 UAT: a read with nothing to draw still leaves the cursor where it 
     useStore.getState().stopWatching();
   }
 });
+
+/**
+ * KYB-667: a conversation is never followed from its first event without a
+ * cursor, over an empty chat as over a transcript, and the cross-device
+ * refresh starts the watch once its read has left one.
+ */
+const fromZero = (logs) => logs().filter((l) => /\[live\] watching .* from 0$/.test(l));
+
+test("KYB-667 AC1: an empty chat whose first read fails is not followed from the first event, and the terminal says why", async (t) => {
+  const logs = captureLogs(t);
+  holding(UAT_LIVE, { conversations: { [ID]: [] } });
+  useStore.setState((s) => ({ streamIndexes: { ...s.streamIndexes, [ID]: undefined } }));
+  const realReplay = bridge.replaySession;
+  bridge.replaySession = async () => null;
+  try {
+    useStore.getState().watchActive();
+    await sleep(50);
+    assert.deepEqual(watches, [], "not watched from 0 over an empty chat");
+    assert.deepEqual(fromZero(logs), []);
+    assert.ok(logs().some((l) => l.includes("no cursor, and the chat is empty")), logs().join("\n"));
+  } finally {
+    bridge.replaySession = realReplay;
+  }
+});
+
+test("KYB-667 AC2: after a failed first read on an empty chat, the next refresh follows from that read's cursor, without a send or a switch", async (t) => {
+  const logs = captureLogs(t);
+  holding(UAT_LIVE, { conversations: { [ID]: [] } });
+  useStore.setState((s) => ({ streamIndexes: { ...s.streamIndexes, [ID]: undefined } }));
+  const realReplay = bridge.replaySession;
+  bridge.replaySession = async () => null;
+  try {
+    useStore.getState().watchActive();
+    await sleep(50);
+    assert.deepEqual(watches, []);
+  } finally {
+    bridge.replaySession = realReplay;
+  }
+  await useStore.getState().refreshFromOthers();
+  await sleep(50);
+  assert.deepEqual(
+    watches.map((w) => [w.sessionId, w.streamIndex]),
+    [[UAT_LIVE, 7]],
+    "followed once, from where the refresh's read ended",
+  );
+  assert.deepEqual(fromZero(logs), []);
+  // AC3: what the read drew appears once.
+  assert.equal(replies(UAT_LIVE), 1);
+  useStore.getState().stopWatching();
+});
+
+test("KYB-667 AC2: the same with a transcript on screen", async () => {
+  holding(UAT_LIVE);
+  useStore.setState((s) => ({ streamIndexes: { ...s.streamIndexes, [ID]: undefined } }));
+  const realReplay = bridge.replaySession;
+  bridge.replaySession = async () => null;
+  try {
+    useStore.getState().watchActive();
+    await sleep(50);
+    assert.deepEqual(watches, []);
+  } finally {
+    bridge.replaySession = realReplay;
+  }
+  await useStore.getState().refreshFromOthers();
+  await sleep(50);
+  assert.deepEqual(watches.map((w) => w.streamIndex), [7]);
+  const conv = useStore.getState().conversations[ID];
+  assert.equal(conv.filter((b) => b.text === "hello").length, 1);
+  assert.equal(replies(UAT_LIVE), 1);
+  useStore.getState().stopWatching();
+});
+
+test("KYB-667: a refresh whose read also fails starts no watch, and no second read", async () => {
+  holding(UAT_LIVE, { conversations: { [ID]: [] } });
+  useStore.setState((s) => ({ streamIndexes: { ...s.streamIndexes, [ID]: undefined } }));
+  const realReplay = bridge.replaySession;
+  bridge.replaySession = async () => null;
+  try {
+    await useStore.getState().refreshFromOthers();
+    await sleep(50);
+    assert.deepEqual(watches, []);
+    assert.equal(replays.filter((id) => id === UAT_LIVE).length, 1, "the refresh's own read only");
+  } finally {
+    bridge.replaySession = realReplay;
+  }
+});
+
+test("KYB-667: a refresh leaves a conversation already followed as it is", async () => {
+  holding(UAT_LIVE);
+  useStore.getState().watchActive();
+  await sleep(50);
+  assert.equal(watches.length, 1);
+  await useStore.getState().refreshFromOthers();
+  await sleep(50);
+  assert.equal(watches.length, 1, "no second watch");
+  assert.deepEqual(unwatches, [], "and the first is not stopped");
+  useStore.getState().stopWatching();
+});

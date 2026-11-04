@@ -2084,12 +2084,15 @@ export const useStore = create<State>((set, get) => ({
         });
       return;
     }
-    if (streamIndexes[agent.id] === undefined && shown) {
+    if (streamIndexes[agent.id] === undefined) {
       // The read found no cursor (it failed, or the chat moved meanwhile).
-      // Following from the first event would draw what is on screen again.
-      // The cross-device refresh re-reads it and sets the cursor; the watch
-      // restarts at the next send, or the next switch of agent or conversation.
-      console.log(`[live] not watching ${agent.name} ${wanted.sessionId.slice(0, 18)}: no cursor, and the chat is not empty`);
+      // Following from the first event would draw the agent's side again over
+      // a transcript on screen, and over an empty chat would show replies
+      // without the messages they answer (KYB-667). The cross-device refresh
+      // re-reads it, and once that read leaves a cursor it starts the watch.
+      console.log(
+        `[live] not watching ${agent.name} ${wanted.sessionId.slice(0, 18)}: no cursor, and the chat is ${shown ? "not empty" : "empty"}`,
+      );
       return;
     }
     const streamId = `w${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
@@ -2128,6 +2131,11 @@ export const useStore = create<State>((set, get) => ({
     // cost by the size of the sidebar to update something nobody is looking at.
     if (active && !isRoomId(active) && !get().inflight[active]) {
       await get().hydrate(active, "merge");
+      // A conversation left unwatched for want of a cursor is followed again
+      // once this read has left one, without waiting for a send or a switch
+      // (KYB-667). Only then: with no cursor `watchActive` would start a read
+      // of its own. One already followed is left as it is.
+      if (get().streamIndexes[active] !== undefined) get().watchActive();
     }
     // Threads started on another surface, and lifecycle changes, reach a list
     // on screen within one tick (KYB-649, AC9).
