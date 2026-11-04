@@ -41,6 +41,10 @@ const streamOwners = new Map<string, string>();
  * thread's first answer showed up at the bottom with no question above it.
  */
 const replayFirst = new Set<string>();
+// Per agent, the reads after a turn's end still running. Each restarts the
+// watch from where it ends, so the cross-device refresh leaves that to them
+// rather than restart it from an earlier cursor of its own (KYB-667).
+const turnEndReads = new Map<string, number>();
 
 /**
  * Which agent is behind a stream, when the conversation has more than one.
@@ -417,7 +421,15 @@ function ensureListeners(
       get().stopWatching();
     }
     if (!get().inflight[agentId]) {
-      void get().hydrate(agentId, "merge").then(() => get().watchActive());
+      turnEndReads.set(agentId, (turnEndReads.get(agentId) ?? 0) + 1);
+      void get()
+        .hydrate(agentId, "merge")
+        .then(() => get().watchActive())
+        .finally(() => {
+          const left = (turnEndReads.get(agentId) ?? 1) - 1;
+          if (left > 0) turnEndReads.set(agentId, left);
+          else turnEndReads.delete(agentId);
+        });
     }
   });
 
@@ -2126,19 +2138,18 @@ export const useStore = create<State>((set, get) => ({
     await get().refreshRooms();
     await get().syncSessions();
     const active = get().activeAgentId;
-    // Before the thread is read: its reads can supply the cursor too (KYB-667).
-    const hadCursor = active ? get().streamIndexes[active] !== undefined : true;
     if (active && !isRoomId(active)) await get().loadThread(active);
     // The open conversation only. Refreshing every thread would multiply the
     // cost by the size of the sidebar to update something nobody is looking at.
     if (active && !isRoomId(active) && !get().inflight[active]) {
       await get().hydrate(active, "merge");
-      // A conversation left unwatched for want of a cursor is followed again
-      // once this refresh has supplied one, without waiting for a send or a
-      // switch (KYB-667). Only then: with no cursor `watchActive` would start
-      // a read of its own, and where there was one already, the read that
-      // follows a turn's end restarts the watch from where it ends.
-      if (!hadCursor && get().activeAgentId === active && get().streamIndexes[active] !== undefined) get().watchActive();
+      // A conversation left unwatched for want of a cursor is followed once
+      // a read has supplied one, without waiting for a send or a switch
+      // (KYB-667). Not with no cursor, where `watchActive` would start a read
+      // of its own; not while a read after a turn's end is running, which
+      // restarts the watch from where it ends; and not for an agent left
+      // meanwhile. A conversation already followed is left as it is.
+      if ((turnEndReads.get(active) ?? 0) === 0 && get().activeAgentId === active && get().streamIndexes[active] !== undefined) get().watchActive();
     }
     // Threads started on another surface, and lifecycle changes, reach a list
     // on screen within one tick (KYB-649, AC9).

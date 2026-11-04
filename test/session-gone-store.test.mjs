@@ -1531,7 +1531,7 @@ test("KYB-667: after a turn ends, the refresh leaves restarting the watch to the
     await sleep(slow ? 400 : 10);
     const r = await realReplay(input);
     if (!slow || !r || "gone" in r) return r;
-    return { ...r, blocks: [...r.blocks, { kind: "text", id: "e-667-turn-reply", role: "agent", text: "the turn's reply", at: 3 }], streamIndex: 9 };
+    return { ...r, blocks: [...r.blocks, { eventId: "e-667-turn-reply", role: "agent", text: "the turn's reply", at: 3 }], streamIndex: 9 };
   };
   try {
     emitLive({ streamId: watches[0].streamId, kind: "ended" });
@@ -1540,6 +1540,14 @@ test("KYB-667: after a turn ends, the refresh leaves restarting the watch to the
     assert.deepEqual(watches.map((w) => w.streamIndex), [107], "not restarted by the refresh");
     await sleep(500);
     assert.deepEqual(watches.map((w) => w.streamIndex), [107, 9], "restarted from where the turn's own read ended");
+    // Once that read is over, the refresh is free to start the watch again.
+    bridge.replaySession = realReplay;
+    useStore.getState().stopWatching();
+    useStore.setState((s) => ({ streamIndexes: { ...s.streamIndexes, [ID]: undefined } }));
+    watches.length = 0;
+    await useStore.getState().refreshFromOthers();
+    await sleep(50);
+    assert.deepEqual(watches.map((w) => w.streamIndex), [7], "and a later refresh starts it once the read is over");
   } finally {
     bridge.replaySession = realReplay;
     useStore.getState().stopWatching();
@@ -1600,6 +1608,49 @@ test("KYB-667 AC2: when the thread's own read inside the refresh supplies the cu
     assert.deepEqual(watches.map((w) => w.streamIndex), [7], "and still followed, once");
     assert.equal(replies(UAT_LIVE), 1);
   } finally {
+    thread = null;
+    useStore.getState().stopWatching();
+    useStore.setState({ threads: {} });
+  }
+});
+
+test("KYB-667 AC2: when the refresh moves the chat to the thread's new conversation and its own read supplies the cursor, that conversation is followed", async (t) => {
+  const logs = captureLogs(t);
+  const NEW = "wrun_667_NEW";
+  holding(UAT_LIVE, { threads: {} });
+  // As App does: a change of session on screen starts the watch.
+  const unsub = useStore.subscribe((s, p) => {
+    if (s.sessions[ID] !== p.sessions[ID]) s.watchActive();
+  });
+  useStore.getState().watchActive();
+  await sleep(50);
+  assert.deepEqual(watches.map((w) => [w.sessionId, w.streamIndex]), [[UAT_LIVE, 107]]);
+  watches.length = 0;
+  const realReplay = bridge.replaySession;
+  let reads = 0;
+  // The new conversation's first two reads fail: App's, on the change of
+  // session, and the thread's own. The refresh's, right after, succeeds.
+  bridge.replaySession = async (input) => {
+    if (input.sessionId === NEW && ++reads <= 2) return null;
+    return realReplay(input);
+  };
+  thread = { current: NEW, sessions: [], reports: [], fresh: [] };
+  try {
+    await useStore.getState().refreshFromOthers();
+    await sleep(50);
+    assert.equal(useStore.getState().sessions[ID], NEW, "the chat followed the thread");
+    assert.ok(logs().some((l) => l.includes("following the thread to wrun_667_NEW")));
+    assert.ok(reads >= 3, `the refresh's own read came after two failed ones (${reads})`);
+    assert.equal(useStore.getState().streamIndexes[ID], 7);
+    assert.deepEqual(watches.map((w) => [w.sessionId, w.streamIndex]), [[NEW, 7]], "followed from the refresh's cursor");
+    await useStore.getState().refreshFromOthers();
+    await sleep(50);
+    assert.deepEqual(watches.map((w) => [w.sessionId, w.streamIndex]), [[NEW, 7]], "and still followed, once");
+    assert.equal(replies(NEW), 1);
+    assert.equal(useStore.getState().conversations[ID].filter((b) => b.text === "hello").length, 1, "the transcript on screen is kept, once");
+  } finally {
+    bridge.replaySession = realReplay;
+    unsub();
     thread = null;
     useStore.getState().stopWatching();
     useStore.setState({ threads: {} });
