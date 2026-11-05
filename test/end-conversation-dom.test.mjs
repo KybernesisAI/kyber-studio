@@ -82,6 +82,7 @@ async function mount() {
     text: () => host.textContent ?? "",
     dialog: () => host.querySelector('[role="alertdialog"]'),
     button: (label) => [...host.querySelectorAll("button")].find((b) => (b.textContent ?? "").trim() === label),
+    labelled: (label) => host.querySelector(`button[aria-label="${label}"]`),
     rowButton: (title) =>
       [...host.querySelectorAll("button.routine-row")].find((b) => b.querySelector(".routine-row__name")?.textContent === title),
     unmount: () => act(() => root.unmount()).then(() => host.remove()),
@@ -94,6 +95,17 @@ async function click(el) {
     el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
   });
   await settle();
+}
+
+/**
+ * KYB-666: what the confirmation says is left once a conversation is ended.
+ * It is kept on this device only for the thread's own conversation on an agent
+ * that keeps one thread; elsewhere the agent may delete it, and nothing is kept.
+ */
+const MAY_DELETE = "may also delete its history of it, after which it cannot be read again.";
+const STAYS_HERE = "what is on screen stays on this device";
+function assertNeverStored(says) {
+  assert.ok(!/stays stored|still read/i.test(says), `the confirmation says it can still be read: ${says}`);
 }
 
 function reset({ panel, sessionId, listed = [row("live-1", "alive"), row("live-2", "alive")] }) {
@@ -109,6 +121,9 @@ function reset({ panel, sessionId, listed = [row("live-1", "alive"), row("live-2
     conversations: { [A.id]: [{ kind: "text", id: "b1", role: "agent", text: "earlier", at: Date.now() - 60_000 }] },
     inflight: {},
     details: {},
+    threads: {},
+    threadCopy: {},
+    keepsThread: {},
   });
 }
 
@@ -127,7 +142,7 @@ test("AC1: the drawer's New conversation sends nothing to the agent and leaves t
   await view.unmount();
 });
 
-test("AC8: Settings' End asks first, names the thread, warns across surfaces, never says delete — and Cancel sends nothing", async () => {
+test("AC8: Settings' End asks first, names the thread, warns across surfaces, says what is lost, and Cancel sends nothing", async () => {
   const bridge = installBridge();
   reset({ panel: "settings", sessionId: "live-1" });
   const view = await mount();
@@ -145,7 +160,10 @@ test("AC8: Settings' End asks first, names the thread, warns across surfaces, ne
   assert.ok(says.includes("cannot be continued"), says);
   assert.ok(says.includes("working memory"), says);
   assert.ok(says.includes(END_CROSS_SURFACE_LINE), "an alive thread's confirmation lacks the cross-surface line");
-  assert.ok(!/delet/i.test(says), "the confirmation talks about deleting");
+  // KYB-666 AC1 and AC3: on an agent with many conversations, nothing of it is kept.
+  assertNeverStored(says);
+  assert.ok(says.includes(MAY_DELETE), `the agent's deleting it is not said: ${says}`);
+  assert.ok(!says.includes(STAYS_HERE), `a transcript is promised that is not kept: ${says}`);
 
   await click(view.button("Cancel"));
   assert.ok(!view.dialog(), "Cancel did not close the confirmation");
@@ -242,5 +260,100 @@ test("switching agent closes an open confirmation without ending anything", asyn
   await settle();
   assert.ok(!view.dialog(), "the confirmation came back on switching back");
   assert.equal(bridge.resets.length, 0);
+  await view.unmount();
+});
+
+/** An agent that keeps one thread, on `held`, with what that leaves on screen. */
+function oneThread({ panel = "settings", held, pick = false, listed = [row("thread-1", "alive"), row("other-1", "alive")] }) {
+  reset({ panel, sessionId: held, listed });
+  useStore.setState({
+    threads: { [A.id]: { current: "thread-1", sessions: [{ id: "thread-1" }], reports: [], fresh: [] } },
+    ...(pick
+      ? {
+          sessionChoice: { [A.id]: { sessionId: held, fromDrawer: true, at: 1 } },
+          threadCopy: { [A.id]: [{ kind: "text", id: "t1", role: "agent", text: "the thread's transcript", at: 1 }] },
+        }
+      : {}),
+  });
+}
+
+test("KYB-666 AC1/AC2: ending the thread's own conversation on an agent that keeps one thread says what is on screen stays here, and it does", async () => {
+  const bridge = installBridge();
+  oneThread({ held: "thread-1" });
+  const view = await mount();
+
+  await click(view.button("End this conversation"));
+  const says = view.dialog()?.textContent ?? "";
+  assertNeverStored(says);
+  assert.ok(says.includes(STAYS_HERE), `the transcript kept on this device is not said: ${says}`);
+  assert.ok(says.includes("working memory"), says);
+  assert.ok(!says.includes(MAY_DELETE), `told it cannot be read again, though it stays on screen: ${says}`);
+
+  // Said when it opened: the chat moving meanwhile does not change it.
+  await act(async () => {
+    useStore.setState((s) => ({ sessions: { ...s.sessions, [A.id]: "other-1" } }));
+  });
+  assert.equal(view.dialog()?.textContent ?? "", says, "the confirmation changed what it says while open");
+  await act(async () => {
+    useStore.setState((s) => ({ sessions: { ...s.sessions, [A.id]: "thread-1" } }));
+  });
+
+  await click(view.button("End conversation"));
+  assert.deepEqual(bridge.resets.map((r) => r.sessionId), ["thread-1"]);
+  const conv = useStore.getState().conversations[A.id] ?? [];
+  assert.ok(conv.some((b) => b.text === "earlier"), "what the confirmation said stays on screen did not");
+  await view.unmount();
+});
+
+test("KYB-666 AC1/AC3: ending a drawer pick on screen, from Settings, says it may be deleted, and nothing of it is kept", async () => {
+  const bridge = installBridge();
+  oneThread({ held: "other-1", pick: true });
+  const view = await mount();
+
+  await click(view.button("End this conversation"));
+  const says = view.dialog()?.textContent ?? "";
+  assertNeverStored(says);
+  assert.ok(says.includes(MAY_DELETE), says);
+  assert.ok(!says.includes(STAYS_HERE), says);
+
+  await click(view.button("End conversation"));
+  assert.deepEqual(bridge.resets.map((r) => r.sessionId), ["other-1"]);
+  const conv = useStore.getState().conversations[A.id] ?? [];
+  assert.ok(!conv.some((b) => b.text === "earlier"), "the ended pick is still on screen, though it was said to be gone");
+  assert.ok(conv.some((b) => b.text === "the thread's transcript"), "the thread did not come back");
+  await view.unmount();
+});
+
+test("KYB-666 AC1/AC3: End on a drawer row of an agent that keeps one thread says it may be deleted", async () => {
+  const bridge = installBridge();
+  oneThread({ panel: "conversations", held: "thread-1" });
+  const view = await mount();
+
+  await click(view.labelled("End title other-1"));
+  const says = view.dialog()?.textContent ?? "";
+  assert.ok(says.includes("title other-1"), says);
+  assertNeverStored(says);
+  assert.ok(says.includes(MAY_DELETE), says);
+  assert.ok(!says.includes(STAYS_HERE), says);
+
+  await click(view.button("Cancel"));
+  assert.equal(bridge.resets.length, 0);
+  await view.unmount();
+});
+
+test("KYB-666 AC2: before the thread is read this launch, an agent known to keep one thread still gets the AC2 wording, and keeps the screen", async () => {
+  const bridge = installBridge();
+  reset({ panel: "settings", sessionId: "thread-1", listed: [row("thread-1", "alive")] });
+  useStore.setState({ keepsThread: { [A.id]: true } });
+  const view = await mount();
+
+  await click(view.button("End this conversation"));
+  const says = view.dialog()?.textContent ?? "";
+  assertNeverStored(says);
+  assert.ok(says.includes(STAYS_HERE), says);
+
+  await click(view.button("End conversation"));
+  assert.deepEqual(bridge.resets.map((r) => r.sessionId), ["thread-1"]);
+  assert.ok((useStore.getState().conversations[A.id] ?? []).some((b) => b.text === "earlier"), "the screen was not kept");
   await view.unmount();
 });
