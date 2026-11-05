@@ -7,7 +7,7 @@ import { isReplayGone } from "@shared/sessionGone";
 import { ROOM_PREFIX, isRoomId } from "@shared/types";
 import { recipientsFor, type RoomPolicy } from "@shared/addressing";
 import { reconcile } from "@shared/sessionReplay";
-import { newReports, placeThreadBlocks, readThreadView, recapOf, reportLabel, threadBlocks, type ThreadView } from "@shared/thread";
+import { isThreadBlock, newReports, placeThreadBlocks, readThreadView, recapOf, reportLabel, threadBlocks, type ThreadView } from "@shared/thread";
 
 /**
  * Renderer state.
@@ -2341,6 +2341,22 @@ export const useStore = create<State>((set, get) => ({
       // is not what an agent with a thread does: the chat is on the thread.
       const sessionChoice = { ...s.sessionChoice };
       if (turned && sessionChoice[agentId]?.sessionId === null) delete sessionChoice[agentId];
+      // The thread's reports, questions and Started fresh dividers belong to
+      // the thread, not to a conversation opened from the drawer: over a pick
+      // they go into the thread's transcript put aside, which Back to your
+      // thread restores, and any drawn into the pick by an earlier build move
+      // there too (KYB-665). Judged as `takeThreadCopy` judges the screen, so
+      // what goes aside here is what Back puts back.
+      const pick = held ? isDrawerPick(s, agentId, held) : s.sessionChoice[agentId]?.fromDrawer === true;
+      if (pick) {
+        const strayed = kept.filter(isThreadBlock);
+        const copy = placeThreadBlocks(placeThreadBlocks(s.threadCopy[agentId] ?? [], strayed), threadBlocks(view));
+        return {
+          conversations: { ...s.conversations, [agentId]: strayed.length ? kept.filter((b) => !isThreadBlock(b)) : kept },
+          threadCopy: { ...s.threadCopy, [agentId]: copy },
+          sessionChoice,
+        };
+      }
       return { conversations: { ...s.conversations, [agentId]: placeThreadBlocks(kept, threadBlocks(view)) }, sessionChoice };
     });
     get().persist();

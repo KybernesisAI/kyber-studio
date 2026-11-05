@@ -96,6 +96,11 @@ export function threadBlocks(view: ThreadView): Block[] {
   return out;
 }
 
+/** Whether a block is one `threadBlocks` makes: a report, a question or a Started fresh divider. */
+export function isThreadBlock(block: Block): boolean {
+  return block.id.startsWith("report:") || block.id.startsWith("rq:") || block.id.startsWith("fresh:");
+}
+
 /**
  * Put thread blocks into a conversation by time. A block already there is
  * updated in place (a question answered elsewhere), except that an answer

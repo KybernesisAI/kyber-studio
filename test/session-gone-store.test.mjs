@@ -1656,3 +1656,126 @@ test("KYB-667 AC2: when the refresh moves the chat to the thread's new conversat
     useStore.setState({ threads: {} });
   }
 });
+
+const THREAD_665 = "wrun_665_THREAD";
+const PICK_665 = "wrun_665_PICK";
+const FRESH_AT = "2026-11-03T11:50:00.000Z";
+const REPORT_AT = "2026-11-03T12:00:00.000Z";
+const VIEW_665 = {
+  current: THREAD_665,
+  sessions: [{ id: THREAD_665, at: FRESH_AT }],
+  reports: [{ id: "r665", kind: "report", routine: "morning brief", text: "the brief", at: REPORT_AT, runSessionId: "wrun_665_RUN" }],
+  fresh: [FRESH_AT],
+};
+const threadIds = ["fresh:" + FRESH_AT, "report:r665"];
+const isThreadBlockId = (id) => /^(fresh|report|rq):/.test(id);
+const onScreen = () => useStore.getState().conversations[ID] ?? [];
+
+test("KYB-665 AC1/AC2: the thread's blocks stay out of a drawer pick, through refreshes and a relaunch, and Back shows them once, in order", async () => {
+  holding(THREAD_665, { threads: {}, keepsThread: {} });
+  thread = VIEW_665;
+  try {
+    await useStore.getState().loadThread(ID);
+    // Control: on the thread itself, they are drawn.
+    assert.deepEqual(onScreen().filter((b) => isThreadBlockId(b.id)).map((b) => b.id), threadIds, "drawn in the thread");
+
+    await useStore.getState().openSession(ID, PICK_665);
+    await sleep(50);
+    assert.ok(useStore.getState().sessionChoice[ID]?.fromDrawer, "a drawer pick is on screen");
+    for (let round = 0; round < 2; round += 1) {
+      await useStore.getState().loadThread(ID);
+      assert.deepEqual(onScreen().filter((b) => isThreadBlockId(b.id)), [], `round ${round}: no thread block in the pick`);
+    }
+    await useStore.getState().refreshFromOthers();
+    assert.deepEqual(onScreen().filter((b) => isThreadBlockId(b.id)), [], "nor after the cross-device refresh");
+
+    await relaunch();
+    await useStore.getState().loadThread(ID);
+    assert.equal(useStore.getState().sessions[ID], PICK_665, "still on the pick after the relaunch");
+    assert.deepEqual(onScreen().filter((b) => isThreadBlockId(b.id)), [], "nor after a relaunch");
+
+    await useStore.getState().openThread(ID);
+    await sleep(50);
+    const back = onScreen();
+    assert.equal(useStore.getState().sessions[ID], THREAD_665, "back on the thread");
+    assert.deepEqual(back.filter((b) => isThreadBlockId(b.id)).map((b) => b.id), threadIds, "each once");
+    assert.ok(back.some((b) => b.text === "hello"), "with the thread's transcript");
+    const ats = back.map((b) => b.at);
+    assert.deepEqual(ats, [...ats].sort((a, b) => a - b), "in time order");
+  } finally {
+    thread = null;
+    useStore.getState().stopWatching();
+    useStore.setState({ threads: {} });
+  }
+});
+
+test("KYB-665: thread blocks an earlier build drew into a pick move to the thread's copy, an answer given kept", async () => {
+  const strayed = [
+    { kind: "divider", id: "fresh:" + FRESH_AT, at: Date.parse(FRESH_AT), label: "Started fresh" },
+    { kind: "question", id: "rq:q665:req1", at: Date.parse(FRESH_AT) + 1, requestId: "req1", prompt: "Proceed?", options: [], allowFreeform: true, runSessionId: "wrun_665_RUN", answered: "Yes" },
+  ];
+  const own = { kind: "text", id: "p1", role: "agent", text: "the pick's own reply", at: Date.parse(REPORT_AT) + 1000 };
+  holding(PICK_665, {
+    threads: { [ID]: VIEW_665 },
+    sessionChoice: { [ID]: { sessionId: PICK_665, fromDrawer: true, at: 1 } },
+    threadCopy: { [ID]: [{ kind: "text", id: "u1", role: "user", text: "hello", at: 1 }] },
+  });
+  useStore.setState((s) => ({ conversations: { ...s.conversations, [ID]: [...strayed, own] } }));
+  thread = VIEW_665;
+  try {
+    await useStore.getState().loadThread(ID);
+    assert.deepEqual(onScreen().map((b) => b.id), ["p1"], "only the pick's own blocks stay on screen");
+    const copy = useStore.getState().threadCopy[ID];
+    assert.deepEqual(copy.map((b) => b.id), ["u1", "fresh:" + FRESH_AT, "rq:q665:req1", "report:r665"], "moved into the thread's copy, in time order, each once");
+    assert.equal(copy.find((b) => b.id === "rq:q665:req1").answered, "Yes", "an answer given is kept");
+    assert.deepEqual(saved().threadCopy[ID].map((b) => b.id), copy.map((b) => b.id), "and saved");
+  } finally {
+    thread = null;
+    useStore.setState({ threads: {} });
+  }
+});
+
+test("KYB-665: a pick with no transcript put aside still keeps the thread's blocks for Back", async () => {
+  holding(PICK_665, {
+    threads: { [ID]: VIEW_665 },
+    sessionChoice: { [ID]: { sessionId: PICK_665, fromDrawer: true, at: 1 } },
+    threadCopy: {},
+  });
+  thread = VIEW_665;
+  try {
+    await useStore.getState().loadThread(ID);
+    assert.deepEqual(onScreen().filter((b) => isThreadBlockId(b.id)), []);
+    assert.deepEqual(useStore.getState().threadCopy[ID].map((b) => b.id), threadIds);
+    await useStore.getState().openThread(ID);
+    await sleep(50);
+    assert.deepEqual(onScreen().filter((b) => isThreadBlockId(b.id)).map((b) => b.id), threadIds, "Back shows them, once");
+  } finally {
+    thread = null;
+    useStore.getState().stopWatching();
+    useStore.setState({ threads: {} });
+  }
+});
+
+test("KYB-665 AC2: Back to your thread shows the thread's blocks even when the thread cannot be read at that moment", async () => {
+  holding(PICK_665, {
+    threads: { [ID]: VIEW_665 },
+    sessionChoice: { [ID]: { sessionId: PICK_665, fromDrawer: true, at: 1 } },
+    threadCopy: { [ID]: [{ kind: "text", id: "u1", role: "user", text: "hello", at: 1 }] },
+  });
+  thread = VIEW_665;
+  try {
+    await useStore.getState().loadThread(ID);
+    assert.deepEqual(onScreen().filter((b) => isThreadBlockId(b.id)), [], "none in the pick");
+    threadDown = 503;
+    await useStore.getState().openThread(ID);
+    await sleep(50);
+    const back = onScreen();
+    assert.deepEqual(back.filter((b) => isThreadBlockId(b.id)).map((b) => b.id), threadIds, "from the transcript put aside, each once");
+    assert.ok(back.some((b) => b.text === "hello"));
+  } finally {
+    threadDown = null;
+    thread = null;
+    useStore.getState().stopWatching();
+    useStore.setState({ threads: {} });
+  }
+});
