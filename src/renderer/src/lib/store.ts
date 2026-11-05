@@ -921,11 +921,13 @@ const watchedSessions = new Map<string, string>();
  *   thread. The chat stays on it, says why it is empty or why it stops, and
  *   it is read-only: the way on is back to the thread. Said again each time it
  *   is opened, since `hydrate` comes here for an id already known gone.
- * - The person's THREAD, on such an agent. The thread carries on: the next
- *   message goes to the thread's address and the agent starts afresh there.
- *   The dead id is dropped, the transcript stays, and one line says so.
- * - Anything else (an agent with many conversations, or one whose thread has
- *   not been read yet). The chat lets go of it: the saved choice becomes a new
+ * - The person's THREAD, on such an agent, including one known to be such
+ *   only from what was saved, before `/thread` answers this launch (KYB-668).
+ *   The thread carries on: the next message goes to the thread's address and
+ *   the agent starts afresh there. The dead id is dropped, the transcript
+ *   stays, and one line says so.
+ * - Anything else (an agent with many conversations, or one not yet known to
+ *   keep a thread). The chat lets go of it: the saved choice becomes a new
  *   conversation, so a relaunch starts clean, and the chat says what happened.
  *   If the agent turns out to keep a thread, `loadThread` turns the notice
  *   into the thread's line.
@@ -944,7 +946,9 @@ function conversationGone(
   if (watching?.agentId === agentId && watching.sessionId === sessionId) get().stopWatching();
   const onScreen = get().sessions[agentId] === sessionId && !get().inflight[agentId];
   if (!first && !onScreen) return;
-  const thread = get().threads[agentId];
+  // Known to keep one thread from what was saved, before `/thread` answers
+  // this launch, as well as from the thread once read (KYB-668, AC3).
+  const oneThread = keepsOneThread(get(), agentId);
   const reading = isDrawerPick(get(), agentId, sessionId);
   const agentName = get().agents.find((a) => a.id === agentId)?.name ?? "The agent";
   set((st) => {
@@ -961,7 +965,7 @@ function conversationGone(
       if (reading) {
         // Opened from the drawer: stay on it, so the chat is explained.
         next.conversations = { ...st.conversations, [agentId]: add(notice) };
-      } else if (thread) {
+      } else if (oneThread) {
         // The thread's own conversation: the thread carries on (AC1).
         const sessionChoice = { ...st.sessionChoice };
         delete sessionChoice[agentId];
@@ -978,6 +982,9 @@ function conversationGone(
   });
   get().persist();
 }
+
+/** What the chat says when Start fresh did not happen (KYB-668, AC1). */
+export const AFRESH_FAILED = "Couldn't start afresh just now. Nothing has changed: try again in a moment.";
 
 /**
  * The line a thread gets when its conversation ends on the agent (KYB-662,
@@ -2505,6 +2512,20 @@ export const useStore = create<State>((set, get) => ({
        * lets go of what it was holding in mind, everything said stays on
        * screen, and a line marks where the fresh start began.
        */
+      // Starting afresh that did not happen is said in the chat, where the
+      // person pressed for it, and the screen is otherwise left as it was
+      // (KYB-668, AC1). Not a thread block: it stays where it was drawn.
+      const failed = (why: string): void => {
+        console.log(`[thread] ${agentId}: starting afresh failed: ${why}`);
+        const at = Date.now();
+        set((st) => ({
+          conversations: {
+            ...st.conversations,
+            [agentId]: [...(st.conversations[agentId] ?? []), { kind: "divider", id: `afresh-failed:${at}`, at, label: AFRESH_FAILED }],
+          },
+        }));
+        get().persist();
+      };
       void window.studio
         .manage({ url: agent.url, path: "/thread/fresh", body: {} })
         .then(async (res) => {
@@ -2516,9 +2537,11 @@ export const useStore = create<State>((set, get) => ({
           // leaves the screen as it is, since it may be the only copy.
           if (unread && !res.ok && res.status === 404 && get().threads[agentId] === null && !get().inflight[agentId]) {
             leaveForNewConversation(get, set, agentId);
+          } else if (!res.ok) {
+            failed(`${res.status} ${JSON.stringify(res.data)?.slice(0, 200)}`);
           }
         })
-        .catch((error: unknown) => console.log(`[thread] ${agentId}: starting afresh failed: ${String(error)}`));
+        .catch((error: unknown) => failed(String(error)));
       return;
     }
     leaveForNewConversation(get, set, agentId);
@@ -2816,6 +2839,14 @@ export const useStore = create<State>((set, get) => ({
         recap = recapOf(before);
       }
     }
+    // Before `/thread` answers this launch, an agent known from what was saved
+    // to keep one thread still gets the message at the thread's address, as
+    // it would a moment later (KYB-668, AC2). Not from a drawer pick: what to
+    // leave it for is not known until the thread is read, so it goes where
+    // it did before.
+    const toThread =
+      Boolean(thread) ||
+      (thread === undefined && keepsOneThread(get(), agentId) && !isDrawerPick(get(), agentId, get().sessions[agentId]));
 
     const streamId = `s${at}`;
     const bubbleId = `a${at}`;
@@ -2853,7 +2884,7 @@ export const useStore = create<State>((set, get) => ({
                 ...(recap ? { earlierConversation: recap } : {}),
               }
             : undefined,
-        ...(thread ? { thread: true } : {}),
+        ...(toThread ? { thread: true } : {}),
         streamId,
       })
       .then((res) => {
