@@ -102,7 +102,7 @@ async function click(el) {
  * It is kept on this device only for the thread's own conversation on an agent
  * that keeps one thread; elsewhere the agent may delete it, and nothing is kept.
  */
-const MAY_DELETE = "may also delete its history of it, after which it cannot be read again, here or anywhere else";
+const MAY_DELETE = "may also delete its history of it, after which it cannot be read again.";
 const STAYS_HERE = "what is on screen stays on this device";
 function assertNeverStored(says) {
   assert.ok(!/stays stored|still read/i.test(says), `the confirmation says it can still be read: ${says}`);
@@ -338,5 +338,22 @@ test("KYB-666 AC1/AC3: End on a drawer row of an agent that keeps one thread say
 
   await click(view.button("Cancel"));
   assert.equal(bridge.resets.length, 0);
+  await view.unmount();
+});
+
+test("KYB-666 AC2: before the thread is read this launch, an agent known to keep one thread still gets the AC2 wording, and keeps the screen", async () => {
+  const bridge = installBridge();
+  reset({ panel: "settings", sessionId: "thread-1", listed: [row("thread-1", "alive")] });
+  useStore.setState({ keepsThread: { [A.id]: true } });
+  const view = await mount();
+
+  await click(view.button("End this conversation"));
+  const says = view.dialog()?.textContent ?? "";
+  assertNeverStored(says);
+  assert.ok(says.includes(STAYS_HERE), says);
+
+  await click(view.button("End conversation"));
+  assert.deepEqual(bridge.resets.map((r) => r.sessionId), ["thread-1"]);
+  assert.ok((useStore.getState().conversations[A.id] ?? []).some((b) => b.text === "earlier"), "the screen was not kept");
   await view.unmount();
 });

@@ -747,7 +747,7 @@ function EndConversationConfirm({
       <div className="muted" style={{ marginBottom: 6 }}>
         {target.keepsScreen
           ? "It cannot be continued, and the agent loses its working memory of it and may delete its copy. The agent starts afresh in your thread, and what is on screen stays on this device."
-          : "It cannot be continued, and the agent loses its working memory of it. The agent may also delete its history of it, after which it cannot be read again, here or anywhere else."}
+          : "It cannot be continued, and the agent loses its working memory of it. The agent may also delete its history of it, after which it cannot be read again."}
       </div>
       {thread.alive ? (
         <div className="muted" style={{ marginBottom: 10 }}>

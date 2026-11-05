@@ -163,7 +163,7 @@ test("AC2b: a live row has its own End, behind the full confirmation — Cancel 
   assert.ok(says.includes(END_CROSS_SURFACE_LINE), "a live thread's confirmation lacks the cross-surface line");
   // KYB-666 AC1 and AC3: an agent with many conversations keeps no copy of a row it ends.
   assert.ok(!/stays stored|still read/i.test(says), `the confirmation says it can still be read: ${says}`);
-  assert.ok(says.includes("may also delete its history of it, after which it cannot be read again"), says);
+  assert.ok(says.includes("may also delete its history of it, after which it cannot be read again."), says);
   assert.ok(!/archiv/i.test(says), "the End confirmation talks about archiving");
 
   await click(view.button("Cancel"));
