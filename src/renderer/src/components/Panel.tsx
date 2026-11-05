@@ -12,7 +12,16 @@ import {
   timeOptions,
   toCron,
 } from "@/lib/schedule";
-import { isRetired, threadFilterFor, useStore, type AgentSession, type PanelView, type ThreadFilter } from "@/lib/store";
+import {
+  isDrawerPick,
+  isRetired,
+  keepsOneThread,
+  threadFilterFor,
+  useStore,
+  type AgentSession,
+  type PanelView,
+  type ThreadFilter,
+} from "@/lib/store";
 import type { ArtifactSummary } from "@shared/artifacts";
 import type { ThreadView } from "@shared/thread";
 import type { LocalAction, LocalPermission } from "@shared/ipc";
@@ -403,6 +412,7 @@ function ConversationsView(): ReactNode {
       sessionId: s.id,
       agentName,
       thread: describeThread(useStore.getState(), activeAgentId, s.id),
+      keepsScreen: endKeepsScreen(useStore.getState(), activeAgentId, s.id),
     });
   };
   const busy = Boolean(inflight[activeAgentId]);
@@ -652,7 +662,29 @@ function ThreadRow({
 }
 
 /** A confirmation's target: the thread, described once, when it opened. */
-type EndTarget = { agentId: string; sessionId: string; agentName: string; thread: ReturnType<typeof describeThread> };
+type EndTarget = {
+  agentId: string;
+  sessionId: string;
+  agentName: string;
+  thread: ReturnType<typeof describeThread>;
+  /** Whether what is on screen stays on this device once it is ended (`endKeepsScreen`). */
+  keepsScreen: boolean;
+};
+
+/**
+ * Whether ending this conversation leaves its transcript on this device. Only
+ * the thread's own conversation, on screen, on an agent that keeps one thread:
+ * the chat stays, with the "started afresh" line (`leaveForNewConversation`,
+ * KYB-662). Ending anything else keeps no copy of it here, and since eve 0.80
+ * the agent normally deletes its history once it has ended (KYB-666).
+ */
+export function endKeepsScreen(
+  state: Pick<ReturnType<typeof useStore.getState>, "sessions" | "sessionChoice" | "threads" | "threadCopy" | "keepsThread">,
+  agentId: string,
+  sessionId: string,
+): boolean {
+  return state.sessions[agentId] === sessionId && keepsOneThread(state, agentId) && !isDrawerPick(state, agentId, sessionId);
+}
 
 /**
  * What the End confirmation says about a thread: its title (or its last
@@ -686,9 +718,12 @@ export function describeThread(
 export const END_CROSS_SURFACE_LINE = "If this conversation is also open in Buzz, iMessage or on your phone, it ends there too.";
 
 /**
- * Confirm ending ONE named conversation. It ends `target.sessionId` — the
- * thread shown when this opened — and nothing else. Never says "delete": the
- * conversation stays stored and readable on the agent.
+ * Confirm ending ONE named conversation. It ends `target.sessionId`, the
+ * thread shown when this opened, and nothing else. It never says the
+ * conversation stays stored or can still be read: since eve 0.80 the agent
+ * normally deletes an ended conversation's history (KYB-666). It says what is
+ * left: the transcript on screen, for the thread's own conversation on an agent
+ * that keeps one thread, and otherwise nothing.
  */
 function EndConversationConfirm({
   target,
@@ -699,7 +734,8 @@ function EndConversationConfirm({
 }): ReactNode {
   const endConversation = useStore((s) => s.endConversation);
   // Described when the confirmation OPENED and never again: if the chat moves
-  // to another thread meanwhile, this must still name the one it will end.
+  // to another thread meanwhile, this must still name the one it will end,
+  // and say what ending that one leaves.
   const { thread } = target;
   return (
     <div className="card" role="alertdialog" aria-label="End this conversation?">
@@ -709,7 +745,9 @@ function EndConversationConfirm({
         {thread.lastActive ? <span className="muted"> · last active {thread.lastActive}</span> : null}
       </div>
       <div className="muted" style={{ marginBottom: 6 }}>
-        It stays stored and you can still read it, but it cannot be continued, and the agent loses its working memory of it.
+        {target.keepsScreen
+          ? "It cannot be continued, and the agent loses its working memory of it and may delete its copy. The agent starts afresh in your thread, and what is on screen stays on this device."
+          : "It cannot be continued, and the agent loses its working memory of it. The agent may also delete its history of it, after which it cannot be read again, here or anywhere else."}
       </div>
       {thread.alive ? (
         <div className="muted" style={{ marginBottom: 10 }}>
@@ -1408,6 +1446,7 @@ function Settings(): ReactNode {
                   sessionId,
                   agentName: agent.name,
                   thread: describeThread(useStore.getState(), activeAgentId, sessionId),
+                  keepsScreen: endKeepsScreen(useStore.getState(), activeAgentId, sessionId),
                 });
               }}
             >
