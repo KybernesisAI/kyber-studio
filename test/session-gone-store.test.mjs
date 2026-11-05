@@ -1721,7 +1721,11 @@ test("KYB-665: thread blocks an earlier build drew into a pick move to the threa
     threadCopy: { [ID]: [{ kind: "text", id: "u1", role: "user", text: "hello", at: 1 }] },
   });
   useStore.setState((s) => ({ conversations: { ...s.conversations, [ID]: [...strayed, own] } }));
-  thread = VIEW_665;
+  // The thread's view still has the question, unanswered: the answer given
+  // here is held only on this device, and placing the view must not undo it.
+  const asked = { id: "q665", kind: "question", routine: "morning brief", text: "Proceed?", at: "2026-11-03T11:50:00.001Z", runSessionId: "wrun_665_RUN", requests: [{ requestId: "req1", prompt: "Proceed?" }] };
+  thread = { ...VIEW_665, reports: [...VIEW_665.reports, asked] };
+  useStore.setState({ threads: { [ID]: thread } });
   try {
     await useStore.getState().loadThread(ID);
     assert.deepEqual(onScreen().map((b) => b.id), ["p1"], "only the pick's own blocks stay on screen");
@@ -1748,7 +1752,12 @@ test("KYB-665: a pick with no transcript put aside still keeps the thread's bloc
     assert.deepEqual(useStore.getState().threadCopy[ID].map((b) => b.id), threadIds);
     await useStore.getState().openThread(ID);
     await sleep(50);
-    assert.deepEqual(onScreen().filter((b) => isThreadBlockId(b.id)).map((b) => b.id), threadIds, "Back shows them, once");
+    const back = onScreen();
+    assert.deepEqual(back.filter((b) => isThreadBlockId(b.id)).map((b) => b.id), threadIds, "Back shows them, once");
+    assert.ok(back.some((b) => b.text === `history of ${THREAD_665}`), "with the thread's own conversation, read on Back");
+    assert.ok(!back.some((b) => b.text === "hello"), "and nothing of the pick");
+    const ats = back.map((b) => b.at);
+    assert.deepEqual(ats, [...ats].sort((a, b) => a - b), "in time order");
   } finally {
     thread = null;
     useStore.getState().stopWatching();
@@ -1772,6 +1781,38 @@ test("KYB-665 AC2: Back to your thread shows the thread's blocks even when the t
     const back = onScreen();
     assert.deepEqual(back.filter((b) => isThreadBlockId(b.id)).map((b) => b.id), threadIds, "from the transcript put aside, each once");
     assert.ok(back.some((b) => b.text === "hello"));
+    const ats = back.map((b) => b.at);
+    assert.deepEqual(ats, [...ats].sort((a, b) => a - b), "in time order");
+  } finally {
+    threadDown = null;
+    thread = null;
+    useStore.getState().stopWatching();
+    useStore.setState({ threads: {} });
+  }
+});
+
+test("KYB-665 AC2: a report that arrives while a pick is on screen is in the thread on Back, even when the thread cannot be read then", async () => {
+  holding(THREAD_665, { threads: {}, keepsThread: {} });
+  thread = VIEW_665;
+  try {
+    await useStore.getState().loadThread(ID);
+    await useStore.getState().openSession(ID, PICK_665);
+    await sleep(50);
+    assert.ok(useStore.getState().sessionChoice[ID]?.fromDrawer, "a drawer pick is on screen");
+    // While the pick is read, the routine reports again.
+    const later = { id: "r665b", kind: "report", routine: "morning brief", text: "the next brief", at: "2026-11-03T12:30:00.000Z", runSessionId: "wrun_665_RUN2" };
+    thread = { ...VIEW_665, reports: [...VIEW_665.reports, later] };
+    await useStore.getState().refreshFromOthers();
+    assert.deepEqual(onScreen().filter((b) => isThreadBlockId(b.id)), [], "not drawn into the pick");
+    threadDown = 503;
+    await useStore.getState().openThread(ID);
+    await sleep(50);
+    const back = onScreen();
+    assert.equal(useStore.getState().sessions[ID], THREAD_665, "back on the thread");
+    assert.deepEqual(back.filter((b) => isThreadBlockId(b.id)).map((b) => b.id), [...threadIds, "report:r665b"], "both reports and the divider, each once");
+    assert.ok(back.some((b) => b.text === "hello"), "with the thread's transcript");
+    const ats = back.map((b) => b.at);
+    assert.deepEqual(ats, [...ats].sort((a, b) => a - b), "in time order");
   } finally {
     threadDown = null;
     thread = null;

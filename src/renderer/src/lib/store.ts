@@ -1068,6 +1068,17 @@ function withScreen(copy: Block[], screen: Block[]): Block[] {
 }
 
 /**
+ * Whether the screen is a drawer pick, judged one way both for what the
+ * thread's view puts aside (`loadThread`, KYB-665) and for what Back puts
+ * back (`takeThreadCopy`). With no session held (signed out, say) the saved
+ * choice says what the screen is: one recorded from the drawer is a pick.
+ */
+function screenIsPick(st: Pick<State, "sessions" | "sessionChoice" | "threads">, agentId: string): boolean {
+  const held = st.sessions[agentId];
+  return held ? isDrawerPick(st, agentId, held) : st.sessionChoice[agentId]?.fromDrawer === true;
+}
+
+/**
  * The thread's transcript goes back on screen, and the copy is used once.
  *
  * Over a recorded drawer pick it REPLACES the screen: a pick is opened onto an
@@ -1084,10 +1095,7 @@ function withScreen(copy: Block[], screen: Block[]): Block[] {
 function takeThreadCopy(st: State, agentId: string): Pick<State, "conversations" | "threadCopy"> {
   const copy = st.threadCopy[agentId] ?? [];
   const screen = st.conversations[agentId] ?? [];
-  // With no session held (signed out, say) the saved choice says what the
-  // screen is: one recorded from the drawer is a pick.
-  const held = st.sessions[agentId];
-  const pick = held ? isDrawerPick(st, agentId, held) : st.sessionChoice[agentId]?.fromDrawer === true;
+  const pick = screenIsPick(st, agentId);
   return {
     conversations: { ...st.conversations, [agentId]: pick ? copy : withScreen(copy, screen) },
     threadCopy: { ...st.threadCopy, [agentId]: undefined },
@@ -2345,10 +2353,9 @@ export const useStore = create<State>((set, get) => ({
       // the thread, not to a conversation opened from the drawer: over a pick
       // they go into the thread's transcript put aside, which Back to your
       // thread restores, and any drawn into the pick by an earlier build move
-      // there too (KYB-665). Judged as `takeThreadCopy` judges the screen, so
-      // what goes aside here is what Back puts back.
-      const pick = held ? isDrawerPick(s, agentId, held) : s.sessionChoice[agentId]?.fromDrawer === true;
-      if (pick) {
+      // there too (KYB-665). Judged by `screenIsPick`, as `takeThreadCopy`
+      // judges it, so what goes aside here is what Back puts back.
+      if (screenIsPick(s, agentId)) {
         const strayed = kept.filter(isThreadBlock);
         const copy = placeThreadBlocks(placeThreadBlocks(s.threadCopy[agentId] ?? [], strayed), threadBlocks(view));
         return {
