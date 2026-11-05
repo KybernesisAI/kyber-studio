@@ -2519,7 +2519,8 @@ export const useStore = create<State>((set, get) => ({
        */
       // Starting afresh that did not happen is said in the chat, where the
       // person pressed for it, and the screen is otherwise left as it was
-      // (KYB-668, AC1). Not a thread block: it stays where it was drawn.
+      // (KYB-668, AC1). Not placed as a thread block (`isThreadBlock`): over a
+      // drawer pick it stays where it was drawn.
       const failed = (why: string, signIn = false): void => {
         console.log(`[thread] ${agentId}: starting afresh failed: ${why}`);
         const at = Date.now();

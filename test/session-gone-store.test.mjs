@@ -1828,7 +1828,7 @@ test("KYB-665 AC2: a report that arrives while a pick is on screen is in the thr
   }
 });
 
-const failNotes = () => (useStore.getState().conversations[ID] ?? []).filter((b) => b.label === AFRESH_FAILED);
+const failNotes = () => (useStore.getState().conversations[ID] ?? []).filter((b) => b.id.startsWith("afresh-failed:") && b.label === AFRESH_FAILED);
 
 for (const failure of [500, "throw"]) {
   test(`KYB-668 AC1: when starting afresh fails (${failure}), the chat says so once, and nothing else changes`, async () => {
