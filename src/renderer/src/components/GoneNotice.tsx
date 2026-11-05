@@ -23,6 +23,8 @@ export const NO_COPY_LINE = "Studio has no copy of it on this device.";
  * the person has carried on below it, the way forward is already taken.
  *
  * Until the agent's thread has been read this launch, whether it keeps one is
+ * known only if an earlier launch saved that it does (KYB-668), and then its
+ * own conversation gets the thread's line, not this notice. Otherwise it is
  * not known, and the two kinds of agent need opposite advice: a new
  * conversation there could be Start fresh. So nothing is said about what
  * sending does, and nothing is offered, until it is known.

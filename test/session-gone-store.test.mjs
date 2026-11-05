@@ -70,7 +70,7 @@ window.studio = new Proxy(bridge, {
     return target[key];
   },
 });
-const { useStore, readOnlyReason, AFRESH_FAILED } = await import("@/lib/store");
+const { useStore, readOnlyReason, AFRESH_FAILED, AFRESH_FAILED_SIGN_IN } = await import("@/lib/store");
 
 after(() => window.close());
 
@@ -1930,7 +1930,63 @@ test("KYB-668 AC3: before /thread answers, the thread's own conversation found g
   assert.equal(sends.length, 1);
   assert.equal(sends[0].thread, true, "the message goes to the thread");
   assert.equal(sends[0].sessionId, undefined, "not into the gone conversation");
-  useStore.setState({ threads: {}, keepsThread: {} });
+  // And once `/thread` answers, the line stays, once, and no notice appears.
+  thread = EMPTY_THREAD;
+  try {
+    await useStore.getState().loadThread(ID);
+    await sleep(50);
+    const after = useStore.getState().conversations[ID];
+    assert.ok(!after.some((b) => b.kind === "gone"), "still no gone notice after the read");
+    assert.equal(afreshFor(DEAD).length, 1, "and the line, once");
+  } finally {
+    thread = null;
+    useStore.setState({ threads: {}, keepsThread: {} });
+  }
+});
+
+test("KYB-668 AC3 control: once /thread has said the agent keeps none, a stale transcript put aside does not make it one", async () => {
+  holding(DEAD, {
+    keepsThread: {},
+    threads: { [ID]: null },
+    threadCopy: { [ID]: [{ kind: "text", id: "t1", role: "user", text: "stale", at: 1 }] },
+  });
+  await refuseByWatch(DEAD);
+  assert.equal(lastBlock().kind, "gone", "the gone notice, as for any agent with many conversations");
+  assert.equal(afreshFor(DEAD).length, 0);
+  useStore.setState({ threads: {}, threadCopy: {} });
+});
+
+test("KYB-668 AC1: a sign-in that expired says so", async () => {
+  holding(ALIVE, { threads: { [ID]: LIVE_THREAD } });
+  thread = LIVE_THREAD;
+  freshFails = 440;
+  try {
+    useStore.getState().startConversation(ID);
+    await sleep(50);
+    const notes = useStore.getState().conversations[ID].filter((b) => b.id.startsWith("afresh-failed:"));
+    assert.deepEqual(notes.map((b) => b.label), [AFRESH_FAILED_SIGN_IN]);
+  } finally {
+    freshFails = null;
+    thread = null;
+    useStore.setState({ threads: {} });
+  }
+});
+
+test("KYB-668 AC1: before the thread is read, a 404 while a message is in flight is said, not turned into a new conversation", async () => {
+  holding(ALIVE, { keepsThread: { [ID]: true }, threads: {} });
+  const before = useStore.getState().conversations[ID];
+  thread = null; // `/thread` and `/thread/fresh` answer 404
+  try {
+    useStore.getState().startConversation(ID);
+    // A message goes out while `/thread/fresh` is being asked.
+    useStore.setState((s) => ({ inflight: { ...s.inflight, [ID]: true } }));
+    await sleep(50);
+    const st = useStore.getState();
+    assert.deepEqual(st.conversations[ID].slice(0, before.length), before, "the screen stays");
+    assert.equal(failNotes().length, 1, "and the chat says it did not start afresh");
+  } finally {
+    useStore.setState((s) => ({ inflight: { ...s.inflight, [ID]: false }, threads: {}, keepsThread: {} }));
+  }
 });
 
 test("KYB-668 AC3 control: a drawer pick found gone before /thread answers still says it is gone", async () => {

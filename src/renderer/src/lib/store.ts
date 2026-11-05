@@ -947,8 +947,11 @@ function conversationGone(
   const onScreen = get().sessions[agentId] === sessionId && !get().inflight[agentId];
   if (!first && !onScreen) return;
   // Known to keep one thread from what was saved, before `/thread` answers
-  // this launch, as well as from the thread once read (KYB-668, AC3).
-  const oneThread = keepsOneThread(get(), agentId);
+  // this launch, as well as from the thread once read (KYB-668, AC3). Judged
+  // as `send` judges it: once `/thread` has said the agent keeps none, it
+  // does not, whatever was saved.
+  const view = get().threads[agentId];
+  const oneThread = Boolean(view) || (view === undefined && keepsOneThread(get(), agentId));
   const reading = isDrawerPick(get(), agentId, sessionId);
   const agentName = get().agents.find((a) => a.id === agentId)?.name ?? "The agent";
   set((st) => {
@@ -984,7 +987,9 @@ function conversationGone(
 }
 
 /** What the chat says when Start fresh did not happen (KYB-668, AC1). */
-export const AFRESH_FAILED = "Couldn't start afresh just now. Nothing has changed: try again in a moment.";
+export const AFRESH_FAILED = "Starting afresh didn't work, so nothing has changed. Try again in a moment.";
+/** The same, when the reason is a sign-in that expired and could not be renewed. */
+export const AFRESH_FAILED_SIGN_IN = "Starting afresh didn't work, so nothing has changed: your sign-in expired. Sign out and back in, then try again.";
 
 /**
  * The line a thread gets when its conversation ends on the agent (KYB-662,
@@ -2515,13 +2520,14 @@ export const useStore = create<State>((set, get) => ({
       // Starting afresh that did not happen is said in the chat, where the
       // person pressed for it, and the screen is otherwise left as it was
       // (KYB-668, AC1). Not a thread block: it stays where it was drawn.
-      const failed = (why: string): void => {
+      const failed = (why: string, signIn = false): void => {
         console.log(`[thread] ${agentId}: starting afresh failed: ${why}`);
         const at = Date.now();
+        const label = signIn ? AFRESH_FAILED_SIGN_IN : AFRESH_FAILED;
         set((st) => ({
           conversations: {
             ...st.conversations,
-            [agentId]: [...(st.conversations[agentId] ?? []), { kind: "divider", id: `afresh-failed:${at}`, at, label: AFRESH_FAILED }],
+            [agentId]: [...(st.conversations[agentId] ?? []), { kind: "divider", id: `afresh-failed:${at}`, at, label }],
           },
         }));
         get().persist();
@@ -2538,7 +2544,7 @@ export const useStore = create<State>((set, get) => ({
           if (unread && !res.ok && res.status === 404 && get().threads[agentId] === null && !get().inflight[agentId]) {
             leaveForNewConversation(get, set, agentId);
           } else if (!res.ok) {
-            failed(`${res.status} ${JSON.stringify(res.data)?.slice(0, 200)}`);
+            failed(`${res.status} ${JSON.stringify(res.data)?.slice(0, 200)}`, res.status === 440);
           }
         })
         .catch((error: unknown) => failed(String(error)));
