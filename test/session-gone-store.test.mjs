@@ -35,6 +35,8 @@ let threadDown = null;
 /** Each `POST /thread/fresh`, and whether the agent has a thread to start afresh. */
 const freshes = [];
 let freshOk = false;
+/** While set, `POST /thread/fresh` fails: with this status, or by throwing when "throw". */
+let freshFails = null;
 const bridge = window.studio;
 window.studio = new Proxy(bridge, {
   get: (target, key) => {
@@ -59,6 +61,8 @@ window.studio = new Proxy(bridge, {
         if (input.path === "/thread" && thread) return { ok: true, status: 200, data: thread };
         if (input.path === "/thread/fresh") {
           freshes.push(input);
+          if (freshFails === "throw") throw new Error("network down");
+          if (freshFails) return { ok: false, status: freshFails, data: { error: "boom" } };
           if (freshOk) return { ok: true, status: 200, data: {} };
         }
         return target.manage(input);
@@ -66,7 +70,7 @@ window.studio = new Proxy(bridge, {
     return target[key];
   },
 });
-const { useStore, readOnlyReason } = await import("@/lib/store");
+const { useStore, readOnlyReason, AFRESH_FAILED, AFRESH_FAILED_SIGN_IN } = await import("@/lib/store");
 
 after(() => window.close());
 
@@ -570,7 +574,9 @@ test("KYB-662 AC1: the thread's conversation ending leaves the transcript, one l
 });
 
 test("KYB-662 AC1: a notice put up before the thread was read becomes the thread's line, where it stood", async () => {
-  holding(DEAD, { threads: {} });
+  // Not known to keep a thread, even from what was saved: with the saved flag
+  // the thread's line is drawn straight away (KYB-668 AC3).
+  holding(DEAD, { threads: {}, keepsThread: {} });
   await refuseByWatch(DEAD);
   assert.equal(lastBlock().kind, "gone", "the agent was not yet known to keep a thread");
   thread = EMPTY_THREAD;
@@ -1300,7 +1306,8 @@ test("KYB-662 G1: nor when /thread does not answer either", async () => {
   await sleep(50);
   threadDown = null;
   const st = useStore.getState();
-  assert.deepEqual(st.conversations[ID], before, "the thread's transcript stays");
+  assert.deepEqual(st.conversations[ID].slice(0, before.length), before, "the thread's transcript stays");
+  assert.deepEqual(st.conversations[ID].slice(before.length).map((b) => b.label), [AFRESH_FAILED], "and the chat says starting afresh failed (KYB-668 AC1)");
   assert.equal(st.keepsThread[ID], true);
   thread = null;
   useStore.setState({ threads: {} });
@@ -1819,4 +1826,180 @@ test("KYB-665 AC2: a report that arrives while a pick is on screen is in the thr
     useStore.getState().stopWatching();
     useStore.setState({ threads: {} });
   }
+});
+
+const failNotes = () => (useStore.getState().conversations[ID] ?? []).filter((b) => b.id.startsWith("afresh-failed:") && b.label === AFRESH_FAILED);
+
+for (const failure of [500, "throw"]) {
+  test(`KYB-668 AC1: when starting afresh fails (${failure}), the chat says so once, and nothing else changes`, async () => {
+    holding(ALIVE, { threads: { [ID]: LIVE_THREAD } });
+    thread = LIVE_THREAD;
+    const before = useStore.getState().conversations[ID];
+    freshFails = failure;
+    try {
+      useStore.getState().startConversation(ID);
+      await sleep(50);
+      const st = useStore.getState();
+      assert.deepEqual(st.conversations[ID].slice(0, before.length), before, "what was on screen stays");
+      assert.equal(failNotes().length, 1, "one line says it failed");
+      assert.equal(st.conversations[ID].length, before.length + 1, "and nothing else is added");
+      assert.equal(st.sessions[ID], ALIVE, "still on the same conversation");
+      assert.equal(saved().conversations[ID].filter((b) => b.label === AFRESH_FAILED).length, 1, "and it is saved");
+    } finally {
+      freshFails = null;
+      thread = null;
+      useStore.setState({ threads: {} });
+    }
+  });
+}
+
+test("KYB-668 AC1 control: starting afresh that works says nothing of failing", async () => {
+  holding(ALIVE, { threads: { [ID]: LIVE_THREAD } });
+  thread = LIVE_THREAD;
+  freshOk = true;
+  try {
+    useStore.getState().startConversation(ID);
+    await sleep(50);
+    assert.equal(failNotes().length, 0);
+  } finally {
+    freshOk = false;
+    thread = null;
+    useStore.setState({ threads: {} });
+  }
+});
+
+test("KYB-668 AC1 control: before the thread is read, an agent that turns out to keep none gets a new conversation, not a failure", async () => {
+  holding(ALIVE, { keepsThread: { [ID]: true }, threads: {} });
+  thread = null; // `/thread` and `/thread/fresh` answer 404
+  useStore.getState().startConversation(ID);
+  await sleep(50);
+  assert.deepEqual(useStore.getState().conversations[ID], [], "a new conversation");
+  assert.equal(failNotes().length, 0);
+  useStore.setState({ threads: {}, keepsThread: {} });
+});
+
+test("KYB-668 AC2: before /thread answers, a message on an agent saved as keeping one thread goes to the thread", async () => {
+  holding(ALIVE, { keepsThread: { [ID]: true }, threads: {} });
+  sends.length = 0;
+  useStore.getState().send(ID, "before the read");
+  await sleep(100);
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].thread, true, "to the thread's address");
+  useStore.setState({ threads: {}, keepsThread: {} });
+});
+
+test("KYB-668 AC2 control: nor on an agent not known to keep one", async () => {
+  holding(ALIVE, { keepsThread: {}, threads: {} });
+  sends.length = 0;
+  useStore.getState().send(ID, "before the read");
+  await sleep(100);
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].thread, undefined, "into the conversation on screen");
+  useStore.setState({ threads: {} });
+});
+
+test("KYB-668 AC2: before /thread answers, a message from a drawer pick still goes where it did", async () => {
+  holding(ALIVE, {
+    keepsThread: { [ID]: true },
+    threads: {},
+    sessionChoice: { [ID]: { sessionId: ALIVE, at: 1, fromDrawer: true } },
+    threadCopy: { [ID]: [{ kind: "text", id: "t1", role: "user", text: "the thread", at: 1 }] },
+  });
+  sends.length = 0;
+  useStore.getState().send(ID, "from the pick");
+  await sleep(100);
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].thread, undefined, "not to the thread's address");
+  assert.equal(sends[0].sessionId, ALIVE);
+  useStore.setState({ threads: {}, keepsThread: {}, threadCopy: {} });
+});
+
+test("KYB-668 AC3: before /thread answers, the thread's own conversation found gone draws the started afresh line, and the next message goes to the thread", async () => {
+  holding(DEAD, { keepsThread: { [ID]: true }, threads: {} });
+  const before = useStore.getState().conversations[ID];
+  await refuseByWatch(DEAD);
+  const st = useStore.getState();
+  assert.ok(!st.conversations[ID].some((b) => b.kind === "gone"), "no gone notice");
+  assert.equal(afreshFor(DEAD).length, 1, "the started afresh line");
+  assert.deepEqual(st.conversations[ID].slice(0, before.length), before, "under the transcript");
+  assert.equal(st.sessions[ID], undefined, "the dead id is let go of");
+  assert.equal(st.sessionChoice[ID], undefined, "on the thread, not a new conversation");
+  sends.length = 0;
+  useStore.getState().send(ID, "after the reset");
+  await sleep(100);
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].thread, true, "the message goes to the thread");
+  assert.equal(sends[0].sessionId, undefined, "not into the gone conversation");
+  // And once `/thread` answers, the line stays, once, and no notice appears.
+  thread = EMPTY_THREAD;
+  try {
+    await useStore.getState().loadThread(ID);
+    await sleep(50);
+    const after = useStore.getState().conversations[ID];
+    assert.ok(!after.some((b) => b.kind === "gone"), "still no gone notice after the read");
+    assert.equal(afreshFor(DEAD).length, 1, "and the line, once");
+  } finally {
+    thread = null;
+    useStore.setState({ threads: {}, keepsThread: {} });
+  }
+});
+
+test("KYB-668 AC3 control: once /thread has said the agent keeps none, a stale transcript put aside does not make it one", async () => {
+  holding(DEAD, {
+    keepsThread: {},
+    threads: { [ID]: null },
+    threadCopy: { [ID]: [{ kind: "text", id: "t1", role: "user", text: "stale", at: 1 }] },
+  });
+  await refuseByWatch(DEAD);
+  assert.equal(lastBlock().kind, "gone", "the gone notice, as for any agent with many conversations");
+  assert.equal(afreshFor(DEAD).length, 0);
+  useStore.setState({ threads: {}, threadCopy: {} });
+});
+
+test("KYB-668 AC1: a sign-in that expired says so", async () => {
+  holding(ALIVE, { threads: { [ID]: LIVE_THREAD } });
+  thread = LIVE_THREAD;
+  freshFails = 440;
+  try {
+    useStore.getState().startConversation(ID);
+    await sleep(50);
+    const notes = useStore.getState().conversations[ID].filter((b) => b.id.startsWith("afresh-failed:"));
+    assert.deepEqual(notes.map((b) => b.label), [AFRESH_FAILED_SIGN_IN]);
+  } finally {
+    freshFails = null;
+    thread = null;
+    useStore.setState({ threads: {} });
+  }
+});
+
+test("KYB-668 AC1: before the thread is read, a 404 while a message is in flight is said, not turned into a new conversation", async () => {
+  holding(ALIVE, { keepsThread: { [ID]: true }, threads: {} });
+  const before = useStore.getState().conversations[ID];
+  thread = null; // `/thread` and `/thread/fresh` answer 404
+  try {
+    useStore.getState().startConversation(ID);
+    // A message goes out while `/thread/fresh` is being asked.
+    useStore.setState((s) => ({ inflight: { ...s.inflight, [ID]: true } }));
+    await sleep(50);
+    const st = useStore.getState();
+    assert.deepEqual(st.conversations[ID].slice(0, before.length), before, "the screen stays");
+    assert.equal(failNotes().length, 1, "and the chat says it did not start afresh");
+  } finally {
+    useStore.setState((s) => ({ inflight: { ...s.inflight, [ID]: false }, threads: {}, keepsThread: {} }));
+  }
+});
+
+test("KYB-668 AC3 control: a drawer pick found gone before /thread answers still says it is gone", async () => {
+  holding(DEAD, {
+    keepsThread: { [ID]: true },
+    threads: {},
+    sessionChoice: { [ID]: { sessionId: DEAD, at: 1, fromDrawer: true } },
+    threadCopy: { [ID]: [{ kind: "text", id: "t1", role: "user", text: "the thread", at: 1 }] },
+  });
+  await refuseByWatch(DEAD);
+  const st = useStore.getState();
+  assert.equal(lastBlock().kind, "gone");
+  assert.equal(afreshFor(DEAD).length, 0);
+  assert.equal(st.sessions[ID], DEAD, "still on the pick");
+  useStore.setState({ threads: {}, keepsThread: {}, threadCopy: {} });
 });
