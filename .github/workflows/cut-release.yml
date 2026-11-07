@@ -1,0 +1,85 @@
+name: cut-release
+
+# Starts a release without a Mac. It tags main as v<package.json version> and
+# dispatches release.yml on that tag, which builds, signs, notarizes and
+# publishes exactly as a tag pushed from a Mac would.
+#
+# The version bump still lands as an ordinary merged PR (`npm version patch
+# --no-git-tag-version`), so CI has passed on the exact commit being tagged.
+# The `version` input must match package.json on main: a stale tap cannot
+# ship something other than what was asked for.
+#
+# The release discipline is unchanged: run this only after Ian has tested the
+# build on the dev app and said to release.
+#
+# A tag pushed with GITHUB_TOKEN does not fire release.yml's push trigger,
+# which is why this dispatches it instead (workflow_dispatch is the exception
+# GITHUB_TOKEN may start). release.yml publishes every lane for a tag dispatch
+# that carries no `ref` input.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, as in package.json on main (for example 0.5.23)"
+        required: true
+
+permissions:
+  contents: write # push the tag
+  actions: write # dispatch release.yml
+
+concurrency:
+  group: cut-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check the version
+        env:
+          WANT: ${{ inputs.version }}
+        run: |
+          HAVE=$(node -p 'require("./package.json").version')
+          if [ "$HAVE" != "$WANT" ]; then
+            echo "::error::package.json on main is $HAVE, not $WANT. Merge the version bump first."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$HAVE" >/dev/null; then
+            echo "::error::v$HAVE is already tagged."
+            exit 1
+          fi
+          echo "TAG=v$HAVE" >> "$GITHUB_ENV"
+
+      - name: What rides along
+        run: |
+          PREV=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          {
+            echo "### $TAG"
+            echo
+            echo "Merged to main since ${PREV:-the first tag} (other agents' PRs ride along too):"
+            echo
+            echo '```'
+            git log --first-parent --oneline ${PREV:+$PREV..}HEAD
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Tag main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "release: $TAG"
+          git push origin "refs/tags/$TAG"
+
+      - name: Start the release build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release.yml --ref "$TAG" -R "$GITHUB_REPOSITORY"
+          echo "Started release.yml on $TAG: https://github.com/$GITHUB_REPOSITORY/actions/workflows/release.yml" >> "$GITHUB_STEP_SUMMARY"
