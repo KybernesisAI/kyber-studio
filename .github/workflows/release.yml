@@ -17,7 +17,8 @@ name: release
 # publish-linux, at the bottom of this file — see its comment for why it is a
 # job of its own and not one more step.
 #
-# Trigger: push a tag `vX.Y.Z` matching package.json "version".
+# Trigger: push a tag `vX.Y.Z` matching package.json "version", or run
+# cut-release.yml, which tags main and dispatches this workflow on that tag.
 #
 # Same shape as eve-studio's release workflow, deliberately: two desktop apps
 # with two different release procedures is one procedure nobody remembers.
@@ -567,7 +568,13 @@ jobs:
     # vX.Y.Z's release assets with artefacts that are not that tag's code.
     # Restricting to `push` means the ref that triggered the run is the ref that
     # was built.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    #
+    # The one dispatch that is safe is a dispatch against a tag with NO `ref`
+    # input: both lanes then check out github.ref, the tag itself, so the ref
+    # that was built is still the ref being published. cut-release.yml starts
+    # exactly that run, because a tag pushed with GITHUB_TOKEN does not fire
+    # the push trigger.
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event.inputs.ref == '')
 
     steps:
       # v8, not v6. v6 runs on node20 and treats a digest mismatch as a log
@@ -705,8 +712,9 @@ jobs:
     # workflow's separate `ref` input is what the lanes actually check out. So
     # without the event check a dispatch against tag vX.Y.Z carrying
     # `ref: some-branch` would build branch bytes, assert them, and then clobber
-    # that tag's assets with code the tag never contained.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # that tag's assets with code the tag never contained. A tag dispatch with
+    # no `ref` input builds the tag itself and is allowed (cut-release.yml).
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event.inputs.ref == '')
 
     steps:
       # v8, for the reason publish-linux pins it: v6 runs on node20 and treats a
