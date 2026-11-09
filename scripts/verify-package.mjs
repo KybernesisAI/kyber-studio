@@ -103,7 +103,7 @@ const LAYOUTS = [
     defaultPath: "dist/linux-unpacked",
     asar: "resources/app.asar",
     binary: "kyber-studio",
-    // As above, and more of them: `build.linux.files` excludes seven paths,
+    // As above, and more of them: `build.linux.files` excludes eight paths,
     // two of which use a wildcard directory name (`sharp-linuxmusl-*`) that
     // the two rule kinds here cannot express. Unmodelled, and reported as
     // unmodelled.

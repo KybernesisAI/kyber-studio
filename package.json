@@ -166,6 +166,7 @@
         "!**/node_modules/onnxruntime-node/bin/napi-v6/linux/arm64/**",
         "!**/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime_providers_cuda.so",
         "!**/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime_providers_tensorrt.so",
+        "!**/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime_providers_shared.so",
         "!**/node_modules/@img/sharp-linuxmusl-*/**",
         "!**/node_modules/@img/sharp-libvips-linuxmusl-*/**"
       ]
