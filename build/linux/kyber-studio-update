@@ -1,0 +1,69 @@
+#!/bin/sh
+# Installs a downloaded KYBER Studio update, as root, for the in-app updater
+# (KYB-670). Shipped in the .deb at /usr/lib/kyber-studio/kyber-studio-update.
+#
+# Studio runs this as `pkexec /usr/lib/kyber-studio/kyber-studio-update <deb>`.
+# The polkit action ai.kybernesis.kyberstudio.update names this exact path in
+# its org.freedesktop.policykit.exec.path annotation, so the password dialog
+# shows that action's message ("KYBER Studio wants to install an update")
+# instead of a raw command line. The action requires an administrator's
+# password every time (auth_admin, not auth_admin_keep).
+#
+# It installs one thing: a kyber-studio package. Anything else is refused.
+#
+# Whether the update worked is NOT decided here. Studio reads the installed
+# version back from dpkg afterwards and trusts only that, so this script's exit
+# status is for the log. It deliberately never exits 126 or 127, which Studio
+# reads as pkexec's own "dismissed" and "not authorised".
+
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+# No terminal: nothing may stop to ask a question, because Studio's main
+# process waits on this script.
+DEBIAN_FRONTEND=noninteractive
+export PATH DEBIAN_FRONTEND
+
+PACKAGE=kyber-studio
+
+refuse() {
+    echo "kyber-studio-update: $1" >&2
+    exit 2
+}
+
+[ "$#" -eq 1 ] || refuse "expected exactly one argument, the path to a .deb"
+SOURCE=$1
+case "$SOURCE" in
+    /*) ;;
+    *) refuse "the path must be absolute" ;;
+esac
+[ -f "$SOURCE" ] && [ ! -L "$SOURCE" ] || refuse "not a regular file: $SOURCE"
+
+# Work on a root-owned copy, so the file checked below is the file installed:
+# the download sits in the person's own cache directory, where it can change.
+WORK=$(mktemp -d) || refuse "could not create a working directory"
+trap 'rm -rf "$WORK"' EXIT
+cp -- "$SOURCE" "$WORK/update.deb" || refuse "could not copy $SOURCE"
+DEB="$WORK/update.deb"
+
+NAME=$(dpkg-deb -f "$DEB" Package 2>/dev/null) || refuse "not a readable .deb: $SOURCE"
+[ "$NAME" = "$PACKAGE" ] || refuse "refusing to install package '$NAME'; only $PACKAGE is installed by this helper"
+
+STATUS=0
+dpkg -i "$DEB" || STATUS=$?
+[ "$STATUS" -ne 0 ] || exit 0
+
+# The one fallback: dpkg unpacked the new version but could not configure it,
+# normally because it gained a dependency this machine lacks. Only then, and
+# with --no-remove, so apt may add what is missing but never removes anything,
+# Studio included. A refused or failed dpkg that left the old version in place
+# is not retried.
+STATE=$(dpkg-query -W -f='${db:Status-Abbrev}' "$PACKAGE" 2>/dev/null || true)
+case "$STATE" in
+    iU*|iF*)
+        echo "kyber-studio-update: dpkg left $PACKAGE unconfigured ($STATE); completing its dependencies with apt-get" >&2
+        # Not exec: the EXIT trap still has to remove the root-owned copy.
+        STATUS=0
+        apt-get install -f -y --no-remove || STATUS=$?
+        ;;
+esac
+exit "$STATUS"

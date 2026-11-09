@@ -89,6 +89,22 @@ fi
 # occur, so it is a deliberate trade rather than an oversight.
 chmod 0755 "$APP_DIR/chrome-sandbox" || true
 
+# ── in-app update helper and its polkit policy: modes stated (KYB-670) ─────
+#
+# fpm copies each file's mode from the checkout that built the package, so a
+# builder whose umask is 002 ships both group-writable (measured: source 775
+# and 664 became rwxrwxr-x and rw-rw-r-- in the .deb, and on an installed
+# system). The helper runs as root through pkexec and the policy decides who
+# may run it, so neither may depend on who built the package. Same pattern as
+# chrome-sandbox above: stated here, not inherited.
+#
+# `|| true` because a failed chmod must not leave dpkg half-configured. The
+# files are in this package, so in practice a chmod fails only if one was
+# deleted by hand; a missing helper is already handled, since Studio checks
+# for it before running pkexec and reports the update as not installed.
+chmod 0755 /usr/lib/kyber-studio/kyber-studio-update || true
+chmod 0644 /usr/share/polkit-1/actions/ai.kybernesis.kyberstudio.update.policy || true
+
 # ── AppArmor profile ───────────────────────────────────────────────────────
 #
 # Stock Ubuntu 24.04+/26.04 sets kernel.apparmor_restrict_unprivileged_userns=1,

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  KYB-670. Lets KYBER Studio's in-app updater ask for permission in its own
+  name. Studio runs `pkexec /usr/lib/kyber-studio/kyber-studio-update <deb>`;
+  pkexec matches that program against the exec.path annotation below and shows
+  this action's message, instead of polkit's generic "run a program as another
+  user" text quoting the command.
+
+  auth_admin, not auth_admin_keep: every update asks, and an authorisation is
+  never left lying around for another process to reuse. The same for every
+  kind of session, as polkit's own org.freedesktop.policykit.exec does, so a
+  remote or switched-away session is asked for the password exactly as it
+  was before this action existed.
+-->
+<policyconfig>
+  <vendor>Kybernesis</vendor>
+  <vendor_url>https://kybernesis.ai</vendor_url>
+  <action id="ai.kybernesis.kyberstudio.update">
+    <description>Install a KYBER Studio update</description>
+    <message>KYBER Studio wants to install an update. Enter your password to allow it.</message>
+    <icon_name>kyber-studio</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/kyber-studio/kyber-studio-update</annotate>
+  </action>
+</policyconfig>
