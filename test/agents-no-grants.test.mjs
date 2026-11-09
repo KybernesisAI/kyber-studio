@@ -26,3 +26,22 @@ test("an account with no agents still sees the no-grants sentence, and it is not
   await sleep(50);
   assert.equal(bridge.calls.filter((c) => c === "listAgents").length, calls, "an empty, loaded list was fetched again");
 });
+
+test("a failed Refresh agents on a loaded empty list retries, so its 'Retrying…' is true, and the no-grants sentence returns", async () => {
+  // Review finding, KYB-669 round 1: the sentence promised a retry that only
+  // ran for a list that had never loaded.
+  bridge.live.fail = ["listAgents"];
+  await useStore.getState().refreshAgents();
+  assert.match(useStore.getState().authError, /^Couldn't reach Kybernesis.*Retrying…$/);
+
+  bridge.live.fail = [];
+  const before = bridge.calls.filter((c) => c === "listAgents").length;
+  window.dispatchEvent(new window.Event("focus"));
+  await sleep(50);
+  assert.equal(bridge.calls.filter((c) => c === "listAgents").length, before + 1, "nothing retried");
+  assert.match(useStore.getState().authError, /^No agents are granted to your account yet\./);
+
+  window.dispatchEvent(new window.Event("focus"));
+  await sleep(50);
+  assert.equal(bridge.calls.filter((c) => c === "listAgents").length, before + 1, "retried after a successful load");
+});

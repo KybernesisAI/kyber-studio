@@ -84,7 +84,11 @@ function startCrossDeviceRefresh(get: () => State): void {
     window.addEventListener("focus", refresh);
     // The network coming back is the moment a list that failed to load can
     // succeed (KYB-669); the 30 s tick below would get there too, just later.
-    window.addEventListener("online", refresh);
+    // Gated like the tick: a window nobody is looking at stays stale until
+    // it is looked at, when visibility or focus runs the same refresh.
+    window.addEventListener("online", () => {
+      if (document.visibilityState === "visible") refresh();
+    });
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") refresh();
     });
@@ -136,10 +140,11 @@ let signInGeneration = 0;
  */
 let agentsGeneration = 0;
 /**
- * Which sign-in's agent-list load last FAILED (KYB-669). The cross-device
- * refresh asks again only for this: a list that is still on its way from
- * `signedIn` is not retried, so a focus during sign-in does not start a second
- * request, and the sync still skips as KYB-643 requires. -1 is no sign-in.
+ * The sign-in whose most recent agent-list load FAILED (KYB-669), or -1 when
+ * the most recent load succeeded. The cross-device refresh asks again only for
+ * this: a list still on its way from `signedIn` has not failed, so a focus
+ * during sign-in does not start a second request and the sync still skips as
+ * KYB-643 requires.
  */
 let agentsFailedGeneration = -1;
 let settleDirectory: () => void = () => {};
@@ -2179,12 +2184,14 @@ export const useStore = create<State>((set, get) => ({
   refreshFromOthers: async () => {
     if (!window.studio) return;
     ensureListeners(get, set);
-    // KYB-669: a list that FAILED to load for this sign-in (Studio opened
-    // offline) is asked for again here, on the same focus, visibility, online
-    // and 30 s ticks, so it comes back on its own once the network does.
-    // Without this, `syncSessions` below returned early on every tick, for
-    // ever. One still loading is left to finish.
-    if (agentsFailedGeneration === signInGeneration && agentsGeneration !== signInGeneration) await retryAgents(get);
+    // KYB-669: when the last agent-list load for this sign-in FAILED (Studio
+    // opened offline, or a Refresh agents that could not reach the network),
+    // it is asked for again here, on the same focus, visibility, online and
+    // 30 s ticks, so it comes back on its own once the network does and the
+    // "Retrying…" the sidebar shows is true. Without this, `syncSessions`
+    // below returned early on every tick, for ever. A load still in flight
+    // from `signedIn` has not failed, and is left to finish.
+    if (agentsFailedGeneration === signInGeneration) await retryAgents(get);
     await get().refreshRooms();
     await get().syncSessions();
     const active = get().activeAgentId;
@@ -3497,7 +3504,10 @@ export const useStore = create<State>((set, get) => ({
     // sign-in is still current when it lands.
     const generation = signInGeneration;
     const loadedFor = (): void => {
-      if (generation === signInGeneration) agentsGeneration = generation;
+      if (generation !== signInGeneration) return;
+      agentsGeneration = generation;
+      // KYB-669: the last load for this sign-in succeeded, so nothing retries.
+      agentsFailedGeneration = -1;
     };
     try {
       const remote = await window.studio.listAgents();
@@ -3613,7 +3623,7 @@ export const useStore = create<State>((set, get) => ({
     } catch (e) {
       // KYB-669: in words, not Electron's IPC wrapping of the exception. The
       // raw message goes to the log. Nothing here retries: the cross-device
-      // refresh does, while the list has not loaded for this sign-in.
+      // refresh does, until a load for this sign-in succeeds.
       console.warn("[agents] could not load the agent list:", e instanceof Error ? e.message : String(e));
       // A failure that lands after its sign-in ended says nothing about the
       // next one, and must not put "Retrying…" on the sign-in screen.
