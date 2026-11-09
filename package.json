@@ -172,7 +172,11 @@
     },
     "deb": {
       "afterInstall": "build/linux/deb-postinst.sh",
-      "afterRemove": "build/linux/deb-postrm.sh"
+      "afterRemove": "build/linux/deb-postrm.sh",
+      "fpm": [
+        "build/linux/kyber-studio-update=/usr/lib/kyber-studio/kyber-studio-update",
+        "build/linux/ai.kybernesis.kyberstudio.update.policy=/usr/share/polkit-1/actions/ai.kybernesis.kyberstudio.update.policy"
+      ]
     },
     "publish": {
       "provider": "github",

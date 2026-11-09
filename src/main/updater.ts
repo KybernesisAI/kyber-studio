@@ -5,8 +5,11 @@ import { app, ipcMain, type BrowserWindow } from "electron";
 // bundled — and throws on launch once packaged, where it stays external. Eve
 // Studio does not hit this only because its main process is CommonJS.
 import electronUpdater from "electron-updater";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { installDebUpdate, notInstalledMessage, type RunResult } from "./debInstall";
 
-const { autoUpdater } = electronUpdater;
+const { autoUpdater, DebUpdater } = electronUpdater;
 
 /**
  * In-app updates, the same shape Eve Studio uses.
@@ -37,6 +40,8 @@ export function registerUpdater(window: () => BrowserWindow | null): void {
   getWindow = window;
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
+
+  replaceDebInstall();
 
   ipcMain.handle("studio:updaterState", () => state);
 
@@ -95,4 +100,88 @@ export function registerUpdater(window: () => BrowserWindow | null): void {
       6 * 60 * 60 * 1000,
     );
   }
+}
+
+/**
+ * The pieces of electron-updater 6.8.9's `DebUpdater` that the replacement
+ * install step reaches. All are `protected` in its typings, which is why this
+ * is a structural cast rather than a subclass: `autoUpdater` is constructed by
+ * electron-updater itself, which also decides (from `resources/package-type`)
+ * that this is a `.deb` install. Re-implementing that detection to construct a
+ * subclass would be a second copy of it that could drift.
+ */
+interface DebInternals {
+  doInstall(options: { isSilent: boolean; isForceRunAfter: boolean }): boolean;
+  downloadedUpdateHelper: { file: string | null } | null;
+  autoInstallOnAppQuit: boolean;
+  app: { relaunch(): void };
+  _logger: { info(message: string): void; warn(message: string): void; error(message: string): void };
+}
+
+/**
+ * KYB-670: on a `.deb` install, replace electron-updater's install step with
+ * `installDebUpdate` (see `debInstall.ts` for why). Does nothing for the
+ * AppImage, macOS or Windows, whose updaters are not `DebUpdater`.
+ *
+ * Two behaviours belong here rather than in `debInstall.ts`, because they are
+ * about the updater's state, not about installing:
+ *
+ * - **Not installed means not installed.** Returning `false` makes
+ *   `quitAndInstall` stay open instead of quitting, and the row says the update
+ *   was not installed. No `error` event is dispatched: the `error` handler below
+ *   turns every error into `idle`, which hides the row (KYB-606), and that
+ *   would overwrite the message.
+ * - **A failed install stops install-on-quit for the rest of the session.**
+ *   electron-updater re-arms it after a failed install (`BaseUpdater.js:25`), so
+ *   quitting after a cancel asked again, twice, with no window on screen. The
+ *   quit handler checks `autoInstallOnAppQuit` at quit time, so clearing it is
+ *   enough. The row's **Retry** checks again, and the next **Restart to
+ *   update** installs as normal. *Reasoned, not tried:* the download is reused,
+ *   because electron-updater keeps a verified download in its cache.
+ */
+function replaceDebInstall(): void {
+  if (!(autoUpdater instanceof DebUpdater)) return;
+  const updater = autoUpdater as unknown as DebInternals;
+
+  const run = (command: string, args: string[]): RunResult => {
+    // No shell: the path to the download contains the person's home directory,
+    // and is passed as a single argument, unquoted and unescaped.
+    const r = spawnSync(command, args, { encoding: "utf-8" });
+    return {
+      status: r.status,
+      stdout: r.stdout ?? "",
+      stderr: r.stderr ?? "",
+      error: r.error ? { code: (r.error as NodeJS.ErrnoException).code, message: r.error.message } : undefined,
+    };
+  };
+
+  updater.doInstall = (options) => {
+    const debPath = updater.downloadedUpdateHelper?.file ?? null;
+    if (!debPath) {
+      updater._logger.error("[updater] no downloaded .deb to install");
+      push({ status: "error", error: "The update was not installed: the download is missing." });
+      return false;
+    }
+    updater._logger.info(`[updater] installing ${debPath}`);
+    const result = installDebUpdate({
+      debPath,
+      isRoot: process.getuid?.() === 0,
+      run,
+      exists: existsSync,
+    });
+
+    if (result.installed) {
+      updater._logger.info(`[updater] installed ${result.version}`);
+      if (options.isForceRunAfter) updater.app.relaunch();
+      return true;
+    }
+
+    updater._logger.warn(
+      `[updater] not installed (${result.reason}): expected ${result.expected ?? "?"}, ` +
+        `dpkg reports ${result.found ?? "nothing"}; ${result.detail}`,
+    );
+    updater.autoInstallOnAppQuit = false;
+    push({ status: "error", error: notInstalledMessage(result) });
+    return false;
+  };
 }
