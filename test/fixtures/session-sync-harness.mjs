@@ -49,12 +49,15 @@ export const OLD_THREAD = {
 
 /**
  * Install a bridge. `delays` (ms) per method; `hang` methods never answer;
- * `fail` methods reject; `rows` is what the directory holds; `agents` what the
+ * `fail` methods reject (with `live.failWith[name]` as the message, when set,
+ * so a test can hand the store the exact string Electron's IPC produces);
+ * `rows` is what the directory holds; `agents` what the
  * control plane grants; `stored` whether a session is already on disk
- * (bootstrap) or a sign-in is needed.
+ * (bootstrap) or a sign-in is needed, read on every call as `live.stored`.
  *
- * `delays`, `rows` and `agents` are read on every call, so a test can change
- * them between sign-ins: `bridge.live.agents = [...]` is another account.
+ * `delays`, `rows`, `agents` and `fail` are read on every call, so a test can
+ * change them between sign-ins: `bridge.live.agents = [...]` is another
+ * account, and `bridge.live.fail = []` is the network coming back.
  *
  * `agentSessions`, when given, is what the agent's own `/sessions` lists, and
  * turns on `agentInfo` so `loadAgentInfo` runs (KYB-649); without it the agent
@@ -75,16 +78,18 @@ export function installBridge({
   const calls = [];
   const sends = [];
   const resets = [];
-  const live = { rows, agents, agentSessions, state, saved: {}, emit: {} };
+  const live = { rows, agents, agentSessions, state, saved: {}, emit: {}, fail, failWith: {}, stored, delays };
   const after = async (name) => {
     calls.push(name);
     // `hang`: never answers, like a control plane that has stopped responding.
     if (hang.includes(name)) await new Promise(() => {});
-    if (delays[name]) await sleep(delays[name]);
-    if (fail.includes(name)) throw new Error(`${name} failed (test)`);
+    if (live.delays[name]) await sleep(live.delays[name]);
+    if (live.fail.includes(name)) throw new Error(live.failWith[name] ?? `${name} failed (test)`);
   };
   const known = {
-    session: async () => (stored ? { email: "p@example.com", orgName: "o" } : null),
+    // `live.stored = false` is the main process dropping the session (a refresh
+    // answered 401 or 403) while the renderer still thinks it is signed in.
+    session: async () => (live.stored ? { email: "p@example.com", orgName: "o" } : null),
     signIn: async () => ({ userCode: "CODE", verificationUri: "https://example/verify" }),
     awaitSignIn: async () => ({ email: "p@example.com", orgName: "o" }),
     loadState: async (name) => (name === "conversations.json" ? live.state : null),

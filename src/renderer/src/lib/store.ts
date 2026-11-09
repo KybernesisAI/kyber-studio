@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { PendingAttachment } from "./attachments";
 import type { AgentSummary } from "@shared/ipc";
 import { summarize } from "./agentInfo";
+import { agentsLoadError, isNotSignedIn } from "./agentsLoadError";
 import type { Agent, Block, PeerEvent, Room } from "@shared/types";
 import { isReplayGone } from "@shared/sessionGone";
 import { ROOM_PREFIX, isRoomId } from "@shared/types";
@@ -81,6 +82,9 @@ function startCrossDeviceRefresh(get: () => State): void {
   if (!crossDeviceReady) {
     crossDeviceReady = true;
     window.addEventListener("focus", refresh);
+    // The network coming back is the moment a list that failed to load can
+    // succeed (KYB-669); the 30 s tick below would get there too, just later.
+    window.addEventListener("online", refresh);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") refresh();
     });
@@ -90,6 +94,19 @@ function startCrossDeviceRefresh(get: () => State): void {
   }
 
   refresh();
+}
+
+/**
+ * One agent-list retry at a time (KYB-669). Focus, visibility, `online` and the
+ * tick can all fire within the same moment, and each would otherwise start its
+ * own `listAgents`, and on success its own profile carry-up and liveness pass.
+ */
+let agentsRetry: Promise<void> | null = null;
+function retryAgents(get: () => State): Promise<void> {
+  agentsRetry ??= get().refreshAgents().finally(() => {
+    agentsRetry = null;
+  });
+  return agentsRetry;
 }
 
 /**
@@ -118,6 +135,13 @@ let signInGeneration = 0;
  * the previous account's list matches nothing and would settle the new gate.
  */
 let agentsGeneration = 0;
+/**
+ * Which sign-in's agent-list load last FAILED (KYB-669). The cross-device
+ * refresh asks again only for this: a list that is still on its way from
+ * `signedIn` is not retried, so a focus during sign-in does not start a second
+ * request, and the sync still skips as KYB-643 requires. -1 is no sign-in.
+ */
+let agentsFailedGeneration = -1;
 let settleDirectory: () => void = () => {};
 let directoryReady: Promise<void> = Promise.resolve();
 
@@ -2155,6 +2179,12 @@ export const useStore = create<State>((set, get) => ({
   refreshFromOthers: async () => {
     if (!window.studio) return;
     ensureListeners(get, set);
+    // KYB-669: a list that FAILED to load for this sign-in (Studio opened
+    // offline) is asked for again here, on the same focus, visibility, online
+    // and 30 s ticks, so it comes back on its own once the network does.
+    // Without this, `syncSessions` below returned early on every tick, for
+    // ever. One still loading is left to finish.
+    if (agentsFailedGeneration === signInGeneration && agentsGeneration !== signInGeneration) await retryAgents(get);
     await get().refreshRooms();
     await get().syncSessions();
     const active = get().activeAgentId;
@@ -3487,6 +3517,9 @@ export const useStore = create<State>((set, get) => ({
       const palette = ["#2ec4a6", "#f0883e", "#7c6cf0", "#4f9cf0", "#e0609a"];
       const existing = new Map(get().agents.map((a) => [a.id, a]));
       set({
+        // A list that loaded after a failure (KYB-669) must not leave the
+        // failure's sentence behind for the next empty state to show.
+        authError: null,
         agents: remote.map((r, i) => {
           const prior = existing.get(r.id);
           const chosen = get().prefs[r.id] ?? {};
@@ -3578,7 +3611,20 @@ export const useStore = create<State>((set, get) => ({
       // must not hold up the whole sidebar behind its timeout.
       void get().refreshLiveness();
     } catch (e) {
-      set({ authError: e instanceof Error ? e.message : String(e) });
+      // KYB-669: in words, not Electron's IPC wrapping of the exception. The
+      // raw message goes to the log. Nothing here retries: the cross-device
+      // refresh does, while the list has not loaded for this sign-in.
+      console.warn("[agents] could not load the agent list:", e instanceof Error ? e.message : String(e));
+      // A failure that lands after its sign-in ended says nothing about the
+      // next one, and must not put "Retrying…" on the sign-in screen.
+      if (generation !== signInGeneration) return;
+      agentsFailedGeneration = generation;
+      // "Not signed in." is usually an expired token whose refresh could not
+      // reach the network. Only a session the main process has dropped is a
+      // sign-in that has really ended (see agentsLoadError).
+      const sessionStored = isNotSignedIn(e) ? Boolean(await window.studio.session().catch(() => null)) : true;
+      if (generation !== signInGeneration) return;
+      set({ authError: agentsLoadError(e, { sessionStored }) });
     }
   },
 
@@ -3714,6 +3760,8 @@ export const useStore = create<State>((set, get) => ({
     signInGeneration += 1;
     settleDirectory();
     await window.studio?.signOut();
-    set({ authState: "signed-out", account: null, sessions: {}, streamIndexes: {}, directoryLoading: false });
+    // `authError` is also what the sign-in screen shows. A sentence about this
+    // sign-in's agent list ("Retrying…") is not true of the next one.
+    set({ authState: "signed-out", account: null, sessions: {}, streamIndexes: {}, directoryLoading: false, authError: null });
   },
 }));
