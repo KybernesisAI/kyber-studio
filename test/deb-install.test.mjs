@@ -6,8 +6,10 @@ import {
   DPKG_DEB,
   DPKG_QUERY,
   PKEXEC,
+  SYSTEM_PATH,
   installDebUpdate,
   notInstalledMessage,
+  systemRun,
 } from "../src/main/debInstall.ts";
 
 /**
@@ -41,16 +43,22 @@ function system({
   const run = (command, args) => {
     calls.push([command, ...args]);
     if (command === DPKG_DEB) {
+      // Pinned as literals, like the dpkg-query format below: comparing with
+      // the imported constants would follow any change to them and never fail.
+      assert.equal(command, "/usr/bin/dpkg-deb");
+      assert.deepEqual(args, ["-f", DEB, "Package", "Version"]);
       return { status: 0, stdout: `Package: ${pkgName}\nVersion: ${version}\n`, stderr: "" };
     }
     if (command === DPKG_QUERY) {
       // Pinned, so a change to the format the parser depends on goes red here
       // rather than reading every install as "not installed" on a real system.
+      assert.equal(command, "/usr/bin/dpkg-query");
       assert.deepEqual(args, ["-W", "-f=${Version}\\t${db:Status-Abbrev}", "kyber-studio"]);
       if (!current) return { status: 1, stdout: "", stderr: "no packages found" };
       return { status: 0, stdout: `${current.version}\t${current.abbrev}`, stderr: "" };
     }
     if (command === PKEXEC || command === DEB_UPDATE_HELPER) {
+      if (command === PKEXEC) assert.equal(command, "/usr/bin/pkexec");
       const r = install(command, args);
       if (r.after !== undefined) current = r.after;
       return { status: r.status ?? null, stdout: "", stderr: r.stderr ?? "", error: r.error };
@@ -143,3 +151,24 @@ test("the row's message says the update was not installed, and why when known", 
   const failed = system({ install: () => ({ status: 0 }) });
   assert.equal(notInstalledMessage(go(failed)), "The update to v0.5.23 was not installed.");
 });
+
+test(
+  "the commands run with a fixed PATH, not the one Studio inherited",
+  { skip: process.platform === "win32" ? "no /usr/bin/env on Windows" : false },
+  () => {
+    // dpkg-deb runs `tar` through PATH, and its output is the version the
+    // install is judged against, so a planted `tar` early on an inherited PATH
+    // could make a cancelled install read as installed.
+    assert.equal(SYSTEM_PATH, "/usr/sbin:/usr/bin:/sbin:/bin");
+    const saved = process.env.PATH;
+    process.env.PATH = `/tmp/planted-bin:${saved}`;
+    try {
+      const r = systemRun("/usr/bin/env", []);
+      assert.equal(r.status, 0, r.stderr);
+      const path = r.stdout.split("\n").find((line) => line.startsWith("PATH="));
+      assert.equal(path, "PATH=/usr/sbin:/usr/bin:/sbin:/bin");
+    } finally {
+      process.env.PATH = saved;
+    }
+  },
+);

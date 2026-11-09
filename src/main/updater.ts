@@ -5,9 +5,8 @@ import { app, ipcMain, type BrowserWindow } from "electron";
 // bundled — and throws on launch once packaged, where it stays external. Eve
 // Studio does not hit this only because its main process is CommonJS.
 import electronUpdater from "electron-updater";
-import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { installDebUpdate, notInstalledMessage, type RunResult } from "./debInstall";
+import { installDebUpdate, notInstalledMessage, systemRun } from "./debInstall";
 
 const { autoUpdater, DebUpdater } = electronUpdater;
 
@@ -143,18 +142,6 @@ function replaceDebInstall(): void {
   if (!(autoUpdater instanceof DebUpdater)) return;
   const updater = autoUpdater as unknown as DebInternals;
 
-  const run = (command: string, args: string[]): RunResult => {
-    // No shell: the path to the download contains the person's home directory,
-    // and is passed as a single argument, unquoted and unescaped.
-    const r = spawnSync(command, args, { encoding: "utf-8" });
-    return {
-      status: r.status,
-      stdout: r.stdout ?? "",
-      stderr: r.stderr ?? "",
-      error: r.error ? { code: (r.error as NodeJS.ErrnoException).code, message: r.error.message } : undefined,
-    };
-  };
-
   updater.doInstall = (options) => {
     const debPath = updater.downloadedUpdateHelper?.file ?? null;
     if (!debPath) {
@@ -166,7 +153,7 @@ function replaceDebInstall(): void {
     const result = installDebUpdate({
       debPath,
       isRoot: process.getuid?.() === 0,
-      run,
+      run: systemRun,
       exists: existsSync,
     });
 

@@ -38,17 +38,28 @@
  * decisions can be driven directly from a test through `run` and `exists`.
  */
 
+import { spawnSync } from "node:child_process";
+
 /** Where the package installs the helper. Must match `deb.fpm` in package.json. */
 export const DEB_UPDATE_HELPER = "/usr/lib/kyber-studio/kyber-studio-update";
 
 /**
- * The programs, by absolute path. Studio's inherited PATH is not trusted to
- * choose them: `dpkg-query` makes the success decision, and `pkexec` asks for
- * the password. On Debian and Ubuntu all three live in /usr/bin.
+ * The programs, by absolute path. On Debian and Ubuntu all three live in
+ * /usr/bin. `dpkg-query` makes the success decision, `dpkg-deb` supplies the
+ * version it is compared with, and `pkexec` asks for the password.
+ *
+ * An absolute path chooses only the program itself: `dpkg-deb -f` runs `tar`,
+ * found through PATH. Studio's inherited PATH is not trusted for that either
+ * (Ubuntu puts `~/.local/bin` first, so a planted `tar` could forge the
+ * expected version and make a cancelled install read as installed), so
+ * `systemRun` replaces it with `SYSTEM_PATH`.
  */
 export const PKEXEC = "/usr/bin/pkexec";
 export const DPKG_DEB = "/usr/bin/dpkg-deb";
 export const DPKG_QUERY = "/usr/bin/dpkg-query";
+
+/** The only PATH the install's commands see, whatever Studio inherited. */
+export const SYSTEM_PATH = "/usr/sbin:/usr/bin:/sbin:/bin";
 
 /** The format `readInstalled` asks dpkg-query for: version, a tab, the three-letter status. */
 export const INSTALLED_FORMAT = "-f=${Version}\\t${db:Status-Abbrev}";
@@ -65,6 +76,22 @@ export interface RunResult {
 }
 
 export type Run = (command: string, args: string[]) => RunResult;
+
+/**
+ * The real `Run`: synchronous, with no shell, and with PATH fixed to
+ * `SYSTEM_PATH` for the command and everything it starts. No shell matters
+ * because the path to the download contains the person's home directory, and
+ * is passed as a single argument, unquoted and unescaped.
+ */
+export const systemRun: Run = (command, args) => {
+  const r = spawnSync(command, args, { encoding: "utf-8", env: { ...process.env, PATH: SYSTEM_PATH } });
+  return {
+    status: r.status,
+    stdout: r.stdout ?? "",
+    stderr: r.stderr ?? "",
+    error: r.error ? { code: (r.error as NodeJS.ErrnoException).code, message: r.error.message } : undefined,
+  };
+};
 
 export interface DebInstallInput {
   /** The downloaded `.deb`, as an absolute path. Passed as one argument, never through a shell. */
