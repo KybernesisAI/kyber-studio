@@ -3501,7 +3501,9 @@ export const useStore = create<State>((set, get) => ({
     // went on naming ours after the app had been pointed somewhere else.
     void window.studio.controlPlane().then((cp) => set({ issuer: cp.url.replace(/^https?:\/\//, "") }));
     // KYB-643: which sign-in this list belongs to, recorded only if that
-    // sign-in is still current when it lands.
+    // sign-in is still current when it lands. KYB-644 drops a stale list
+    // before it is written, so the check in `loadedFor` is a second guard,
+    // kept for any await later added between the list and the tag.
     const generation = signInGeneration;
     const loadedFor = (): void => {
       if (generation !== signInGeneration) return;
@@ -3511,6 +3513,16 @@ export const useStore = create<State>((set, get) => ({
     };
     try {
       const remote = await window.studio.listAgents();
+      // KYB-644: a list asked for under a sign-in that has since ended belongs
+      // to that account. Written here, it would replace the next account's
+      // agents, carry the old account's profile choices up under the new
+      // sign-in, and keep the new sign-in's tag, so nothing would correct it.
+      // Every write below comes after this; an await added before one of them
+      // needs the same check after it.
+      if (generation !== signInGeneration) {
+        console.log("[agents] stale agent list dropped: the sign-in changed while it loaded");
+        return;
+      }
       if (remote.length === 0) {
         // An honest empty state. Keeping the fixtures here would show a
         // customer three agents they do not have.

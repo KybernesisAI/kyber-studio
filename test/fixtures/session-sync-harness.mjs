@@ -103,9 +103,13 @@ export function installBridge({
       await after("listSessions");
       return live.rows;
     },
+    // The list as the control plane held it when ASKED (KYB-644). Read after
+    // the delay instead, a request from a previous sign-in that lands late
+    // would be handed the next account's list and hide the stale write.
     listAgents: async () => {
+      const snapshot = live.agents;
       await after("listAgents");
-      return live.agents;
+      return snapshot;
     },
     replaySession: async ({ sessionId }) => {
       await after("replaySession");
