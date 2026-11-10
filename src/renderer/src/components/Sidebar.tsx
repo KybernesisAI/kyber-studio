@@ -357,9 +357,9 @@ export function Sidebar(): ReactNode {
           <div className="empty">
             {hiddenCount > 0
               ? "Every agent is hidden. Show them from the account menu."
-              : /* Written by refreshAgents for exactly this case — a signed-in
-                   person with no grants — and previously read by nobody, so the
-                   app just sat empty with no explanation. */
+              : /* Written by refreshAgents: the no-grants sentence for a
+                   signed-in person with no agents, or (KYB-669) a sentence
+                   saying the list could not be loaded and is being retried. */
                 (authError ?? "No agents yet.")}
           </div>
         ) : null}
