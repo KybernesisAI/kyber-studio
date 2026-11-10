@@ -1324,7 +1324,7 @@ function LocalAccess({ agent, url }: { agent: string; url?: string }): ReactNode
             : busy
               ? "Setting it up…"
               : on
-                ? "Allowed on this Mac. It stays allowed until you turn this off."
+                ? "Allowed on this computer. It stays allowed until you turn this off."
                 : "Let this agent read and change files here, and run commands."}
         </div>
       </div>
