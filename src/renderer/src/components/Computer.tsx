@@ -142,10 +142,17 @@ export function ComputerView(): ReactNode {
     if (!computerOpen) return;
     const onKey = (e: KeyboardEvent): void => {
       // Escape belongs to the computer too, so only a modified one closes the view.
-      if (e.key === "Escape" && (e.metaKey || e.ctrlKey)) setComputerOpen(false);
+      if (!(e.key === "Escape" && (e.metaKey || e.ctrlKey))) return;
+      // Keep the chord from the computer as the view closes.
+      e.preventDefault();
+      e.stopPropagation();
+      setComputerOpen(false);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // Capture phase: once the screen has focus, noVNC's keydown handler on its
+    // canvas stops every key from propagating, so a bubbling listener here
+    // would never hear the chord.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [computerOpen, setComputerOpen]);
 
   if (!computerOpen || !agent) return null;
