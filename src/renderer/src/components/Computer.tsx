@@ -20,6 +20,57 @@ import type { Agent } from "@shared/types";
 
 type Phase = "connecting" | "live" | "failed";
 
+/**
+ * Control, Shift, Alt and Meta, left and right, as the keysyms noVNC sends for
+ * them. Meta has two families: noVNC sends Super for the Meta key, and Meta
+ * when a key reports Meta from the Alt key's position. AltGr is not here; the
+ * close shortcut cannot leave it held. A release for a key that is not down
+ * does nothing.
+ */
+const MODIFIER_KEYS: readonly (readonly [number, string])[] = [
+  [0xffe3, "ControlLeft"],
+  [0xffe4, "ControlRight"],
+  [0xffe1, "ShiftLeft"],
+  [0xffe2, "ShiftRight"],
+  [0xffe9, "AltLeft"],
+  [0xffea, "AltRight"],
+  [0xffeb, "MetaLeft"],
+  [0xffec, "MetaRight"],
+  [0xffe7, "MetaLeft"],
+  [0xffe8, "MetaRight"],
+];
+
+/**
+ * How long the key releases get to leave before the connection closes. A
+ * relay may drop frames that reach it in the same read as the close frame
+ * (websockify 0.10 does; 0.11 and later forward them first), and then a
+ * modifier stays held on the computer. The delay separates when the frames
+ * are sent, which makes that unlikely rather than impossible.
+ */
+export const RELEASE_BEFORE_DISCONNECT_MS = 250;
+
+/**
+ * Let go of a screen we were controlling. The close shortcut's own modifier
+ * went down on the computer before its Esc arrived, and noVNC's clean-up
+ * sends nothing once it is disconnecting, so release every modifier while
+ * still connected, then disconnect a moment later.
+ */
+export function releaseAndDisconnect(rfb: Pick<RFB, "sendKey" | "disconnect">, interactive: boolean): void {
+  const disconnect = (): void => {
+    try {
+      rfb.disconnect();
+    } catch {
+      /* already gone */
+    }
+  };
+  if (!interactive) {
+    disconnect();
+    return;
+  }
+  for (const [keysym, code] of MODIFIER_KEYS) rfb.sendKey(keysym, code, false);
+  setTimeout(disconnect, RELEASE_BEFORE_DISCONNECT_MS);
+}
+
 function useScreen(agent: Agent | undefined, interactive: boolean, generation: number) {
   const ref = useRef<HTMLDivElement>(null);
   const [phase, setPhase] = useState<Phase>("connecting");
@@ -81,11 +132,7 @@ function useScreen(agent: Agent | undefined, interactive: boolean, generation: n
 
     return () => {
       cancelled = true;
-      try {
-        rfb?.disconnect();
-      } catch {
-        /* already gone */
-      }
+      if (rfb) releaseAndDisconnect(rfb, interactive);
       rfb = null;
     };
   }, [agent?.id, agent?.url, interactive, generation]);
