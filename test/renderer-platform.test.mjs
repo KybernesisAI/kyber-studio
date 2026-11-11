@@ -3,10 +3,13 @@ import assert from "node:assert/strict";
 
 import {
   IS_MAC,
+  IS_WINDOWS,
   MODIFIER,
   chordLabel,
+  computerCloseLabel,
   detectPlatform,
   isMacPlatform,
+  isWindowsPlatform,
   modifierFor,
 } from "../src/renderer/src/lib/platform.ts";
 
@@ -107,4 +110,32 @@ test("the exported pair is well-formed and agrees with the host it runs on", () 
   // reproduced on macOS — both survive green. Those live in the two glue
   // lines the docstring above declares uncovered.
   assert.equal(MODIFIER, IS_MAC ? "⌘" : "Ctrl");
+});
+
+test("both real spellings of Windows are recognised, and nothing else is", () => {
+  // navigator.userAgentData.platform, Chromium
+  assert.equal(isWindowsPlatform("Windows"), true);
+  // navigator.platform, which says Win32 on 64-bit Windows too
+  assert.equal(isWindowsPlatform("Win32"), true);
+  assert.equal(isWindowsPlatform("  Windows  "), true);
+  for (const p of ["macOS", "MacIntel", "Linux", "Linux x86_64", "Linux aarch64", "Chrome OS", "", "   "]) {
+    assert.equal(isWindowsPlatform(p), false, `${p} should not read as Windows`);
+  }
+});
+
+test("the computer view's close tooltip names the shortcut each platform can press (KYB-676)", () => {
+  // macOS: the shipped hint, unchanged.
+  assert.equal(computerCloseLabel(true, false), "Close (⌘⎋)");
+  // Linux and anything else that is neither: Ctrl, spelled out, and Esc as a word.
+  assert.equal(computerCloseLabel(false, false), "Close (Ctrl Esc)");
+  // Windows: no shortcut, because the shell takes Ctrl+Esc for the Start menu.
+  assert.equal(computerCloseLabel(false, true), "Close");
+  // One platform string is read, so both flags cannot be true; if they were, macOS wins.
+  assert.equal(computerCloseLabel(true, true), "Close (⌘⎋)");
+});
+
+test("IS_WINDOWS is well-formed", () => {
+  // A shape check, for the same reason as the one above: its VALUE depends on
+  // the machine running the suite.
+  assert.equal(typeof IS_WINDOWS, "boolean");
 });

@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import RFB from "@novnc/novnc";
 import { useStore } from "../lib/store";
 import { connectComputer } from "../lib/computer";
+import { IS_MAC, IS_WINDOWS, computerCloseLabel } from "../lib/platform";
 import type { Agent } from "@shared/types";
 
 /**
@@ -158,7 +159,7 @@ export function ComputerView(): ReactNode {
         {phase === "failed" ? (
           <button className="btn" onClick={() => setGeneration((g) => g + 1)}>Retry</button>
         ) : null}
-        <button className="computer-view__close" onClick={() => setComputerOpen(false)} aria-label="Close the computer view" title="Close (⌘⎋)">
+        <button className="computer-view__close" onClick={() => setComputerOpen(false)} aria-label="Close the computer view" title={computerCloseLabel(IS_MAC, IS_WINDOWS)}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
             <path d="M6.5 2.5v4h-4M6.5 6.5L2 2M9.5 13.5v-4h4M9.5 9.5L14 14" />
           </svg>

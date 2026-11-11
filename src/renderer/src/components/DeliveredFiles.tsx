@@ -77,7 +77,7 @@ function FileRow({ file }: { file: DeliveredFile }): ReactNode {
             <button
               className="dfile__btn"
               disabled={busy || present === undefined}
-              onClick={() => void run(() => window.studio.revealLocalFile(file.raw), "Shown in Finder")}
+              onClick={() => void run(() => window.studio.revealLocalFile(file.raw), "Shown in its folder")}
             >
               Reveal
             </button>
