@@ -12,7 +12,7 @@
  * whole reason this file exists rather than a couple of inline checks: a module
  * that reads `navigator` at the top level cannot be reached by `node --test`,
  * and this repo has been bitten repeatedly by logic that no test could get at.
- * The two lines of glue at the bottom are the only part not covered.
+ * The few lines of glue at the bottom are the only part not covered.
  *
  * What this is NOT for: deciding what a keystroke does. Gate DISPLAY on this,
  * never input. If the detection is ever wrong, the cost should be a label that
@@ -69,6 +69,38 @@ export function chordLabel(isMac: boolean, key: string): string {
   return isMac ? `⌘${key}` : `Ctrl ${key}`;
 }
 
-export const IS_MAC = isMacPlatform(detectPlatform(globalThis.navigator));
+/**
+ * Windows, from either spelling.
+ *
+ * `userAgentData.platform` says `"Windows"`; the older `navigator.platform`
+ * says `"Win32"`, on 64-bit Windows too. Anchored and case-insensitive, in the
+ * same shape as {@link isMacPlatform}.
+ */
+export function isWindowsPlatform(platform: string): boolean {
+  return /^win/i.test(platform.trim());
+}
+
+/**
+ * The computer view's close button tooltip (KYB-676).
+ *
+ * Not built from {@link chordLabel}: the hint pairs a symbol on macOS (`⎋`)
+ * with a word elsewhere (`Esc`), and `chordLabel` takes one key name for both.
+ *
+ * Windows names no shortcut at all. Measured on Windows 11, 11 November 2026:
+ * Ctrl+Esc delivers the Ctrl to the app and the shell takes the Esc to open
+ * the Start menu, so the chord never reaches Studio there. macOS wins if both
+ * flags are somehow set, since only one platform string is ever read.
+ */
+export function computerCloseLabel(isMac: boolean, isWindows: boolean): string {
+  if (isMac) return "Close (⌘⎋)";
+  if (isWindows) return "Close";
+  return "Close (Ctrl Esc)";
+}
+
+const PLATFORM = detectPlatform(globalThis.navigator);
+
+export const IS_MAC = isMacPlatform(PLATFORM);
+
+export const IS_WINDOWS = isWindowsPlatform(PLATFORM);
 
 export const MODIFIER = modifierFor(IS_MAC);
