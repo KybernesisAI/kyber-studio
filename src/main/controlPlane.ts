@@ -1,4 +1,5 @@
-import { Client, ClientError } from "eve/client";
+import { AgentClient, ClientError, rememberVersion } from "./eveSession";
+import { streamVersionOf } from "../shared/eveStream";
 import type { Attachment } from "../shared/ipc";
 import { buildMessage } from "../shared/message";
 import { readInputRequests, type QuestionRequest } from "../shared/asks";
@@ -781,14 +782,21 @@ export async function agentHealth(url: string): Promise<boolean> {
   }
 }
 
+/**
+ * eve 1.0 serves `/eve/v1/info` to operators only and answers a person with
+ * 403 `info_forbidden`. An agent that admits people again does so either on
+ * that route or through @kybernesis/manage at `/eve/v1/kyb/info`, so a refusal
+ * tries the second before giving up.
+ */
 export async function agentInfo(url: string): Promise<Record<string, unknown> | null> {
   const s = await activeSession();
   if (!s?.bundle) return null;
+  const base = url.replace(/\/$/, "");
+  const read = async (path: string): Promise<Response> =>
+    fetch(`${base}${path}`, { headers: authHeaders(s, { bundle: true }), signal: AbortSignal.timeout(20_000) });
   try {
-    const res = await fetch(`${url.replace(/\/$/, "")}/eve/v1/info`, {
-      headers: authHeaders(s, { bundle: true }),
-      signal: AbortSignal.timeout(20_000),
-    });
+    let res = await read("/eve/v1/info");
+    if (res.status === 403) res = await read("/eve/v1/kyb/info");
     if (!res.ok) return null;
     return (await res.json()) as Record<string, unknown>;
   } catch {
@@ -797,11 +805,12 @@ export async function agentInfo(url: string): Promise<Record<string, unknown> | 
 }
 
 /**
- * One eve Client per agent host.
+ * One session client per agent host.
  *
- * `eve/client` is the framework's own implementation of the session protocol,
- * and using it is not a refactor — it is the fix. Studio used to hand-roll the
- * POST and the NDJSON loop, which meant re-deriving three rules by inference:
+ * `AgentClient` (./eveSession) carries the rules eve's own client taught
+ * Studio, and reads both stream formats so agents on eve 0.81 and eve 1.0 work
+ * side by side. Before eve's client, Studio hand-rolled the POST and the
+ * NDJSON loop, which meant re-deriving three rules by inference:
  *
  *   - A turn ends at `session.waiting`, NOT at `turn.completed`. The two are
  *     different events and there is real time between them. Treating the first
@@ -816,24 +825,24 @@ export async function agentInfo(url: string): Promise<Record<string, unknown> | 
  * Every one of those was wrong here, in ways that surfaced as "sometimes it
  * answers and sometimes it doesn't". The framework already gets them right.
  */
-const clients = new Map<string, Client>();
+const clients = new Map<string, AgentClient>();
 
-function clientFor(base: string): Client {
+function clientFor(base: string): AgentClient {
   const existing = clients.get(base);
   if (existing) return existing;
-  const client = new Client({
-    host: base,
+  const client = new AgentClient({
+    base,
     // Resolved before every request INCLUDING stream reconnects, so a long turn
     // that outlives the access token it started with refreshes mid-flight
-    // instead of dying at the first reconnect.
-    auth: { bearer: async () => (await activeSession())?.token ?? "" },
+    // instead of dying at the first reconnect. Redirects are never followed
+    // (see AgentClient), so these never reach another origin.
     headers: async (): Promise<Record<string, string>> => {
       const s = await activeSession();
-      return s?.bundle ? { "x-kybernesis-bundle": s.bundle } : {};
+      return {
+        authorization: `Bearer ${s?.token ?? ""}`,
+        ...(s?.bundle ? { "x-kybernesis-bundle": s.bundle } : {}),
+      };
     },
-    // Credential-bearing client: never let fetch forward these headers to
-    // another origin behind a redirect.
-    redirect: "manual",
   });
   clients.set(base, client);
   return client;
@@ -868,6 +877,9 @@ async function tailIndex(base: string, sessionId: string, from: number): Promise
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)]),
     });
     const header = res.headers.get("x-eve-stream-tail-index");
+    // The same answer says which stream format the agent speaks, so an answer
+    // sent on this session uses the shape that agent accepts.
+    if (res.ok) rememberVersion(base, streamVersionOf(res.headers));
     // The body is a full replay of the session; we only ever wanted the header.
     controller.abort();
     if (!res.ok || header === null) return null;
@@ -1087,7 +1099,7 @@ export async function sendTurn(input: {
   // cursor, so there is no longer a token that can go stale and make a live
   // session refuse an otherwise valid turn.
   let session = input.sessionId
-    ? clientFor(base).sessions.attach(input.sessionId, { streamIndex: resumeAt })
+    ? clientFor(base).attach(input.sessionId, { streamIndex: resumeAt })
     : null;
 
   let reply = "";
@@ -1181,7 +1193,7 @@ export async function sendTurn(input: {
     // The same session as last time resumes after its tail; a new one (the
     // thread moved on, or this is the first message) is read from the start.
     const start = data.sessionId === input.sessionId ? resumeAt : 0;
-    session = clientFor(base).sessions.attach(data.sessionId, { streamIndex: start });
+    session = clientFor(base).attach(data.sessionId, { streamIndex: start });
     return session.stream({ follow: true, startIndex: start, signal: abandon.signal });
   };
 
@@ -1202,7 +1214,7 @@ export async function sendTurn(input: {
       return await session.respond(input.inputResponses, { signal: abandon.signal });
     }
     if (session) return await session.send(message, options);
-    const created = await clientFor(base).sessions.create({ message, ...options });
+    const created = await clientFor(base).create({ message, ...options });
     session = created.session;
     return created.response;
   };
@@ -1563,7 +1575,7 @@ export async function watchSession(input: {
   onLive: (kind: "received" | "boundary") => void;
 }): Promise<void> {
   const base = input.url.replace(/\/$/, "");
-  const session = clientFor(base).sessions.attach(input.sessionId, { streamIndex: input.startIndex });
+  const session = clientFor(base).attach(input.sessionId, { streamIndex: input.startIndex });
   let index = input.startIndex;
   const memo = { lastTool: null as string | null };
   const peerState: PeerState = { pending: new Map(), last: null };
@@ -1575,7 +1587,9 @@ export async function watchSession(input: {
     for await (const raw of session.stream({ follow: true, startIndex: input.startIndex, signal: input.signal })) {
       const type = String((raw as { type?: unknown }).type ?? "");
       const data = ((raw as { data?: unknown }).data ?? {}) as Record<string, unknown>;
-      index += 1;
+      // The session's own cursor, not a count of events: on an eve 1.0 agent
+      // the cursor counts stored lines, and one line can hold several events.
+      index = session.state.streamIndex;
       seen += 1;
       input.onCursor(index);
 
@@ -1665,7 +1679,7 @@ export async function cancelTurn(input: {
   turnId?: string;
 }): Promise<string> {
   const base = input.url.replace(/\/$/, "");
-  const session = clientFor(base).sessions.attach(input.sessionId, { streamIndex: 0 });
+  const session = clientFor(base).attach(input.sessionId, { streamIndex: 0 });
   try {
     const result = await session.cancel({ ...(input.turnId ? { turnId: input.turnId } : {}) });
     return result.status;
@@ -1688,7 +1702,7 @@ export async function resetSession(input: { url: string; sessionId?: string }): 
   // conversation that was never started, and the next message opens a fresh one
   // anyway. Returning quietly beats a 404 the user cannot act on.
   if (!input.sessionId) return;
-  const session = clientFor(base).sessions.attach(input.sessionId, { streamIndex: 0 });
+  const session = clientFor(base).attach(input.sessionId, { streamIndex: 0 });
   try {
     await session.reset();
   } catch (error) {
