@@ -310,10 +310,13 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
-      # ci, not install, and a clean one rather than a cache restored from
-      # another platform: the per-platform optional dependencies above are the
-      # entire reason this job needs a Windows machine, and a carried-over
-      # node_modules would defeat it.
+      # ci, not install, and a clean one rather than a node_modules carried
+      # over from another platform. sharp / @img/* are per-platform optional
+      # dependencies: a plain `npm ci` installs only the host's own variant
+      # (sharp-win32-x64 on windows-latest, the darwin ones on macos-15;
+      # measured 12 Nov 2026, KYB-630), so a carried-over tree would hold the
+      # wrong platform's binaries. That is why the install is clean, NOT why
+      # this job needs a Windows machine: those reasons are above release-win.
       - run: npm ci --no-audit --no-fund
 
       # package:win, not a release:* script. package.json's release:mac and
