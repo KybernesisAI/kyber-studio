@@ -108,10 +108,31 @@ jobs:
           } | gh release edit "$TAG" --notes-file -
 
   release-linux:
-    # A real Linux runner rather than a cross-build from macOS. sharp / @img/*
-    # are genuinely per-platform optional dependencies, so a macOS-runner
-    # `npm install` never puts the linux-x64 variants on disk — every AppImage
-    # and .deb before this was therefore built by hand on a laptop or a UAT VM.
+    # A real Linux runner rather than a cross-build from macOS.
+    #
+    # sharp / @img/* are genuinely per-platform optional dependencies, so a
+    # plain `npm ci` on a macOS runner puts no linux-x64 variant on disk. That
+    # is NOT the reason for this runner: `npm ci --os=linux --cpu=x64` installs
+    # the same @img/ set a Linux x64 runner gets (sharp-linux-x64,
+    # sharp-linuxmusl-x64 and their libvips packages) and no darwin or win32
+    # variant, on macos-15 and on windows-latest. Measured 12 Nov 2026, KYB-630.
+    #
+    # The reasons that do hold:
+    #   1. verify-package.mjs, below, runs the packaged binary in
+    #      dist/linux-unpacked: section 5 imports the app's modules through
+    #      it, and section 6 loads the speech pipeline and transcribes. Only a
+    #      host that can execute a Linux binary can run this lane's strongest
+    #      check.
+    #   2. package:linux runs `npm run build` first, so the typecheck and the
+    #      full test suite run on the platform being packaged.
+    #
+    # NOT measured for this lane, so not reasons yet: whether the --os flag
+    # breaks `electron-vite build` here as it does for win32 (MODULE_NOT_FOUND
+    # on rollup/dist/native.js, see release-win below), and whether a macOS
+    # host can build the AppImage and the .deb without extra Linux tooling.
+    #
+    # Every AppImage and .deb before this lane was built by hand on a laptop or
+    # a UAT VM.
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
