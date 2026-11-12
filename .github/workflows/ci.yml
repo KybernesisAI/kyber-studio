@@ -110,5 +110,9 @@ jobs:
       - name: Build
         run: npx electron-vite build
 
+      # Plain `npm test`, deliberately. npm's flag for skipping an absent script
+      # would let a renamed or missing `test` script exit 0 having run nothing,
+      # and every arm would report green. Without it, npm exits 1 with
+      # `Missing script: "test"` (KYB-622).
       - name: Tests
-        run: npm test --if-present
+        run: npm test
