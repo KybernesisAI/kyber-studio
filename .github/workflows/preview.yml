@@ -60,15 +60,33 @@ jobs:
           npm version --no-git-tag-version --allow-same-version "$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build, sign & notarize (publish never)
-        run: npm run build && npx electron-builder --mac --publish never
+      - name: Build
+        run: npm run build
+
+      - name: Package, sign & notarize (publish never)
+        id: notarized
+        continue-on-error: true
+        run: npx electron-builder --mac --publish never
+
+      # A preview that cannot be notarized (Apple refuses while a developer
+      # agreement is unsigned, for one) is still worth trying: it is packaged
+      # signed only, named as such, and the run says so. Releases never take
+      # this path; release.yml fails instead.
+      - name: Package and sign only (notarization failed)
+        id: signed
+        if: steps.notarized.outcome == 'failure'
+        run: |
+          rm -rf dist/*.dmg dist/*.zip dist/*.blockmap dist/mac-arm64
+          npx electron-builder --mac --publish never -c.mac.notarize=false
+          echo "suffix=-not-notarized" >> "$GITHUB_OUTPUT"
+          echo "::warning::Notarization failed, so this preview is signed but not notarized. macOS asks for Open Anyway in System Settings > Privacy & Security the first time it opens."
 
       - name: Verify the packaged app can load what it imports
         run: node scripts/verify-package.mjs "dist/mac-arm64/KYBER Studio.app"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: kyber-studio-${{ steps.version.outputs.version }}-mac
+          name: kyber-studio-${{ steps.version.outputs.version }}-mac${{ steps.signed.outputs.suffix }}
           path: |
             dist/*.dmg
             dist/*.zip
