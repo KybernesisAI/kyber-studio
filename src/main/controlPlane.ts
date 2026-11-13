@@ -9,6 +9,7 @@ import { app, safeStorage, shell } from "electron";
 import type { RemoteAgent,
   RemoteRoom, Session } from "@shared/ipc";
 import { isCredentialStoreAvailable } from "./credentialStorage";
+import { writeAtomic } from "./atomicWrite";
 import { newStepState, readStep, type Step } from "@kybernesis/cards";
 import { readPeerEvents, type PeerState } from "./peerEvents";
 import { isHeldForInput } from "./turnBoundary";
@@ -100,12 +101,37 @@ function storePath(): string {
   return join(dir, "session.bin");
 }
 
+/** The shape `randomUUID()` writes. Anything else in `device-id` is residue. */
+const WELL_FORMED_DEVICE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * This machine's identity to the control plane, minted once and read ever after.
+ *
+ * What is on disk is what every later launch presents, so the read has to
+ * vouch for it. A crash during the first write can leave the file empty or
+ * partial, and a read guarded only by `existsSync` returned that residue on
+ * every launch from then on, silently (KYB-632). Anything that is not a
+ * well-formed UUID is therefore treated as absent: replaced, and said so.
+ * A valid id is never rewritten, or the machine would change identity.
+ *
+ * The write goes through `writeAtomic`, keeping its mode (correct on Linux and
+ * macOS, inert on Windows). That closes the crash window, not the power-loss
+ * one: `writeAtomic` does no fsync, so a power cut can still leave an empty
+ * file behind. Validating the read is what makes that case heal, not stick.
+ */
 export function deviceId(): string {
-  const p = join(app.getPath("userData"), "device-id");
-  if (existsSync(p)) return readFileSync(p, "utf8").trim();
+  const dir = app.getPath("userData");
+  const p = join(dir, "device-id");
+  if (existsSync(p)) {
+    const stored = readFileSync(p, "utf8").trim();
+    if (WELL_FORMED_DEVICE_ID.test(stored)) return stored;
+    console.warn(
+      `[device] ${p} did not hold a well-formed id (${stored.length} characters); replacing it with a new one.`,
+    );
+  }
   const id = randomUUID();
-  mkdirSync(app.getPath("userData"), { recursive: true });
-  writeFileSync(p, id, { mode: 0o600 });
+  mkdirSync(dir, { recursive: true });
+  writeAtomic(p, id, { mode: 0o600 });
   return id;
 }
 
