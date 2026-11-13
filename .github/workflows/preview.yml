@@ -1,0 +1,73 @@
+name: preview
+
+# A signed, notarized macOS build of a branch that publishes NOTHING: no tag,
+# no GitHub Release, no update feed. It exists so a change can be tried as the
+# real app, installed from the run's artefact, before anyone decides to release
+# it. Installed apps never see it; the release workflow is still the only way
+# out.
+#
+# The version is the next patch with a prerelease suffix (0.5.23-preview.41
+# after 0.5.22), so the installed preview is newer than the current release and
+# the updater does not pull it back, and the real release of that version
+# replaces it the normal way.
+#
+# Runs on a pull request labelled `preview` (again on each push to it), or by
+# hand.
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview-mac:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'preview')
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The branch as pushed, not the merge with main: what is tried is what was reviewed.
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Speech model
+        run: node scripts/fetch-speech-model.mjs
+
+      - name: Preview version
+        id: version
+        run: |
+          NEXT="$(node -p "const [a,b,c]=require('./package.json').version.split('.').map(Number); [a,b,c+1].join('.')")"
+          VERSION="${NEXT}-preview.${GITHUB_RUN_NUMBER}"
+          npm version --no-git-tag-version --allow-same-version "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build, sign & notarize (publish never)
+        run: npm run build && npx electron-builder --mac --publish never
+
+      - name: Verify the packaged app can load what it imports
+        run: node scripts/verify-package.mjs "dist/mac-arm64/KYBER Studio.app"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kyber-studio-${{ steps.version.outputs.version }}-mac
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          retention-days: 14
+          if-no-files-found: error
