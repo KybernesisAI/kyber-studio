@@ -8,6 +8,7 @@ import {
 } from "../shared/sessionReplay";
 import { readPeerEvents } from "./peerEvents";
 import { sessionGoneReason, type ReplayGone } from "../shared/sessionGone";
+import { StreamDecoder, streamVersionOf } from "../shared/eveStream";
 
 export { blocksFromEvents };
 export type { Replayed, ReplayedBlock, ReplayedPeerBlock };
@@ -177,6 +178,12 @@ export async function replaySession(input: {
 
     const tailHeader = res.headers.get("x-eve-stream-tail-index");
     const tail = tailHeader === null ? -1 : Number(tailHeader);
+    // eve 0.81 agents serve one event per line (version 26); eve 1.0 agents
+    // serve lines that hold several events, plus heartbeats that are no line
+    // at all (version 27). The decoder reads either and counts real lines.
+    const version = streamVersionOf(res.headers);
+    const stream = new StreamDecoder(version, -limit, tailHeader === null ? null : tail);
+    const firstLine = stream.cursor;
     /**
      * How many events this read will produce before it is caught up.
      *
@@ -225,14 +232,14 @@ export async function replaySession(input: {
       // Keep the trailing fragment: chunk boundaries land mid-line often
       // enough that dropping it loses whole events under load.
       buffer = parts.pop() ?? "";
-      for (const line of parts) if (line.trim()) lines.push(line);
+      for (const line of parts) if (line.trim()) lines.push(...stream.pushLine(line).map((e) => JSON.stringify(e)));
 
-      if (expected > 0 && lines.length >= expected) {
+      if (expected > 0 && stream.cursor - firstLine >= expected) {
         await reader.cancel().catch(() => {});
         break;
       }
     }
-    if (buffer.trim()) lines.push(buffer);
+    if (buffer.trim()) lines.push(...stream.pushLine(buffer).map((e) => JSON.stringify(e)));
 
     const { blocks } = blocksFromEvents(lines);
 
@@ -269,7 +276,7 @@ export async function replaySession(input: {
       blocks,
       peerBlocks,
       workBlocks,
-      streamIndex: tail >= 0 ? tail + 1 : lines.length,
+      streamIndex: tail >= 0 ? tail + 1 : stream.cursor,
       truncated: tail >= 0 && tail + 1 > limit,
     };
   } catch (error) {

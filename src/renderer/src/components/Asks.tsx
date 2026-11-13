@@ -2,6 +2,7 @@ import { type ReactNode, useState } from "react";
 import { cardTitle, formAnswer, type FormField, type KnownCard } from "@kybernesis/cards";
 import type { Block } from "@shared/types";
 import { type SpendRequestAsk, type VaultItemAsk, money, vaultSavedAnswer } from "@shared/asks";
+import { declineOptionId } from "@shared/eveStream";
 import { useStore } from "@/lib/store";
 import { ApprovalBody } from "./Cards";
 import { Icon } from "./primitives";
@@ -171,7 +172,7 @@ export function ApprovalAskCard({ block, card, onAnswer }: { block: QuestionBloc
     const lines = ["Not as written. Make it again with these changes, then ask me again."];
     if (subject.trim() !== (d.subject ?? "")) lines.push(`${d.kind === "event" ? "Title" : "Subject"}: ${subject.trim()}`);
     if (body !== (d.body ?? "")) lines.push(`${d.kind === "event" ? "Description" : "Body"}:\n${body.trim()}`);
-    onAnswer({ optionId: "cancel", text: lines.join("\n"), label: "Sent back with changes" });
+    onAnswer({ optionId: declineOptionId(block.options), text: lines.join("\n"), label: "Sent back with changes" });
   };
 
   return (
@@ -216,7 +217,7 @@ export function ApprovalAskCard({ block, card, onAnswer }: { block: QuestionBloc
                 Edit
               </button>
             ) : null}
-            <button className="btn" onClick={() => onAnswer({ optionId: "cancel", label: "Declined" })}>
+            <button className="btn" onClick={() => onAnswer({ optionId: declineOptionId(block.options), label: "Declined" })}>
               {sends ? "Don't send" : "Decline"}
             </button>
           </>
