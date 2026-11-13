@@ -1,3 +1,5 @@
+import { ipcInnerMessage } from "./ipcError";
+
 /**
  * What the sidebar says when the agent list could not be loaded (KYB-669).
  *
@@ -23,14 +25,9 @@
  * session (a refresh answered 401 or 403), which `sessionStored` reports.
  */
 
-/** The message inside Electron's `Error invoking remote method '…': X: msg` wrapper. */
-function innerMessage(raw: string): string {
-  return raw.replace(/^Error invoking remote method '[^']*':\s*/, "").replace(/^[A-Za-z]*Error:\s*/, "");
-}
-
 /** Whether the main process said "Not signed in.", the one case that needs `sessionStored`. */
 export function isNotSignedIn(error: unknown): boolean {
-  return /^Not signed in\b/i.test(innerMessage(error instanceof Error ? error.message : String(error)));
+  return /^Not signed in\b/i.test(ipcInnerMessage(error instanceof Error ? error.message : String(error)));
 }
 
 const EXPIRED = "Your sign-in has expired. Sign out from the account menu, then sign in again.";
@@ -41,7 +38,7 @@ const EXPIRED = "Your sign-in has expired. Sign out from the account menu, then 
  */
 export function agentsLoadError(error: unknown, { sessionStored = true }: { sessionStored?: boolean } = {}): string {
   const raw = error instanceof Error ? error.message : String(error);
-  const inner = innerMessage(raw);
+  const inner = ipcInnerMessage(raw);
   // Retrying cannot help with these, so the sentence does not promise it.
   if (/^Session expired\b/i.test(inner)) return EXPIRED;
   if (/^Not signed in\b/i.test(inner) && !sessionStored) return EXPIRED;
