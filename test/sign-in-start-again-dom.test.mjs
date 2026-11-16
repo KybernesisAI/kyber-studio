@@ -170,10 +170,14 @@ test("in Electron's order, nothing can start a third code while the second is be
 
   await act(async () => button(host, "Start again").click());
   await act(async () => sleep(30));
-  // Only the two buttons that start a code. ("Change", for the control plane,
-  // is live throughout, as it is on main.)
+  // Only the buttons that start a code, under every label they carry: the
+  // Sign in button reads "Opening your browser…" while busy. ("Change", for
+  // the control plane, is live throughout, as it is on main.)
   const starters = () =>
-    [...host.querySelectorAll("button")].filter((b) => ["Sign in", "Start again"].includes(b.textContent.trim()));
+    [...host.querySelectorAll("button")].filter((b) =>
+      ["Sign in", "Opening your browser…", "Start again"].includes(b.textContent.trim()),
+    );
+  assert.ok(starters().length > 0, "fixture is wrong: no button that starts a code is on screen in the gap");
   const live = starters().filter((b) => !b.disabled).map((b) => b.textContent.trim());
   assert.deepEqual(live, [], `a button was live while the second code was being fetched: ${JSON.stringify(live)}`);
   assert.equal(shownError(host), null);
