@@ -218,3 +218,58 @@ test("a double click on Start again cancels once and fetches one new code", asyn
   await act(async () => sleep(10));
   await unmount();
 });
+
+test("between Start again and the new code, the code view stays in place and does nothing", async () => {
+  // In a real window, clearing the old code at the click collapsed the card to
+  // one button and moved Change up into Start again's row, so the second click
+  // of a double click opened the control-plane editor. jsdom has no layout, so
+  // this asserts what the layout follows from: the card keeps the same elements
+  // while the new code is fetched, and everything in the code view is disabled.
+  const { calls, waits } = bridge();
+  const { host, unmount } = await mountAndPressSignIn();
+  let releaseSecond;
+  window.studio.signIn = async () => {
+    calls.push("signIn#2");
+    await new Promise((resolve) => (releaseSecond = resolve));
+    return { userCode: "CODE-2", verificationUri: "https://verify.example/2" };
+  };
+  const shape = () =>
+    [...host.querySelector(".signin__card").querySelectorAll("*")].map(
+      (el) => `${el.tagName}.${el.getAttribute("class") ?? ""}`,
+    );
+  const actions = () =>
+    [...host.querySelectorAll(".signin__actions button")].map(
+      (b) => `${b.textContent.trim()}:${b.disabled ? "off" : "on"}`,
+    );
+  const before = shape();
+  assert.deepEqual(actions(), ["Open browser:on", "Start again:on"]);
+
+  await act(async () => button(host, "Start again").click());
+  await act(async () => sleep(30));
+  assert.deepEqual(calls, ["signIn#1", "await", "cancel", "signIn#2"], "fixture is wrong: not in the gap");
+
+  // Same elements; only the countdown span is gone, so the row heights hold.
+  const countdown = "SPAN.signin__left";
+  assert.deepEqual(shape(), before.filter((e) => e !== countdown), "the card changed shape while the new code was fetched");
+  assert.equal(shownCode(host), "CODE-1");
+  assert.equal(host.querySelector(".signin__code").disabled, true, "the abandoned code can still be copied");
+  assert.deepEqual(actions(), ["Open browser:off", "Start again:off"]);
+  assert.match(host.querySelector(".signin__hint").textContent, /^Getting a new code/);
+  assert.equal(button(host, "Sign in"), undefined);
+  assert.equal(button(host, "Opening your browser…"), undefined);
+
+  // The second click of a double click lands on Start again, and does nothing.
+  await act(async () => button(host, "Start again").click());
+  await act(async () => sleep(20));
+  assert.deepEqual(calls, ["signIn#1", "await", "cancel", "signIn#2"]);
+
+  await act(async () => releaseSecond());
+  await act(async () => sleep(30));
+  assert.equal(shownCode(host), "CODE-2");
+  assert.deepEqual(shape(), before);
+  assert.deepEqual(actions(), ["Open browser:on", "Start again:on"]);
+  assert.match(host.querySelector(".signin__left")?.textContent ?? "", /10:00 left/);
+  for (const w of waits) w.reject(new Error("sign-in cancelled"));
+  await act(async () => sleep(10));
+  await unmount();
+});

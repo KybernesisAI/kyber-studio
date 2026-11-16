@@ -73,11 +73,12 @@ export function SignIn(): ReactNode {
 
   const startAgain = async (): Promise<void> => {
     // Busy from the click, so a second click cannot start a third code while
-    // the first is still being cancelled.
+    // the first is still being cancelled. The old code stays on screen, inert,
+    // until the new one replaces it: clearing it here collapsed the card to one
+    // button, which moved Change up into this button's row, so the second click
+    // of a double click opened the control-plane editor (KYB-680).
     setBusy(true);
     await cancelSignIn();
-    setCode(null);
-    setUrl(null);
     setCopied(false);
     await begin();
   };
@@ -98,6 +99,7 @@ export function SignIn(): ReactNode {
             <button
               className="signin__code"
               title="Copy the code"
+              disabled={busy}
               onClick={() => {
                 void navigator.clipboard.writeText(code);
                 setCopied(true);
@@ -106,12 +108,14 @@ export function SignIn(): ReactNode {
               {code}
             </button>
             <p className="signin__hint">
-              {expired
-                ? "That code expired. Start again for a new one."
-                : copied
-                  ? "Copied. Approve it in your browser."
-                  : "Approve this code in your browser. Waiting…"}
-              {!expired && left !== null ? (
+              {busy
+                ? "Getting a new code…"
+                : expired
+                  ? "That code expired. Start again for a new one."
+                  : copied
+                    ? "Copied. Approve it in your browser."
+                    : "Approve this code in your browser. Waiting…"}
+              {!busy && !expired && left !== null ? (
                 <span className="signin__left">
                   {" "}
                   {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")} left
@@ -124,6 +128,7 @@ export function SignIn(): ReactNode {
                   className="btn"
                   onClick={() => void window.studio?.openExternal(url)}
                   title="Open the approval page again"
+                  disabled={busy}
                 >
                   Open browser
                 </button>
