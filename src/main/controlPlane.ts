@@ -298,13 +298,27 @@ export async function pollDeviceAuth(start: DeviceStart): Promise<Session> {
       }, { once: true });
     });
     if (abort.signal.aborted) throw new Error(SIGN_IN_CANCELLED);
-    const res = await fetch(`${issuer()}/api/oauth/token`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ device_code: start.deviceCode }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    // The cancel has to reach a request already on the wire, not only the
+    // sleep between requests: an approval of the abandoned code can come back
+    // on it (KYB-680).
+    let res: Response;
+    let body: Record<string, unknown>;
+    try {
+      res = await fetch(`${issuer()}/api/oauth/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ device_code: start.deviceCode }),
+        signal: AbortSignal.any([abort.signal, AbortSignal.timeout(20_000)]),
+      });
+      body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    } catch (error) {
+      if (abort.signal.aborted) throw new Error(SIGN_IN_CANCELLED);
+      throw error;
+    }
+    // An answer that arrived anyway is still the abandoned code's. Nothing from
+    // it is kept, a token least of all: that would sign the app in to whichever
+    // account approved a code the person had already given up on.
+    if (abort.signal.aborted) throw new Error(SIGN_IN_CANCELLED);
 
     if (res.ok && typeof body.token === "string") {
       const claims = readClaims(body.token);

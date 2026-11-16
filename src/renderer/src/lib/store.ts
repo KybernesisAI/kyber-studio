@@ -134,6 +134,12 @@ let directorySettled = true;
  */
 let signInGeneration = 0;
 /**
+ * Which sign-in attempt is the live one. Start again begins a new attempt
+ * while the abandoned one is still unwinding, and that one's failure is not
+ * news about the code now on screen (KYB-680).
+ */
+let signInAttempt = 0;
+/**
  * Which sign-in the agent list in the store was loaded under. Sign-out keeps
  * the previous account's agents on screen, so "the list is not empty" does not
  * mean "this account's agents have loaded": a directory pass resolved against
@@ -3751,6 +3757,7 @@ export const useStore = create<State>((set, get) => ({
 
   signIn: async (onCode) => {
     if (!window.studio) return false;
+    const attempt = ++signInAttempt;
     set({ authError: null });
     try {
       const { userCode, verificationUri } = await window.studio.signIn();
@@ -3771,7 +3778,7 @@ export const useStore = create<State>((set, get) => ({
       // forwards it to the terminal.
       const shown = signInError(e);
       if (shown !== null) console.warn("[auth] sign-in failed:", e instanceof Error ? e.message : String(e));
-      set({ authError: shown });
+      if (attempt === signInAttempt) set({ authError: shown });
       return false;
     }
   },

@@ -126,11 +126,15 @@ export function registerIpc(): void {
   });
 
   ipcMain.handle("studio:awaitSignIn", async () => {
-    if (!pending) throw new Error("No sign-in in progress.");
+    const mine = pending;
+    if (!mine) throw new Error("No sign-in in progress.");
     try {
-      return await pollDeviceAuth(pending);
+      return await pollDeviceAuth(mine);
     } finally {
-      pending = null;
+      // Only this wait's own start. After Start again, an abandoned wait can
+      // unwind after the next code has been issued, and clearing that one
+      // failed the new wait with "No sign-in in progress." (KYB-680).
+      if (pending === mine) pending = null;
     }
   });
 

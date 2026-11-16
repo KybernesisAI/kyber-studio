@@ -28,6 +28,9 @@ export function SignIn(): ReactNode {
   const [copied, setCopied] = useState(false);
   const [left, setLeft] = useState<number | null>(null);
   const deadline = useRef<number | null>(null);
+  // The live attempt. Start again begins a new one while the old one is still
+  // unwinding, and the old one must not clear the new code (KYB-680).
+  const attempt = useRef(0);
 
   useEffect(() => {
     if (!code) {
@@ -44,24 +47,34 @@ export function SignIn(): ReactNode {
     return () => clearInterval(timer);
   }, [code]);
 
+  // `busy` covers getting a code, not waiting for its approval. It used to
+  // span the whole wait, which disabled Start again for as long as it was on
+  // screen (KYB-680).
   const begin = async (): Promise<void> => {
+    const mine = ++attempt.current;
+    const live = (): boolean => attempt.current === mine;
     setBusy(true);
     setCopied(false);
     try {
       const started = await signIn((c, verificationUri) => {
+        if (!live()) return;
         setCode(c);
         setUrl(verificationUri ?? null);
+        setBusy(false);
       });
-      if (!started) {
+      if (!started && live()) {
         setCode(null);
         setUrl(null);
       }
     } finally {
-      setBusy(false);
+      if (live()) setBusy(false);
     }
   };
 
   const startAgain = async (): Promise<void> => {
+    // Busy from the click, so a second click cannot start a third code while
+    // the first is still being cancelled.
+    setBusy(true);
     await cancelSignIn();
     setCode(null);
     setUrl(null);
