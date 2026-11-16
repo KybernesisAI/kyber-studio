@@ -3,6 +3,7 @@ import type { PendingAttachment } from "./attachments";
 import type { AgentSummary } from "@shared/ipc";
 import { summarize } from "./agentInfo";
 import { agentsLoadError, isNotSignedIn } from "./agentsLoadError";
+import { signInError } from "./signInError";
 import type { Agent, Block, PeerEvent, Room } from "@shared/types";
 import { isReplayGone } from "@shared/sessionGone";
 import { ROOM_PREFIX, isRoomId } from "@shared/types";
@@ -3763,11 +3764,14 @@ export const useStore = create<State>((set, get) => ({
       await signedIn(get, set);
       return true;
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      // A cancellation travels as an error because that is how an abandoned
-      // await unwinds; it is not one, and reporting it would make starting
-      // again look like a failure.
-      set({ authError: /sign-in cancelled/i.test(message) ? null : message });
+      // In words, not Electron's IPC wrapping of the exception (KYB-679). A
+      // cancellation travels as an error because that is how an abandoned
+      // await unwinds; it is not one, so it is neither shown nor logged. The
+      // raw message goes to the log, with a leading `[` so the main process
+      // forwards it to the terminal.
+      const shown = signInError(e);
+      if (shown !== null) console.warn("[auth] sign-in failed:", e instanceof Error ? e.message : String(e));
+      set({ authError: shown });
       return false;
     }
   },
