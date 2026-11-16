@@ -199,16 +199,18 @@ test("in Electron's order, nothing can start a third code while the second is be
 test("a double click on Start again cancels once and fetches one new code", async () => {
   const { calls, waits } = bridge();
   const { host, unmount } = await mountAndPressSignIn();
-  // A cancel that takes a moment, so the second click lands while the first
-  // is still cancelling. Two separate events, as a real double click is, so
-  // React renders between them.
+  // A cancel held open until the test releases it, so the second click lands
+  // while the first is still cancelling, however late timers fire. Two
+  // separate events, as a real double click is, so React renders between them.
+  const releases = [];
   window.studio.cancelSignIn = async () => {
     calls.push("cancel");
-    await sleep(20);
+    await new Promise((resolve) => releases.push(resolve));
   };
   const startAgain = button(host, "Start again");
   await act(async () => startAgain.click());
   await act(async () => startAgain.click());
+  await act(async () => releases.forEach((release) => release()));
   await act(async () => sleep(40));
   assert.deepEqual(calls, ["signIn#1", "await", "cancel", "signIn#2", "await"]);
   assert.equal(shownCode(host), "CODE-2");
