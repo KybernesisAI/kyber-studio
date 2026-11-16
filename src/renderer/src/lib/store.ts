@@ -3,7 +3,7 @@ import type { PendingAttachment } from "./attachments";
 import type { AgentSummary } from "@shared/ipc";
 import { summarize } from "./agentInfo";
 import { agentsLoadError, isNotSignedIn } from "./agentsLoadError";
-import { signInError } from "./signInError";
+import { isAlreadySignedIn, signInError } from "./signInError";
 import type { Agent, Block, PeerEvent, Room } from "@shared/types";
 import { isReplayGone } from "@shared/sessionGone";
 import { ROOM_PREFIX, isRoomId } from "@shared/types";
@@ -3763,14 +3763,34 @@ export const useStore = create<State>((set, get) => ({
       const { userCode, verificationUri } = await window.studio.signIn();
       onCode(userCode, verificationUri);
       const session = await window.studio.awaitSignIn();
+      const was = get().authState;
       set({
         authState: "signed-in",
         account: { email: session.email, orgName: session.orgName },
         authError: null,
       });
-      await signedIn(get, set);
+      // Once per sign-in: a refusal below may already have adopted it.
+      if (was !== "signed-in") await signedIn(get, set);
       return true;
     } catch (e) {
+      // Main holds a session, so this attempt has nothing to do (KYB-681).
+      // Usually another attempt has already signed the screen in; if not, the
+      // session main holds is the truth, and the screen adopts it rather than
+      // showing a sign-in that cannot proceed.
+      if (isAlreadySignedIn(e)) {
+        if (get().authState === "signed-in") return false;
+        const held = await window.studio.session();
+        if (held && get().authState !== "signed-in") {
+          set({
+            authState: "signed-in",
+            account: { email: held.email, orgName: held.orgName },
+            authError: null,
+          });
+          await signedIn(get, set);
+          return true;
+        }
+        return false;
+      }
       // In words, not Electron's IPC wrapping of the exception (KYB-679). A
       // cancellation travels as an error because that is how an abandoned
       // await unwinds; it is not one, so it is neither shown nor logged. The

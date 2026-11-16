@@ -45,3 +45,11 @@ export const EXPIRED = "That sign-in code expired. Click Sign in for a new one."
 export const DENIED = "Sign-in was declined in the browser. Click Sign in to try again.";
 export const OFFLINE = "Couldn't reach Kybernesis. Check your connection, then click Sign in again.";
 export const UNFINISHED = "Sign-in didn't finish. Click Sign in to try again.";
+
+/**
+ * Main refused to start or finish a sign-in because the app already holds a
+ * session (KYB-681). The sign-in it was for has, in effect, already succeeded.
+ */
+export function isAlreadySignedIn(error: unknown): boolean {
+  return /^already signed in\b/i.test(ipcInnerMessage(error instanceof Error ? error.message : String(error)));
+}

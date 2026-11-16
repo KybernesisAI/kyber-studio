@@ -239,7 +239,24 @@ export interface DeviceStart {
   expiresIn: number;
 }
 
+/**
+ * Thrown when a sign-in is asked for while the app already holds a session.
+ *
+ * A device code issued then would be polled for up to ten minutes with its
+ * browser tab open, and approving it would REPLACE the session with whichever
+ * account approved it. That is reachable from the screen: Start again clicked
+ * in the moment between main saving the first session and the renderer
+ * hearing about it (KYB-681). Signing in as someone else goes through
+ * signing out first.
+ */
+export const ALREADY_SIGNED_IN = "already signed in";
+
 export async function startDeviceAuth(): Promise<DeviceStart> {
+  // Before the device request, so a refusal issues no code and opens no tab.
+  if (loadSession()) {
+    console.log("[auth] sign-in refused: already signed in");
+    throw new Error(ALREADY_SIGNED_IN);
+  }
   const res = await fetch(`${issuer()}/api/oauth/device`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -298,6 +315,12 @@ export async function pollDeviceAuth(start: DeviceStart): Promise<Session> {
       }, { once: true });
     });
     if (abort.signal.aborted) throw new Error(SIGN_IN_CANCELLED);
+    // A code started before a session existed stops once one does: it has
+    // nothing left to sign in, and an approval of it must not replace the
+    // session that now exists (KYB-681). The in-memory session, not
+    // `loadSession()`: `startDeviceAuth` has already read the disk, and asking
+    // again here could ask the keyring on every iteration.
+    if (session) throw new Error(ALREADY_SIGNED_IN);
     // The cancel has to reach a request already on the wire, not only the
     // sleep between requests: an approval of the abandoned code can come back
     // on it (KYB-680).
@@ -319,6 +342,9 @@ export async function pollDeviceAuth(start: DeviceStart): Promise<Session> {
     // it is kept, a token least of all: that would sign the app in to whichever
     // account approved a code the person had already given up on.
     if (abort.signal.aborted) throw new Error(SIGN_IN_CANCELLED);
+    // And a session saved while this request was on the wire is kept, not
+    // replaced.
+    if (session) throw new Error(ALREADY_SIGNED_IN);
 
     if (res.ok && typeof body.token === "string") {
       const claims = readClaims(body.token);
