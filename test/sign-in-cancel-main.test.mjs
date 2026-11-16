@@ -186,3 +186,76 @@ test("a request the cancel aborts ends as a cancellation, not as a network failu
   held.splice(0);
   assert.equal(await invoke("studio:session"), null);
 });
+
+// KYB-681: a sign-in code issued, or still polled, while the app already holds
+// a session. Approving it replaced the session with whichever account approved
+// it, with nothing on screen asking.
+
+test("while signed in, no new sign-in code is issued: no device request and no browser tab", async () => {
+  await invoke("studio:signIn");
+  const first = settle(invoke("studio:awaitSignIn"));
+  await tick();
+  held.shift().resolve(reply(200, { token: token("first@account.example"), refresh_token: "r1" }));
+  assert.deepEqual(await first, { resolved: "first@account.example" });
+
+  // Start again, landing after main saved the session but before the renderer
+  // heard: the cancel has nothing left to stop.
+  await invoke("studio:cancelSignIn");
+  const before = devices;
+  opened.splice(0);
+  const second = await settle(invoke("studio:signIn"));
+  assert.deepEqual(second, { rejected: "already signed in" }, "a second code was issued while signed in");
+  assert.equal(devices, before, "a device request was made while signed in");
+  assert.deepEqual(opened, [], "a browser tab was opened while signed in");
+
+  // Nothing is left waiting that an approval could land on.
+  assert.deepEqual(await settle(invoke("studio:awaitSignIn")), { rejected: "No sign-in in progress." });
+  await tick(80);
+  assert.equal(held.length, 0, `a code was polled while signed in: ${JSON.stringify(held.map((h) => h.device_code))}`);
+  assert.equal((await invoke("studio:session"))?.email, "first@account.example");
+});
+
+test("a code started before a session existed cannot replace it, even with its approval in flight", async () => {
+  // Two codes waiting at once, as two windows or a stale renderer could leave
+  // them: the first is approved, and the second's request is already on the
+  // wire with another account's approval.
+  await invoke("studio:signIn");
+  const first = settle(invoke("studio:awaitSignIn"));
+  await tick();
+  const firstRequest = held.shift();
+  await invoke("studio:signIn");
+  const second = settle(invoke("studio:awaitSignIn"));
+  await tick();
+  const secondRequest = held.find((h) => h.device_code === `D${devices}`);
+  assert.ok(secondRequest, "fixture is wrong: the second code is not being polled");
+  held.splice(held.indexOf(secondRequest), 1);
+
+  firstRequest.resolve(reply(200, { token: token("first@account.example"), refresh_token: "r1" }));
+  assert.deepEqual(await first, { resolved: "first@account.example" });
+  secondRequest.resolve(reply(200, { token: token("other@account.example"), refresh_token: "r2" }));
+
+  assert.deepEqual(await second, { rejected: "already signed in" });
+  assert.equal((await invoke("studio:session"))?.email, "first@account.example", "the second code replaced the session");
+  await tick(80);
+  assert.equal(held.length, 0, `the second code was polled after the session existed: ${JSON.stringify(held.map((h) => h.device_code))}`);
+});
+
+test("a code waiting when a session appears stops polling at once", async () => {
+  await invoke("studio:signIn");
+  const first = settle(invoke("studio:awaitSignIn"));
+  await tick();
+  const firstRequest = held.shift();
+  await invoke("studio:signIn");
+  const second = settle(invoke("studio:awaitSignIn"));
+  await tick();
+  // The second code's first answer is "keep waiting".
+  for (const h of held.splice(0)) h.resolve(reply(400, { error: "authorization_pending" }));
+  firstRequest.resolve(reply(200, { token: token("first@account.example"), refresh_token: "r1" }));
+  assert.deepEqual(await first, { resolved: "first@account.example" });
+  // Raced, so the code before the fix fails here rather than polling on.
+  const outcome = await Promise.race([second, tick(1_000).then(() => "still polling 1 s after the session existed")]);
+  assert.deepEqual(outcome, { rejected: "already signed in" });
+  await tick(80);
+  assert.equal(held.length, 0, "the second code was polled after the session existed");
+  assert.equal((await invoke("studio:session"))?.email, "first@account.example");
+});
