@@ -60,6 +60,7 @@ import {
   signOut,
   testRemoteMcp,
   startDeviceAuth,
+  abandonDeviceStart,
   cancelDeviceAuth,
   DEFAULT_ISSUER,
   issuer,
@@ -469,7 +470,9 @@ export function registerIpc(): void {
     // issuer and sent the old device code to the new control plane, and a token
     // already on its way back from the old one was saved under the new one.
     // The cancel reaches a request already on the wire and discards its answer
-    // (KYB-680); the wait unwinds as a cancellation, which is not shown.
+    // (KYB-680); the wait unwinds as a cancellation, which is not shown. A code
+    // still being requested is abandoned the same way.
+    abandonDeviceStart();
     cancelDeviceAuth();
     pending = null;
     signOut();
