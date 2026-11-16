@@ -145,3 +145,70 @@ for (const [why, late] of [
     await unmount();
   });
 }
+
+test("in Electron's order, nothing can start a third code while the second is being fetched", async (t) => {
+  // In a real process the cancel's reply comes first and the old wait's
+  // rejection follows at once, BEFORE the new code is back from the control
+  // plane. The old attempt must not hand back a live button in that gap.
+  t.mock.method(console, "warn", () => {});
+  const { calls, waits } = bridge();
+  let releaseSecond;
+  const { host, unmount } = await mountAndPressSignIn();
+  window.studio.cancelSignIn = async () => {
+    calls.push("cancel");
+    // The old wait's rejection is its own IPC reply, so it lands just after
+    // the cancel's, once the new attempt has begun.
+    void sleep(5).then(() =>
+      waits[0].reject(new Error("Error invoking remote method 'studio:awaitSignIn': Error: sign-in cancelled")),
+    );
+  };
+  window.studio.signIn = async () => {
+    calls.push("signIn#2");
+    await new Promise((resolve) => (releaseSecond = resolve));
+    return { userCode: "CODE-2", verificationUri: "https://verify.example/2" };
+  };
+
+  await act(async () => button(host, "Start again").click());
+  await act(async () => sleep(30));
+  // Only the two buttons that start a code. ("Change", for the control plane,
+  // is live throughout, as it is on main.)
+  const starters = () =>
+    [...host.querySelectorAll("button")].filter((b) => ["Sign in", "Start again"].includes(b.textContent.trim()));
+  const live = starters().filter((b) => !b.disabled).map((b) => b.textContent.trim());
+  assert.deepEqual(live, [], `a button was live while the second code was being fetched: ${JSON.stringify(live)}`);
+  assert.equal(shownError(host), null);
+
+  // A second click in that gap starts nothing.
+  for (const b of starters()) await act(async () => b.click());
+  await act(async () => sleep(30));
+  assert.deepEqual(calls, ["signIn#1", "await", "cancel", "signIn#2"]);
+
+  await act(async () => releaseSecond());
+  await act(async () => sleep(30));
+  assert.equal(shownCode(host), "CODE-2");
+  assert.equal(button(host, "Start again")?.disabled, false);
+  for (const w of waits.slice(1)) w.reject(new Error("sign-in cancelled"));
+  await act(async () => sleep(10));
+  await unmount();
+});
+
+test("a double click on Start again cancels once and fetches one new code", async () => {
+  const { calls, waits } = bridge();
+  const { host, unmount } = await mountAndPressSignIn();
+  // A cancel that takes a moment, so the second click lands while the first
+  // is still cancelling. Two separate events, as a real double click is, so
+  // React renders between them.
+  window.studio.cancelSignIn = async () => {
+    calls.push("cancel");
+    await sleep(20);
+  };
+  const startAgain = button(host, "Start again");
+  await act(async () => startAgain.click());
+  await act(async () => startAgain.click());
+  await act(async () => sleep(40));
+  assert.deepEqual(calls, ["signIn#1", "await", "cancel", "signIn#2", "await"]);
+  assert.equal(shownCode(host), "CODE-2");
+  for (const w of waits) w.reject(new Error("sign-in cancelled"));
+  await act(async () => sleep(10));
+  await unmount();
+});

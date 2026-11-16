@@ -28,11 +28,12 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "kyb-start-again-"));
 const handlers = new Map();
+const opened = [];
 
 mock.module("electron", {
   exports: {
     app: { getPath: () => dir, on: () => {}, whenReady: async () => {} },
-    shell: { openExternal: async () => {} },
+    shell: { openExternal: async (url) => void opened.push(url) },
     dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on: () => {} },
     BrowserWindow: class {
@@ -77,6 +78,7 @@ globalThis.fetch = async (url, init) => {
       device_code: `D${devices}`,
       user_code: `CODE-${devices}`,
       verification_uri: "https://cp.example/verify",
+      verification_uri_complete: `https://cp.example/verify?code=CODE-${devices}`,
       interval: 0.01,
       expires_in: 600,
     });
@@ -147,9 +149,11 @@ test("the old wait unwinding late does not take the new sign-in with it", async 
   const oldRequest = held.shift();
 
   await invoke("studio:cancelSignIn");
+  opened.splice(0);
   const second = await invoke("studio:signIn");
   const newDevice = `D${devices}`;
   assert.equal(second.userCode, `CODE-${devices}`);
+  assert.deepEqual(opened, [`https://cp.example/verify?code=CODE-${devices}`], "the browser was not opened on the new code");
 
   // Only now does the abandoned request come back.
   oldRequest.resolve(reply(400, { error: "authorization_pending" }));
