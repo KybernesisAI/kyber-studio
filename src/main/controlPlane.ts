@@ -257,16 +257,25 @@ export async function startDeviceAuth(): Promise<DeviceStart> {
     console.log("[auth] sign-in refused: already signed in");
     throw new Error(ALREADY_SIGNED_IN);
   }
-  const res = await fetch(`${issuer()}/api/oauth/device`, {
+  // The control plane this code is asked of. A change while the request is on
+  // the wire makes the answer the OLD control plane's code: polled from here it
+  // would go to the new one (KYB-682). So it is dropped before a tab is opened
+  // or the code is handed out, as a cancellation, which is not shown.
+  const from = issuer();
+  const res = await fetch(`${from}/api/oauth/device`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ deviceId: deviceId(), deviceLabel: "KYBER Studio" }),
     signal: AbortSignal.timeout(20_000),
   });
-  if (!res.ok) {
-    throw new Error(`Control plane refused the device request (HTTP ${res.status}) at ${issuer()}.`);
+  const body = res.ok ? ((await res.json()) as Record<string, unknown>) : null;
+  if (issuer() !== from) {
+    console.log("[auth] sign-in cancelled: the control plane changed while the code was requested");
+    throw new Error(SIGN_IN_CANCELLED);
   }
-  const body = (await res.json()) as Record<string, unknown>;
+  if (!res.ok || !body) {
+    throw new Error(`Control plane refused the device request (HTTP ${res.status}) at ${from}.`);
+  }
   const start: DeviceStart = {
     deviceCode: String(body.device_code),
     userCode: String(body.user_code),

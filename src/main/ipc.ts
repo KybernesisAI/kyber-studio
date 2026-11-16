@@ -463,6 +463,15 @@ export function registerIpc(): void {
     // The identity, its refresh token and every agent grant belong to the
     // control plane that issued them. Carrying them to another one would only
     // produce 401s that read as a broken agent, so moving means signing out.
+    //
+    // A sign-in code waiting at the change belongs to the old control plane as
+    // well, so it ends here too (KYB-682). Left running, its poll followed the
+    // issuer and sent the old device code to the new control plane, and a token
+    // already on its way back from the old one was saved under the new one.
+    // The cancel reaches a request already on the wire and discards its answer
+    // (KYB-680); the wait unwinds as a cancellation, which is not shown.
+    cancelDeviceAuth();
+    pending = null;
     signOut();
     setIssuer(url);
     return controlPlaneState();
