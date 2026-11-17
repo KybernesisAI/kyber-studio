@@ -1,0 +1,5 @@
+# Required checks for ship (read from main). The review status is always required too.
+# The macOS arm is advisory (see ci.yml), so it is not listed.
+check (ubuntu-latest)
+check (windows-latest)
+samantha/review
