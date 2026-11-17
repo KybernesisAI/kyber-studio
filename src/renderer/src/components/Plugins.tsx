@@ -636,7 +636,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
           <div className="pl__desc" style={{ marginTop: 6 }}>{view.path}</div>
           <div className="ask__options" style={{ marginTop: 10 }}>
             <button
-              className="btn"
+              className="btn btn--primary"
               onClick={() => void save([], { onUnreadableConfig: "quarantine" })}
             >
               Move it aside and start again
