@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { JSDOM } from "jsdom";
 
 /**
@@ -46,6 +46,8 @@ const PLACES = [
   { name: "small", wrap: "", cls: "btn btn--small" },
   { name: "new-room footer", wrap: "newroom__foot", cls: "btn btn--primary" },
   { name: "server row", wrap: "pl__row", cls: "btn" },
+  { name: "server row, Connect", wrap: "pl__row", cls: "btn btn--primary" },
+  { name: "sign-in card, Connect", wrap: "card", cls: "btn btn--primary" },
   { name: "account actions", wrap: "cd__acct", cls: "btn" },
   { name: "sign-in actions", wrap: "signin__actions", cls: "btn" },
   { name: "damaged-config block", wrap: "empty", cls: "btn btn--primary" },
@@ -203,4 +205,26 @@ test("a primary button's label has at least 4.5:1 against its fill, at rest and 
       }
     }
   }
+});
+
+test("every component spells the primary class the way the stylesheet does", () => {
+  // Two Connect buttons in Plugins.tsx were `btn btn-primary`, one dash. The
+  // stylesheet defines no such class, so both rendered as a plain `.btn` and
+  // nothing failed. This reads source text rather than rendering, because
+  // the second of them is only on screen part-way through adding a server.
+  assert.ok(!/\.btn-primary\b/.test(SOURCE), "the stylesheet now defines .btn-primary; this test's premise has changed");
+  const dir = new URL("../src/renderer/src/", import.meta.url);
+  const misspelt = [];
+  for (const entry of readdirSync(dir, { recursive: true })) {
+    const file = String(entry);
+    if (!file.endsWith(".tsx")) continue;
+    readFileSync(new URL(file, dir), "utf8")
+      .split("\n")
+      .forEach((line, i) => {
+        for (const m of line.matchAll(/\bbtn[-_]+primary\b/g)) {
+          if (m[0] !== "btn--primary") misspelt.push(`${file}:${i + 1}: ${m[0]}`);
+        }
+      });
+  }
+  assert.deepEqual(misspelt, [], `primary class misspelt, so the button renders plain:\n${misspelt.join("\n")}`);
 });
