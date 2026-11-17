@@ -251,22 +251,55 @@ export interface DeviceStart {
  */
 export const ALREADY_SIGNED_IN = "already signed in";
 
+let deviceStartAbort: AbortController | null = null;
+/**
+ * Abandons a device request still on the wire: what `studio:setControlPlane`
+ * calls, because a code being asked of the old control plane must not be
+ * handed out once the person has moved to another (KYB-682).
+ */
+export function abandonDeviceStart(): void {
+  deviceStartAbort?.abort();
+  deviceStartAbort = null;
+}
+
 export async function startDeviceAuth(): Promise<DeviceStart> {
   // Before the device request, so a refusal issues no code and opens no tab.
   if (loadSession()) {
     console.log("[auth] sign-in refused: already signed in");
     throw new Error(ALREADY_SIGNED_IN);
   }
-  const res = await fetch(`${issuer()}/api/oauth/device`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ deviceId: deviceId(), deviceLabel: "KYBER Studio" }),
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!res.ok) {
+  // A change of control plane while this request is on the wire makes its
+  // answer the OLD control plane's code: polled from here it would go to the
+  // new one (KYB-682). The change aborts the request through
+  // `abandonDeviceStart`, so it ends at once rather than when the old control
+  // plane answers or times out, and whatever comes back (a code, or a failure
+  // to reach a control plane the person has left) ends as a cancellation,
+  // which is not shown. No tab is opened and no code is handed out.
+  const abort = new AbortController();
+  deviceStartAbort = abort;
+  let res: Response;
+  let body: Record<string, unknown> | null;
+  try {
+    res = await fetch(`${issuer()}/api/oauth/device`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ deviceId: deviceId(), deviceLabel: "KYBER Studio" }),
+      signal: AbortSignal.any([abort.signal, AbortSignal.timeout(20_000)]),
+    });
+    body = res.ok ? ((await res.json()) as Record<string, unknown>) : null;
+  } catch (error) {
+    if (abort.signal.aborted) throw new Error(SIGN_IN_CANCELLED);
+    throw error;
+  } finally {
+    if (deviceStartAbort === abort) deviceStartAbort = null;
+  }
+  if (abort.signal.aborted) {
+    console.log("[auth] sign-in cancelled: the control plane changed while the code was requested");
+    throw new Error(SIGN_IN_CANCELLED);
+  }
+  if (!res.ok || !body) {
     throw new Error(`Control plane refused the device request (HTTP ${res.status}) at ${issuer()}.`);
   }
-  const body = (await res.json()) as Record<string, unknown>;
   const start: DeviceStart = {
     deviceCode: String(body.device_code),
     userCode: String(body.user_code),

@@ -65,6 +65,11 @@ mock.module("@electron-toolkit/utils", {
 });
 
 let devices = 0;
+let holdDevice = false;
+let releaseDevice = () => {};
+let failDevice = () => {};
+// Every token request's URL, so a test can see which control plane it went to.
+const tokenUrls = [];
 let honourSignal = false;
 const held = [];
 const reply = (status, body) =>
@@ -73,6 +78,16 @@ const reply = (status, body) =>
 globalThis.fetch = async (url, init) => {
   const u = String(url);
   if (u.endsWith("/api/oauth/device")) {
+    // Held, when a test asks, until it releases the answer or fails the
+    // request. Like a real fetch, it fails when its signal fires, if the test
+    // sets `honourSignal`.
+    if (holdDevice) {
+      await new Promise((release, fail) => {
+        releaseDevice = release;
+        failDevice = fail;
+        if (honourSignal) init.signal?.addEventListener("abort", () => fail(init.signal.reason), { once: true });
+      });
+    }
     devices += 1;
     return reply(200, {
       device_code: `D${devices}`,
@@ -85,6 +100,7 @@ globalThis.fetch = async (url, init) => {
   }
   if (u.endsWith("/api/oauth/token")) {
     const { device_code } = JSON.parse(init.body);
+    tokenUrls.push(u);
     return new Promise((resolve, reject) => {
       held.push({ device_code, resolve });
       // As a real fetch does: the request fails when its signal fires.
@@ -109,7 +125,10 @@ beforeEach(async () => {
   await tick();
   await invoke("studio:signOut");
   rmSync(sessionFile, { force: true });
+  await invoke("studio:setControlPlane", null);
+  tokenUrls.splice(0);
   honourSignal = false;
+  holdDevice = false;
   mock.method(console, "log", () => {});
 });
 
@@ -258,4 +277,119 @@ test("a code waiting when a session appears stops polling at once", async () => 
   await tick(80);
   assert.equal(held.length, 0, "the second code was polled after the session existed");
   assert.equal((await invoke("studio:session"))?.email, "first@account.example");
+});
+
+// KYB-682: changing the control plane while a sign-in code waits. The code
+// belongs to the control plane that issued it; the change has to end that
+// sign-in, not carry it to the new one.
+
+const OTHER_CP = "https://other-cp.example";
+
+test("a token answer in flight when the control plane changes is discarded: no session is saved", async () => {
+  await invoke("studio:signIn");
+  const wait = settle(invoke("studio:awaitSignIn"));
+  await tick();
+  const inFlight = held.shift();
+  assert.ok(inFlight, "fixture is wrong: no token request in flight");
+
+  await invoke("studio:setControlPlane", OTHER_CP);
+  tokenUrls.splice(0);
+  inFlight.resolve(reply(200, { token: token("old-cp@account.example"), refresh_token: "r" }));
+
+  assert.deepEqual(await wait, { rejected: "sign-in cancelled" }, "the sign-in was not ended by the change");
+  assert.equal(await invoke("studio:session"), null, "a session from the old control plane was kept under the new one");
+  assert.ok(!existsSync(sessionFile), "a session was written to disk");
+  await tick(80);
+  assert.deepEqual(tokenUrls, [], "the old code was polled after the change");
+  assert.equal(held.length, 0);
+  // Nothing is left waiting that an approval could land on.
+  assert.deepEqual(await settle(invoke("studio:awaitSignIn")), { rejected: "No sign-in in progress." });
+  assert.deepEqual(tokenUrls, [], "the old code was polled after the change");
+});
+
+test("a code waiting when the control plane changes stops at once, and is never sent to either control plane", async () => {
+  await invoke("studio:signIn");
+  const wait = settle(invoke("studio:awaitSignIn"));
+  await tick();
+  // The code's first answer is "keep waiting".
+  held.shift().resolve(reply(400, { error: "authorization_pending" }));
+
+  await invoke("studio:setControlPlane", OTHER_CP);
+  tokenUrls.splice(0);
+  // Raced, so the code before the fix fails here rather than polling on.
+  const outcome = await Promise.race([wait, tick(1_000).then(() => "still waiting 1 s after the change")]);
+  assert.deepEqual(outcome, { rejected: "sign-in cancelled" });
+  assert.deepEqual(tokenUrls, [], "the old code was sent after the change");
+  assert.equal(held.length, 0, "a token request for the old code is still open");
+  assert.deepEqual(await settle(invoke("studio:awaitSignIn")), { rejected: "No sign-in in progress." });
+  await tick(80);
+  assert.deepEqual(tokenUrls, [], "the old code was sent after the change");
+  assert.equal(await invoke("studio:session"), null);
+});
+
+test("a code requested when the control plane changes is dropped: no tab, and never polled", async () => {
+  holdDevice = true;
+  const started = settle(invoke("studio:signIn"));
+  await tick();
+  opened.splice(0);
+  await invoke("studio:setControlPlane", OTHER_CP);
+  // The old control plane answers the request that was already on the wire.
+  releaseDevice();
+  holdDevice = false;
+
+  assert.deepEqual(await started, { rejected: "sign-in cancelled" }, "the old control plane's code was handed out after the change");
+  assert.deepEqual(opened, [], "a browser tab was opened on the old control plane's code");
+  assert.deepEqual(await settle(invoke("studio:awaitSignIn")), { rejected: "No sign-in in progress." });
+  await tick(80);
+  assert.deepEqual(tokenUrls, [], `the old code was sent after the change: ${JSON.stringify(tokenUrls)}`);
+  assert.equal(held.length, 0);
+});
+
+test("a code issued but not yet waited on when the control plane changes is never polled", async () => {
+  // The gap between `studio:signIn` returning and the renderer's
+  // `studio:awaitSignIn` arriving: no poll is running yet for the cancel to stop.
+  await invoke("studio:signIn");
+  await invoke("studio:setControlPlane", OTHER_CP);
+  tokenUrls.splice(0);
+  // Raced, so the code before the fix fails here rather than polling on.
+  const wait = settle(invoke("studio:awaitSignIn"));
+  const outcome = await Promise.race([wait, tick(1_000).then(() => "the old code was still being polled 1 s after the change")]);
+  assert.deepEqual(outcome, { rejected: "No sign-in in progress." });
+  assert.deepEqual(tokenUrls, [], `the old code was sent after the change: ${JSON.stringify(tokenUrls)}`);
+  assert.equal(held.length, 0);
+});
+
+test("a code requested when the control plane changes ends at once, without waiting for the old control plane", async () => {
+  holdDevice = true;
+  honourSignal = true;
+  const started = settle(invoke("studio:signIn"));
+  await tick();
+  opened.splice(0);
+  await invoke("studio:setControlPlane", OTHER_CP);
+  // The old control plane never answers: the request is not released.
+  const outcome = await Promise.race([started, tick(1_000).then(() => "still requesting 1 s after the change")]);
+  assert.deepEqual(outcome, { rejected: "sign-in cancelled" });
+  assert.deepEqual(opened, [], "a browser tab was opened on the old control plane's code");
+  assert.deepEqual(await settle(invoke("studio:awaitSignIn")), { rejected: "No sign-in in progress." });
+  assert.deepEqual(tokenUrls, []);
+});
+
+test("a code request that fails after the control plane changed ends as a cancellation, not an error", async () => {
+  // As an unreachable old control plane does. The signal is ignored here, so
+  // this is the failure itself, not the abort, arriving after the change.
+  holdDevice = true;
+  const started = settle(invoke("studio:signIn"));
+  await tick();
+  await invoke("studio:setControlPlane", OTHER_CP);
+  failDevice(new TypeError("fetch failed"));
+  assert.deepEqual(await started, { rejected: "sign-in cancelled" }, "the old control plane's failure was reported after the change");
+  assert.deepEqual(tokenUrls, []);
+});
+
+test("a code request that fails with no control-plane change still reports the failure", async () => {
+  holdDevice = true;
+  const started = settle(invoke("studio:signIn"));
+  await tick();
+  failDevice(new TypeError("fetch failed"));
+  assert.deepEqual(await started, { rejected: "fetch failed" });
 });
