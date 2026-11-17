@@ -618,7 +618,7 @@ test("DOM: the way out is drawn as the primary action", async () => {
   // the block's tertiary grey on an almost invisible tint: 2.9:1 in light,
   // 3.45:1 in dark, and it read as a sentence rather than a button.
   // `.btn--primary` is a solid fill with inverse text; its contrast in both
-  // themes is pinned in button-disabled-style.test.mjs.
+  // themes is pinned in button-style.test.mjs.
   const b = bridge({ damaged: true });
   const panel = await mount(b.api);
   try {

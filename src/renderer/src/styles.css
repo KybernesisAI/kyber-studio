@@ -543,7 +543,10 @@ input, textarea { font: inherit; color: inherit; }
 }
 .btn:hover { background: var(--selected); }
 .btn--primary { background: var(--bubble-user); color: var(--ink-inverse); }
-.btn--primary:hover { opacity: 0.87; }
+/* Restates the fill: `.btn:hover` is just as specific and would otherwise
+   swap it for the faint hover tint, leaving the inverse label on almost
+   nothing. */
+.btn--primary:hover { background: var(--bubble-user); opacity: 0.87; }
 /* The `button` rule near the top of this file sets `color: inherit` and
    `cursor: pointer` on every button, which hides the user agent's own
    disabled look. Keep it (without `color: inherit` button text falls back to

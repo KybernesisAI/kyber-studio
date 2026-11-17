@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 
 /**
- * How a disabled `.btn` looks, measured through the real stylesheet (KYB-598).
+ * How a `.btn` looks when disabled and when hovered, measured through the real
+ * stylesheet (KYB-598).
  *
  * `styles.css` sets `button { color: inherit; cursor: pointer; }` for every
  * button. That hides the user agent's own disabled look, so until a `.btn`
@@ -12,18 +13,33 @@ import { JSDOM } from "jsdom";
  * colour, same fill, same hand cursor. The `button` rule has to stay: without
  * `color: inherit` button text falls back to black, 1.47:1 on the dark theme.
  *
- * jsdom applies the cascade (selectors and specificity) for `cursor` and
- * `opacity`, so the first test reads computed values from real markup rather
- * than looking for a rule by name. It does not resolve `var()` colours or the
- * `background` shorthand, so contrast is computed from the stylesheet's own
- * colour tokens instead.
+ * And `.btn:hover` is more specific than `.btn--primary`, so a hovered primary
+ * button used to swap its solid fill for the faint hover tint while keeping
+ * its inverse label: 1.14:1 in light, 1.35:1 in dark, measured in Chromium
+ * with the hover's 0.87 opacity applied.
+ *
+ * jsdom applies the cascade (selectors, specificity, order), so these tests
+ * read computed values from real markup rather than looking for a rule by
+ * name. Two adjustments to the stylesheet text make that possible, and
+ * neither changes which rule wins:
+ *
+ *  - `:hover` becomes the class `.is-hover`. Both weigh one class in
+ *    specificity, and a test can put a class on an element where it cannot
+ *    put the pointer.
+ *  - `background:` becomes `background-color:`. jsdom drops the shorthand when
+ *    its value is a `var()`; every `.btn` fill is a single colour, so the
+ *    longhand carries the same value.
+ *
+ * jsdom does not resolve `var()`, so colours come back as token names and
+ * contrast is computed from the stylesheet's own token values.
  */
 
-const CSS = readFileSync(new URL("../src/renderer/src/styles.css", import.meta.url), "utf8");
+const SOURCE = readFileSync(new URL("../src/renderer/src/styles.css", import.meta.url), "utf8");
+const CSS = SOURCE.replace(/:hover\b/g, ".is-hover").replace(/\bbackground:/g, "background-color:");
 
-// One button pair per place the renderer puts a `.btn` that can be disabled,
-// plus the variants it combines with. A rule scoped to one of these would
-// pass in that container and fail in the others.
+// One place per container the renderer puts a `.btn` in, with the variant it
+// uses there. A rule scoped to one of these would pass there and fail in the
+// others.
 const PLACES = [
   { name: "bare", wrap: "", cls: "btn" },
   { name: "primary", wrap: "", cls: "btn btn--primary" },
@@ -37,15 +53,26 @@ const PLACES = [
   { name: "dialog row", wrap: "stack-row", cls: "btn" },
 ];
 
+// The class that stands in for `:hover` (see above).
+const HOVER = "is-hover";
+
+// Each place gets the same button three ways: live, hovered and disabled.
 function render() {
   const body = PLACES.map(
     ({ wrap, cls }, i) =>
-      `<div class="${wrap}"><button id="live${i}" class="${cls}">Live</button>` +
-      `<button id="off${i}" class="${cls}" disabled>Off</button></div>`,
+      `<div class="${wrap}">` +
+      `<button id="live${i}" class="${cls}">Live</button>` +
+      `<button id="hover${i}" class="${cls} ${HOVER}">Hovered</button>` +
+      `<button id="off${i}" class="${cls}" disabled>Off</button>` +
+      `</div>`,
   ).join("");
-  const dom = new JSDOM(`<!doctype html><html><head><style>${CSS}</style></head><body><div class="modal">${body}</div></body></html>`);
+  const dom = new JSDOM(
+    `<!doctype html><html><head><style>${CSS}</style></head><body><div class="modal">${body}</div></body></html>`,
+  );
   return dom.window;
 }
+
+const style = (w, id) => w.getComputedStyle(w.document.getElementById(id));
 
 /** Every style rule in the sheet, including those inside `@media`, with the condition. */
 function styleRules(window) {
@@ -63,8 +90,8 @@ function styleRules(window) {
 test("a disabled .btn is dimmed and has no hand cursor, wherever the app puts one", () => {
   const w = render();
   PLACES.forEach(({ name }, i) => {
-    const live = w.getComputedStyle(w.document.getElementById(`live${i}`));
-    const off = w.getComputedStyle(w.document.getElementById(`off${i}`));
+    const live = style(w, `live${i}`);
+    const off = style(w, `off${i}`);
     // The live twin is the control: if it stopped reading as a pointer at
     // full opacity, the assertions below would prove nothing.
     assert.equal(live.cursor, "pointer", `${name}: a live .btn lost its hand cursor`);
@@ -79,9 +106,11 @@ test("a disabled .btn is dimmed and has no hand cursor, wherever the app puts on
 
 test("one shared rule styles a disabled .btn, not one per container", () => {
   const w = render();
+  // `.btn` as a whole class name: `-` is a word boundary, so a plain `\b`
+  // would also count `.btn--primary` and `.btn--small`.
   const disabledBtn = styleRules(w)
     .flatMap(({ rule }) => rule.selectorText.split(",").map((s) => s.trim()))
-    .filter((s) => /\.btn\b/.test(s) && /(:disabled|\[disabled\])/.test(s));
+    .filter((s) => /\.btn(?![\w-])/.test(s) && /(:disabled|\[disabled\])/.test(s));
   const scoped = disabledBtn.filter((s) => !/^\.btn(:disabled|\[disabled\])$/.test(s));
   assert.deepEqual(scoped, [], "a disabled .btn is styled only inside a particular container");
   assert.ok(disabledBtn.length >= 1, "no rule styles a disabled .btn at all");
@@ -96,7 +125,7 @@ test("the button rule keeps color: inherit, so live button text stays --ink", ()
   assert.equal(rule.rule.style.getPropertyValue("color"), "inherit", "the button rule no longer inherits colour");
 });
 
-// ── contrast of the primary button, which the damaged-config way out uses ────
+// ── contrast of the primary button, at rest and hovered ─────────────────────
 
 function tokens(window, media) {
   const out = {};
@@ -112,7 +141,11 @@ function tokens(window, media) {
 
 function resolve(value, vars) {
   let v = value.trim();
-  for (let n = 0; n < 10 && v.startsWith("var("); n++) v = vars[v.slice(4, -1).trim()].trim();
+  for (let n = 0; n < 10 && v.startsWith("var("); n++) {
+    const name = v.slice(4, -1).trim();
+    assert.ok(name in vars, `the token ${name} is not defined`);
+    v = vars[name].trim();
+  }
   return v;
 }
 
@@ -137,23 +170,37 @@ function contrast(a, b) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-test("the primary button's label has at least 4.5:1 against its fill, in both themes", () => {
-  const w = render();
-  const primary = styleRules(w).find(({ rule, media }) => !media && rule.selectorText.trim() === ".btn--primary");
-  assert.ok(primary, "the .btn--primary rule is gone");
-  const fill = primary.rule.style.getPropertyValue("background") || primary.rule.style.getPropertyValue("background-color");
+/**
+ * Label against fill as drawn on screen: the fill over the modal surface, the
+ * label over the fill, then both faded by the element's opacity over the
+ * surface, which is what `.btn--primary:hover`'s 0.87 does.
+ */
+function onScreenContrast(computed, vars) {
+  const surface = rgba(resolve("var(--surface)", vars));
+  const fill = over(rgba(resolve(computed.backgroundColor, vars)), surface);
+  const label = over(rgba(resolve(computed.color, vars)), fill);
+  const opacity = Number(computed.opacity);
+  const faded = (c) => over([c[0], c[1], c[2], opacity], surface);
+  return contrast(faded(label), faded(fill));
+}
 
-  // Inside the damaged-config block, whose own colour is the tertiary grey
-  // that made the old label unreadable: the primary colour must win there.
-  const inEmpty = w.document.getElementById(`live${PLACES.findIndex((p) => p.wrap === "empty")}`);
-  const label = w.getComputedStyle(inEmpty).color;
+test("a primary button's label has at least 4.5:1 against its fill, at rest and hovered, in both themes", () => {
+  const w = render();
+  const primaries = PLACES.map((p, i) => ({ ...p, i })).filter((p) => p.cls.includes("btn--primary"));
+  // The damaged-config block is the case this exists for: its own colour is
+  // the tertiary grey that made the old recovery label unreadable.
+  assert.ok(primaries.some((p) => p.wrap === "empty"), "the damaged-config block is not among the places measured");
 
   for (const [theme, media] of [["light", null], ["dark", "(prefers-color-scheme: dark)"]]) {
     const vars = { ...tokens(w, null), ...(media ? tokens(w, media) : {}) };
-    const surface = rgba(resolve("var(--surface)", vars));
-    const bg = over(rgba(resolve(fill, vars)), surface);
-    const fg = over(rgba(resolve(label, vars)), bg);
-    const ratio = contrast(fg, bg);
-    assert.ok(ratio >= 4.5, `${theme}: the primary button's label is ${ratio.toFixed(2)}:1 against its fill`);
+    for (const { name, i } of primaries) {
+      for (const state of ["live", "hover"]) {
+        const ratio = onScreenContrast(style(w, `${state}${i}`), vars);
+        assert.ok(
+          ratio >= 4.5,
+          `${theme}, ${name}, ${state === "hover" ? "hovered" : "at rest"}: the primary label is ${ratio.toFixed(2)}:1 against its fill`,
+        );
+      }
+    }
   }
 });
