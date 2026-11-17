@@ -2235,9 +2235,22 @@ export async function addCustomConnector(input: {
     body: JSON.stringify(input),
     signal: AbortSignal.timeout(30_000),
   });
-  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  // `?? {}`: a body of JSON `null` parses without throwing.
+  const body = ((await res.json().catch(() => ({}))) ?? {}) as {
+    error?: string;
+    slug?: string;
+    needsSignIn?: boolean;
+  };
   if (!res.ok) return { ok: false, error: body.error ?? `The control plane refused (${res.status}).` };
-  return { ok: true };
+  // Both fields go back to the add form: a server that signs people in, and
+  // that this person has not signed in to yet, turns the form into a card
+  // offering Connect rather than closing it (KYB-686). Anything other than an
+  // explicit `true` closes the form, as before.
+  return {
+    ok: true,
+    slug: typeof body.slug === "string" ? body.slug : undefined,
+    needsSignIn: body.needsSignIn === true,
+  };
 }
 
 /**
