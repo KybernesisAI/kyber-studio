@@ -499,12 +499,13 @@ function captureErrors(t) {
  *   rejects  — these methods throw instead of answering
  *   rejectWith — per method, the message a rejecting method throws instead of
  *              the default (the save tests use the real Windows refusal)
+ *   cards    — the remote cards `connectors()` answers with (none by default)
  *   pending  — these methods return a promise that never settles, which is how
  *              the panel is held in its `loading` state long enough to take a
  *              census of it, and how a dependency that hangs rather than fails
  *              is driven
  */
-function bridge({ servers = [], damaged = false, onSave, rejects = [], rejectWith = {}, pending = [] } = {}) {
+function bridge({ servers = [], cards = [], damaged = false, onSave, rejects = [], rejectWith = {}, pending = [] } = {}) {
   const saves = [];
   const loads = [];
   const connectorCalls = [];
@@ -513,7 +514,7 @@ function bridge({ servers = [], damaged = false, onSave, rejects = [], rejectWit
   const answers = {
     connectors: async () => {
       connectorCalls.push(Date.now());
-      return { configured: true, connectors: [] };
+      return { configured: true, connectors: cards };
     },
     mcpServers: async () => {
       loads.push(Date.now());
@@ -607,6 +608,56 @@ test("DOM: the way out can actually be pressed", async () => {
       recover.hasAttribute("disabled"),
       false,
       "the only way out of a damaged config is disabled",
+    );
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test("DOM: the way out is drawn as the primary action", async () => {
+  // KYB-598. As a plain `.btn` inside the damaged-config block it inherited
+  // the block's tertiary grey on an almost invisible tint: 2.9:1 in light,
+  // 3.45:1 in dark, and it read as a sentence rather than a button.
+  // `.btn--primary` is a solid fill with inverse text; its contrast in both
+  // themes is pinned in button-style.test.mjs.
+  const b = bridge({ damaged: true });
+  const panel = await mount(b.api);
+  try {
+    const recover = button(panel.host, RECOVER);
+    assert.ok(recover, "there is no way out of the damaged state");
+    assert.ok(
+      recover.classList.contains("btn--primary"),
+      `the way out is drawn as "${recover.className}", not as the primary action`,
+    );
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test("DOM: a remote server waiting to be signed in offers Connect as the primary action", async () => {
+  // KYB-598. This button was `btn btn-primary`, one dash, a class the
+  // stylesheet does not define, so it rendered as a plain `.btn`.
+  const b = bridge({
+    cards: [
+      {
+        slug: "signs-in",
+        name: "Signs in",
+        provider: "mcp-direct",
+        authMode: "oauth",
+        present: true,
+        connected: false,
+        scope: "agent",
+        url: "https://mcp.example.test/mcp",
+      },
+    ],
+  });
+  const panel = await mount(b.api);
+  try {
+    const connect = button(panel.host, "Connect");
+    assert.ok(connect, "a server waiting to be signed in offers no Connect");
+    assert.ok(
+      connect.classList.contains("btn--primary"),
+      `Connect is drawn as "${connect.className}", not as the primary action`,
     );
   } finally {
     await panel.unmount();

@@ -538,7 +538,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                   // it is not a diagnostic. Offering Check here reports the
                   // missing sign-in as though the server were broken.
                   <button
-                    className="btn btn-primary"
+                    className="btn btn--primary"
                     onClick={async () => {
                       setChecking(s.slug);
                       const outcome = await window.studio!.startMcpSignIn({
@@ -636,7 +636,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
           <div className="pl__desc" style={{ marginTop: 6 }}>{view.path}</div>
           <div className="ask__options" style={{ marginTop: 10 }}>
             <button
-              className="btn"
+              className="btn btn--primary"
               onClick={() => void save([], { onUnreadableConfig: "quarantine" })}
             >
               Move it aside and start again
@@ -980,7 +980,7 @@ function AddRemoteServer({
         </p>
         {error ? <div className="error">{error}</div> : null}
         <div className="row" style={{ gap: 8 }}>
-          <button className="btn btn-primary" disabled={busy} onClick={() => void connect()}>
+          <button className="btn btn--primary" disabled={busy} onClick={() => void connect()}>
             {busy ? "Opening…" : "Connect"}
           </button>
           <button className="btn" disabled={busy} onClick={onDone}>

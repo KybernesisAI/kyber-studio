@@ -543,7 +543,17 @@ input, textarea { font: inherit; color: inherit; }
 }
 .btn:hover { background: var(--selected); }
 .btn--primary { background: var(--bubble-user); color: var(--ink-inverse); }
-.btn--primary:hover { opacity: 0.87; }
+/* Restates the fill: `.btn:hover` is just as specific and would otherwise
+   swap it for the faint hover tint, leaving the inverse label on almost
+   nothing. */
+.btn--primary:hover { background: var(--bubble-user); opacity: 0.87; }
+/* The `button` rule near the top of this file sets `color: inherit` and
+   `cursor: pointer` on every button, which hides the user agent's own
+   disabled look. Keep it (without `color: inherit` button text falls back to
+   black, unreadable in dark mode) and mark a disabled `.btn` here instead.
+   After `.btn--primary:hover` so a disabled primary button does not take the
+   hover opacity. */
+.btn:disabled { opacity: 0.45; cursor: default; }
 
 .toggle {
   width: 40px; height: 24px; border-radius: 999px; background: var(--stroke-strong);
@@ -985,7 +995,6 @@ input, textarea { font: inherit; color: inherit; }
 .newroom__opt--on { background: var(--selected); }
 .newroom__opt span { flex: 1; }
 .newroom__foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
-.newroom__foot .btn[disabled] { opacity: 0.45; cursor: default; }
 
 /* Who answers an untagged message. A select rather than a menu: three fixed
    choices, and the current one has to be readable at a glance. */
