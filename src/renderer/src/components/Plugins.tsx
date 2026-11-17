@@ -468,6 +468,19 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
 
   if (view.kind === "loading") return <div className="empty">Loading…</div>;
 
+  // Tested from the control plane, which is where the agent calls from — a
+  // server your laptop can reach and the cloud cannot is an ordinary situation.
+  const checkRemote = async (slug: string): Promise<void> => {
+    setChecking(slug);
+    const outcome = await window.studio!.testRemoteMcp(slug);
+    setResult((r) => ({ ...r, [slug]: outcome }));
+    setChecking(null);
+  };
+
+  // Remote and local rows share one `menu` state. A remote slug is prefixed so
+  // it can never equal a local server's id and open both menus at once.
+  const remoteMenu = (slug: string): string => `remote:${slug}`;
+
   const save = async (
     next: LocalMcpServer[],
     options?: SaveMcpServersOptions,
@@ -508,6 +521,9 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                           "Yours only — routines can't use it until it is shared"}
                   </div>
                 </div>
+                {/* One primary action and the ⋯ menu, as on local rows. Four
+                    controls side by side left a half-width card about 40px for
+                    the server's name, and cut "Linear" to "Line…" (KYB-687). */}
                 {checking === s.slug || awaiting === s.slug ? (
                   <span className="pl__added">
                     <Spinner />
@@ -516,23 +532,9 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                   // Say it. A connection that worked and shows only a
                   // diagnostic button reads as unfinished — the person did
                   // everything asked of them and the interface never agreed.
-                  <>
-                    <span className="pl__added">
-                      <Icon name="check" size={13} /> Connected
-                    </span>
-                    <button
-                      className="btn btn-sm"
-                      title="Ask the server whether it answers"
-                      onClick={async () => {
-                        setChecking(s.slug);
-                        const outcome = await window.studio!.testRemoteMcp(s.slug);
-                        setResult((r) => ({ ...r, [s.slug]: outcome }));
-                        setChecking(null);
-                      }}
-                    >
-                      Check
-                    </button>
-                  </>
+                  <span className="pl__added">
+                    <Icon name="check" size={13} /> Connected
+                  </span>
                 ) : s.authMode === "oauth" ? (
                   // A server that signs people in has one obvious next step, and
                   // it is not a diagnostic. Offering Check here reports the
@@ -560,47 +562,62 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                     Connect
                   </button>
                 ) : (
-                  <button
-                    className="btn"
-                    onClick={async () => {
-                      // Tested from the control plane, which is where the agent
-                      // calls from — a server your laptop can reach and the
-                      // cloud cannot is an ordinary situation.
-                      setChecking(s.slug);
-                      const outcome = await window.studio!.testRemoteMcp(s.slug);
-                      setResult((r) => ({ ...r, [s.slug]: outcome }));
-                      setChecking(null);
-                    }}
-                  >
+                  <button className="btn" onClick={() => void checkRemote(s.slug)}>
                     Check
                   </button>
                 )}
-                {s.url ? (
-                  <button
-                    className="btn btn-sm"
-                    title={
-                      s.scope === "app"
-                        ? "Change this server's address, or replace its token"
-                        : "Share this server with everyone, so routines can use it"
-                    }
-                    onClick={() => {
-                      setEditing({ name: s.name, url: s.url!, shared: s.scope === "app" });
-                      setMode("remote");
-                    }}
-                  >
-                    {s.scope === "app" ? "Change" : "Share"}
-                  </button>
-                ) : null}
+
                 <button
                   className="icon-btn"
-                  title="Remove"
-                  onClick={async () => {
-                    await window.studio!.disconnectService({ agent, slug: s.slug });
-                    await refresh();
-                  }}
+                  title="More"
+                  onClick={() => setMenu(menu === remoteMenu(s.slug) ? null : remoteMenu(s.slug))}
                 >
-                  <Icon name="trash" size={14} />
+                  <Icon name="more" size={15} />
                 </button>
+
+                {menu === remoteMenu(s.slug) ? (
+                  <div className="pl__menu">
+                    {/* Only when connected: otherwise Check, or Connect, is
+                        already the primary action on the row. */}
+                    {s.connected ? (
+                      <button
+                        title="Ask the server whether it answers"
+                        onClick={() => {
+                          setMenu(null);
+                          void checkRemote(s.slug);
+                        }}
+                      >
+                        Check again
+                      </button>
+                    ) : null}
+                    {s.url ? (
+                      <button
+                        title={
+                          s.scope === "app"
+                            ? "Change this server's address, or replace its token"
+                            : "Share this server with everyone, so routines can use it"
+                        }
+                        onClick={() => {
+                          setMenu(null);
+                          setEditing({ name: s.name, url: s.url!, shared: s.scope === "app" });
+                          setMode("remote");
+                        }}
+                      >
+                        {s.scope === "app" ? "Change" : "Share"}
+                      </button>
+                    ) : null}
+                    <button
+                      className="danger"
+                      onClick={async () => {
+                        setMenu(null);
+                        await window.studio!.disconnectService({ agent, slug: s.slug });
+                        await refresh();
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
