@@ -1,0 +1,8 @@
+# Deep paths for review-tier and ship (one extended regex per line). The build plugin's
+# defaults already cover judges, auth, money, secrets, deploy, migrations and guard rails;
+# these are this repo's own. A pull request touching one gets parallel bug hunters, a
+# confirm vote and a separate security status.
+^src/main/(localExec|localMcp|credentialStorage|mcpSecrets|updater|ipc|controlPlane|platformShell|debInstall)\.ts$
+^src/preload/
+^electron-builder\.(yml|json)$
+^build/linux/

@@ -1,8 +1,25 @@
 # Review rules: kyber-studio
 
-KYBER Studio, the signed, self-updating Electron desktop app people use to talk to their agents and to let those agents work on their own machine. It ships to customers. A reviewer reads this file from `main`, reviews the pull request's exact head commit, and runs `.claude/skills/verify` itself. Findings are Important (blocks the merge), Nit, or Pre-existing. Start the findings comment with the count of each. At most five Nits.
+KYBER Studio, the signed, self-updating Electron desktop app people use to talk to their agents and to let those agents work on their own machine. It ships to customers. A reviewer reads this file from `main`, reviews the pull request's exact head commit at the depth `review-tier` prints, and runs `.claude/skills/verify` itself. Findings are Important (blocks the merge), Nit, or Pre-existing.
 
-What failure looks like here: an agent runs something on a person's machine they didn't approve, a token reaches the renderer, a conversation shows the wrong history or answer, or an update ships a build that won't start.
+## What failure looks like here
+
+An agent runs something on a person's machine they didn't approve, a token reaches the renderer, a conversation shows the wrong history or answer, or an update ships a build that won't start. A finding that can't be tied to one of these, or to a broken done-when line, is a Nit at most.
+
+## How to write the findings
+
+- Start with the counts: `Important <a>, Nit <b>, Pre-existing <c>.` When there is nothing to fix, say "Nothing to fix." and stop.
+- Every finding cites a file and line and says what fails and how to fix it. No guesses from a name.
+- At most 5 Nits; keep the ones that matter most.
+- Name the bug class when a mistake can repeat, so every instance gets fixed, not only the line quoted.
+- Review depth comes from the changed files (`review-tier`): the build plugin's defaults plus `.github/risk` mark the deep paths, which get parallel bug hunters, a confirm vote and a separate security status.
+
+## Skip
+
+- `build/icons/**`, `build/icon-source/**`, `resources/brand/**` (images).
+- `test/fixtures/**` contents, except to check they are anonymised.
+- `package-lock.json` except for the dependency row; `out/` and `dist/`.
+- Whitespace and formatting the repo's own tools already enforce.
 
 ## Always check
 
