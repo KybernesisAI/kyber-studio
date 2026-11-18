@@ -11,6 +11,13 @@ import {
 import { Spinner } from "./Spinner";
 import { Icon } from "./primitives";
 
+/**
+ * What an MCP row says when a bridge call throws instead of answering. The
+ * thrown text is Electron's IPC wrapping, which names a channel and an
+ * exception class, so it goes to the log and not on screen (KYB-641, KYB-688).
+ */
+const ROW_FAILED_MESSAGE = "That didn’t work. Please try again.";
+
 /** Stable colour per item, so the same plugin always looks the same. */
 function tint(name: string): string {
   const palette = ["#2ec4a6", "#4f9cf0", "#7c6cf0", "#f0883e", "#e0609a", "#3fb950"];
@@ -472,9 +479,30 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   // server your laptop can reach and the cloud cannot is an ordinary situation.
   const checkRemote = async (slug: string): Promise<void> => {
     setChecking(slug);
-    const outcome = await window.studio!.testRemoteMcp(slug);
-    setResult((r) => ({ ...r, [slug]: outcome }));
-    setChecking(null);
+    try {
+      const outcome = await window.studio!.testRemoteMcp(slug);
+      setResult((r) => ({ ...r, [slug]: outcome }));
+    } catch (error) {
+      rowFailed(slug, "check", error);
+    } finally {
+      setChecking(null);
+    }
+  };
+
+  /**
+   * Put a bridge call that THREW on its row, rather than letting it escape.
+   *
+   * Every handler below sets the spinner, awaits the bridge and clears it. With
+   * nothing around the await, a rejection skipped the clear, so the spinner
+   * turned for good, and the rejection went unhandled (KYB-688). The main
+   * process answers ordinary failures as `{ ok: false, error }`; a throw is the
+   * IPC call itself failing, which a person cannot act on, so the screen gets
+   * a plain sentence and the detail goes to the log (as `saveMcpPanel` does,
+   * KYB-641).
+   */
+  const rowFailed = (key: string, action: string, error: unknown): void => {
+    console.error(`[plugins] ${action} failed for ${key}: ${error instanceof Error ? error.message : String(error)}`);
+    setResult((r) => ({ ...r, [key]: { ok: false, error: ROW_FAILED_MESSAGE } }));
   };
 
   // Remote and local rows share one `menu` state. A remote slug is prefixed so
@@ -543,12 +571,19 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                     className="btn btn--primary"
                     onClick={async () => {
                       setChecking(s.slug);
-                      const outcome = await window.studio!.startMcpSignIn({
-                        slug: s.slug,
-                        agent,
-                        shared: s.scope === "app",
-                      });
-                      setChecking(null);
+                      let outcome: { ok: boolean; error?: string };
+                      try {
+                        outcome = await window.studio!.startMcpSignIn({
+                          slug: s.slug,
+                          agent,
+                          shared: s.scope === "app",
+                        });
+                      } catch (error) {
+                        rowFailed(s.slug, "sign-in", error);
+                        return;
+                      } finally {
+                        setChecking(null);
+                      }
                       if (!outcome.ok) {
                         setResult((r) => ({ ...r, [s.slug]: { ok: false, error: outcome.error } }));
                         return;
@@ -578,8 +613,11 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                 {menu === remoteMenu(s.slug) ? (
                   <div className="pl__menu">
                     {/* Only when connected: otherwise Check, or Connect, is
-                        already the primary action on the row. */}
-                    {s.connected ? (
+                        already the primary action on the row. Not while this
+                        row is checking: a second press ran a second call
+                        beside the first, and the first to finish cleared the
+                        spinner while the other still ran (KYB-688). */}
+                    {s.connected && checking !== s.slug ? (
                       <button
                         title="Ask the server whether it answers"
                         onClick={() => {
@@ -610,7 +648,24 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                       className="danger"
                       onClick={async () => {
                         setMenu(null);
-                        await window.studio!.disconnectService({ agent, slug: s.slug });
+                        // Read the answer. It used to be thrown away, so a
+                        // refused Remove left the row exactly as it was with
+                        // nothing on screen saying no (KYB-688). The row stays
+                        // and says why, as a failed check does.
+                        let outcome: { ok: boolean; error?: string };
+                        try {
+                          outcome = await window.studio!.disconnectService({ agent, slug: s.slug });
+                        } catch (error) {
+                          rowFailed(s.slug, "remove", error);
+                          return;
+                        }
+                        if (!outcome.ok) {
+                          setResult((r) => ({
+                            ...r,
+                            [s.slug]: { ok: false, error: outcome.error ?? ROW_FAILED_MESSAGE },
+                          }));
+                          return;
+                        }
                         await refresh();
                       }}
                     >
@@ -702,14 +757,19 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                   className="btn btn--primary"
                   onClick={async () => {
                     setChecking(s.id);
-                    const outcome = await window.studio!.connectMcpServer(s.id);
-                    if (outcome.signInUrl) void window.studio!.openExternal(outcome.signInUrl);
-                    const verified = outcome.ok ? await window.studio!.testMcpServer(s.id) : null;
-                    setResult((r) => ({
-                      ...r,
-                      [s.id]: verified ?? { ok: outcome.ok, error: outcome.message },
-                    }));
-                    setChecking(null);
+                    try {
+                      const outcome = await window.studio!.connectMcpServer(s.id);
+                      if (outcome.signInUrl) void window.studio!.openExternal(outcome.signInUrl);
+                      const verified = outcome.ok ? await window.studio!.testMcpServer(s.id) : null;
+                      setResult((r) => ({
+                        ...r,
+                        [s.id]: verified ?? { ok: outcome.ok, error: outcome.message },
+                      }));
+                    } catch (error) {
+                      rowFailed(s.id, "connect", error);
+                    } finally {
+                      setChecking(null);
+                    }
                   }}
                 >
                   Connect
@@ -726,17 +786,25 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
 
               {menu === s.id ? (
                 <div className="pl__menu">
-                  <button
-                    onClick={async () => {
-                      setMenu(null);
-                      setChecking(s.id);
-                      const outcome = await window.studio!.testMcpServer(s.id);
-                      setResult((r) => ({ ...r, [s.id]: outcome }));
-                      setChecking(null);
-                    }}
-                  >
-                    Check again
-                  </button>
+                  {/* Not while this row is checking, as on remote rows (KYB-688). */}
+                  {checking !== s.id ? (
+                    <button
+                      onClick={async () => {
+                        setMenu(null);
+                        setChecking(s.id);
+                        try {
+                          const outcome = await window.studio!.testMcpServer(s.id);
+                          setResult((r) => ({ ...r, [s.id]: outcome }));
+                        } catch (error) {
+                          rowFailed(s.id, "check", error);
+                        } finally {
+                          setChecking(null);
+                        }
+                      }}
+                    >
+                      Check again
+                    </button>
+                  ) : null}
                   <button
                     onClick={() => {
                       setMenu(null);
