@@ -4,5 +4,7 @@
 # confirm vote and a separate security status.
 ^src/main/(localExec|localMcp|credentialStorage|mcpSecrets|updater|ipc|controlPlane|platformShell|debInstall)\.ts$
 ^src/preload/
-^electron-builder\.(yml|json)$
+# Signing, notarisation and installer config (the builder config itself is the "build" key
+# of package.json, which this file cannot single out).
+^build/(entitlements\.mac\.plist|windows-installer\.nsh|windows-vc-redist\.json)$
 ^build/linux/
