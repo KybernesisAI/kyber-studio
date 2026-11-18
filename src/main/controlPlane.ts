@@ -2200,6 +2200,9 @@ export async function connectService(input: {
   return { ok: true };
 }
 
+/** What a connector call answers when `fetch` itself fails: offline, or timed out. */
+const UNREACHABLE = "Could not reach the control plane.";
+
 export async function disconnectService(input: {
   agent: string;
   slug: string;
@@ -2209,12 +2212,19 @@ export async function disconnectService(input: {
 }): Promise<{ ok: boolean; error?: string }> {
   const s = await activeSession();
   if (!s?.bundle) return { ok: false, error: "Not signed in." };
-  const res = await fetch(`${issuer()}/api/connectors/disconnect`, {
-    method: "POST",
-    headers: authHeaders(s, { bundle: true, json: true }),
-    body: JSON.stringify(input),
-    signal: AbortSignal.timeout(30_000),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${issuer()}/api/connectors/disconnect`, {
+      method: "POST",
+      headers: authHeaders(s, { bundle: true, json: true }),
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch {
+    // Offline, or the 30-second timeout. Answer it, as `testRemoteMcp` does:
+    // a rejection reached the renderer as Electron's IPC wrapping (KYB-688).
+    return { ok: false, error: UNREACHABLE };
+  }
   if (!res.ok) return { ok: false, error: `Could not disconnect (${res.status}).` };
   return { ok: true };
 }
@@ -2270,12 +2280,19 @@ export async function startMcpSignIn(input: {
 }): Promise<{ ok: boolean; error?: string }> {
   const s = await activeSession();
   if (!s?.bundle) return { ok: false, error: "Not signed in." };
-  const res = await fetch(`${issuer()}/api/connectors/mcp/oauth/start`, {
-    method: "POST",
-    headers: authHeaders(s, { bundle: true, json: true }),
-    body: JSON.stringify(input),
-    signal: AbortSignal.timeout(30_000),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${issuer()}/api/connectors/mcp/oauth/start`, {
+      method: "POST",
+      headers: authHeaders(s, { bundle: true, json: true }),
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch {
+    // As in `disconnectService`: offline used to leave the row's spinner
+    // turning for good (KYB-688).
+    return { ok: false, error: UNREACHABLE };
+  }
   const body = (await res.json().catch(() => ({}))) as { authorizeUrl?: string; error?: string };
   if (!res.ok || !body.authorizeUrl) {
     return { ok: false, error: body.error ?? `The control plane refused (${res.status}).` };
@@ -2305,7 +2322,7 @@ export async function testRemoteMcp(
     if (!res.ok) return { ok: false, error: body.error ?? `The control plane answered ${res.status}.` };
     return { ok: Boolean(body.ok), tools: body.tools, error: body.error };
   } catch {
-    return { ok: false, error: "Could not reach the control plane." };
+    return { ok: false, error: UNREACHABLE };
   }
 }
 
