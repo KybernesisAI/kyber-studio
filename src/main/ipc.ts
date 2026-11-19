@@ -1,6 +1,6 @@
 import { BrowserWindow, Notification, ipcMain, shell, type WebContents } from "electron";
 import type { Attachment } from "../shared/ipc";
-import type { McpServersResult, SaveMcpServersOptions } from "../shared/ipc";
+import type { McpServersResult, RevealMcpEnvResult, SaveMcpServersOptions } from "../shared/ipc";
 import type { VoiceContext } from "../shared/ipc";
 import { closeOrbWindow, createLiveSession, moveOrbWindow, toggleOrbWindow, voiceAsk, voiceContext } from "./voice";
 import { loadState, pickFolder, saveState } from "./store";
@@ -20,6 +20,7 @@ import {
   type LocalMcpServer,
   authenticate,
   listServers,
+  revealEnvValue,
   saveServers,
   testServer,
 } from "./localMcp";
@@ -27,6 +28,7 @@ import {
   type LocalAction,
   type LocalPermission,
   answerAsk,
+  clearServerPermissions,
   readPermissions,
   setPermission,
 } from "./localExec";
@@ -101,8 +103,26 @@ export function saveMcpServersResult(
   servers: LocalMcpServer[],
   options?: SaveMcpServersOptions,
 ): McpServersResult {
+  // The ids stored before the save, so the grants of servers that leave, and
+  // of ids that arrive new, can be forgotten once it has succeeded (KYB-591).
+  // `null` when the config cannot be read: then which servers went or came is
+  // unknown, and no grant is touched, whether the save is refused or goes on
+  // to quarantine the file.
+  let before: Set<string> | null;
+  try {
+    before = new Set(listServers().map((s) => s.id));
+  } catch {
+    before = null;
+  }
   try {
     saveServers(servers, options ?? {});
+    if (before) {
+      const after = new Set(servers.map((s) => s.id));
+      clearServerPermissions([
+        ...[...before].filter((id) => !after.has(id)),
+        ...[...after].filter((id) => !before.has(id)),
+      ]);
+    }
     return { ok: true, servers: listServers() };
   } catch (error) {
     // Anything else — a full disk, a permission fault — still throws, and the
@@ -110,6 +130,18 @@ export function saveMcpServersResult(
     // for the state a user can be walked out of.
     if (!(error instanceof ConfigUnreadableError)) throw error;
     return { ok: false, code: error.code, path: error.path };
+  }
+}
+
+/** One stored env value for the edit form's eye; see `revealEnvValue`. */
+export function revealMcpEnvResult(id: string, key: string): RevealMcpEnvResult {
+  try {
+    return revealEnvValue(String(id), String(key));
+  } catch (error) {
+    // The form only offers keys it was given, so a config that has since
+    // become unreadable is the one way here. It cannot be opened from it.
+    if (!(error instanceof ConfigUnreadableError)) throw error;
+    return { ok: false, reason: "not-found" };
   }
 }
 
@@ -237,6 +269,7 @@ export function registerIpc(): void {
   ipcMain.handle("studio:testMcpServer", (_e, id: string) => testServer(id));
 
   ipcMain.handle("studio:mcpServers", () => mcpServersResult());
+  ipcMain.handle("studio:revealMcpEnv", (_e, id: string, key: string) => revealMcpEnvResult(id, key));
   ipcMain.handle(
     "studio:saveMcpServers",
     (_e, servers: LocalMcpServer[], options?: SaveMcpServersOptions) =>

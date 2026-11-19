@@ -88,6 +88,7 @@ const studio: StudioApi = {
   testRemoteMcp: (slug) => ipcRenderer.invoke("studio:testRemoteMcp", slug),
   testMcpServer: (id) => ipcRenderer.invoke("studio:testMcpServer", id),
   mcpServers: () => ipcRenderer.invoke("studio:mcpServers"),
+  revealMcpEnv: (id, key) => ipcRenderer.invoke("studio:revealMcpEnv", id, key),
   // `options` is forwarded, not dropped. Without it the quarantine escape
   // hatch is unreachable from the renderer and a damaged config can never be
   // recovered from inside the app.

@@ -1088,6 +1088,7 @@ const STATES = [
     expect: [
       ...ROW,
       { label: "Check again", pressable: true },
+      { label: "Edit", pressable: true },
       { label: "Turn off", pressable: true },
       { label: "Remove", pressable: true },
       ...ROW,
@@ -1111,6 +1112,7 @@ const STATES = [
     expect: [
       ...ROW,
       { label: "Check again", pressable: true },
+      { label: "Edit", pressable: true },
       { label: "Turn on", pressable: true },
       { label: "Remove", pressable: true },
       ADD_REMOTE,

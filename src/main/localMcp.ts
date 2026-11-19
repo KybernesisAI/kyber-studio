@@ -435,6 +435,74 @@ export function saveServers(
   for (const id of unpersistedEnv.keys()) if (!live.has(id)) unpersistedEnv.delete(id);
 
   writeAtomic(configPath(), JSON.stringify({ servers: next }, null, 2), { mode: 0o600 });
+
+  // A running server does not read its config again: `ensure` hands back the
+  // live process. So a save that changed a server, removed it or turned it off
+  // stops it here, and the next use starts it with what was just saved
+  // (KYB-591). Without this an edited key went on being used until Studio quit,
+  // and a removed server went on running with nothing able to call it.
+  //
+  // Compared as SENT, not as written: on a machine whose store is shut, a
+  // retyped value is kept in memory rather than on disk, so the written entry
+  // does not change, and the server must still restart to pick it up. Nothing
+  // starts here. Servers start when they are used, as they always have.
+  const incoming = new Map(servers.map((s) => [s.id, s] as const));
+  for (const id of [...running.keys()]) {
+    const now = incoming.get(id);
+    if (!now || !now.enabled || !sameEntry(now, stored.get(id))) stopServer(id);
+  }
+}
+
+/** Two entries say the same thing, whatever order their keys were written in. */
+function sameEntry(a: LocalMcpServer, b: LocalMcpServer | undefined): boolean {
+  if (!b) return false;
+  const canonical = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(canonical)
+      : value && typeof value === "object"
+        ? Object.fromEntries(
+            Object.entries(value as Record<string, unknown>)
+              .filter(([, v]) => v !== undefined)
+              .sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0))
+              .map(([k, v]) => [k, canonical(v)]),
+          )
+        : value;
+  return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+}
+
+/**
+ * Stop one running server. Taken out of `running` first: on Windows the handle
+ * is `cmd.exe`, `killTree` signals nothing through it, and `child.killed` stays
+ * false, so `ensure` would otherwise go on handing back the stopped process.
+ */
+function stopServer(id: string): void {
+  const state = running.get(id);
+  if (!state) return;
+  running.delete(id);
+  killTree(state.child);
+}
+
+/**
+ * Open ONE stored environment value, for the edit form's eye (KYB-591).
+ *
+ * Only the key asked for is unsealed: the others are never handed to the
+ * store, so pressing one eye cannot put every secret into the renderer, and a
+ * key that will not open does not stop a different one from opening. A value
+ * stored unsealed (written before KYB-590, or by hand) is returned as it is,
+ * without asking the store anything, as `ensure` does.
+ */
+export function revealEnvValue(
+  id: string,
+  key: string,
+):
+  | { ok: true; value: string }
+  | { ok: false; reason: "store-unavailable" | "needs-re-entry" | "not-found" } {
+  const server = listServers().find((s) => s.id === id);
+  const env = server?.env ?? {};
+  if (!Object.prototype.hasOwnProperty.call(env, key)) return { ok: false, reason: "not-found" };
+  const opened = unsealEnv(credentialStore, { [key]: env[key]! });
+  if (!opened.ok) return { ok: false, reason: opened.reason };
+  return { ok: true, value: opened.env[key]! };
 }
 
 /**
@@ -562,7 +630,7 @@ function ensure(server: LocalMcpServer): Running {
     for (const waiting of state.pending.values()) waiting.reject(error);
     state.pending.clear();
     state.ready = undefined;
-    running.delete(server.id);
+    if (running.get(server.id) === state) running.delete(server.id);
   });
 
   child.on("exit", (code) => {
@@ -575,7 +643,10 @@ function ensure(server: LocalMcpServer): Running {
       for (const waiting of state.pending.values()) waiting.reject(new Error(detail));
       state.pending.clear();
     }
-    running.delete(server.id);
+    // Only if it is still this process. A save stops a server and the next
+    // call starts its replacement under the same id, often before the old
+    // one has exited; deleting by id here dropped the new one (KYB-591).
+    if (running.get(server.id) === state) running.delete(server.id);
   });
 
   running.set(server.id, state);

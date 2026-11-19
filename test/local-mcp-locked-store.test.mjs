@@ -57,6 +57,7 @@ const {
   credentialFailureIds,
   credentialStoreName,
   listServers,
+  revealEnvValue,
   saveServers,
   serverStatus,
   testServer,
@@ -276,4 +277,11 @@ test("the OS is asked about encryption at most once for the whole process", () =
     availabilityAsks <= 1,
     `asked the OS ${availabilityAsks} times; the answer is latched and each ask can prompt`,
   );
+});
+
+test("KYB-591 AC3: with the store shut, the edit form's eye answers store-unavailable, never a value", () => {
+  givenStored({ API_KEY: sealed("sk-live-1") });
+  const result = revealEnvValue("s1", "API_KEY");
+  assert.deepEqual(result, { ok: false, reason: "store-unavailable" });
+  assert.ok(!JSON.stringify(result).includes("sk-live-1"));
 });
