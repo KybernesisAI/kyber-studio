@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { LocalMcpServer, SaveMcpServersOptions } from "@shared/ipc";
 import { useStore } from "@/lib/store";
-import { IS_MAC, IS_WINDOWS } from "@/lib/platform";
+import { IS_MAC, IS_WINDOWS, credentialStoreLabel } from "@/lib/platform";
 import {
   type McpPanelState,
   initialMcpPanelState,
@@ -1050,7 +1050,7 @@ function parseEnvLines(text: string): Record<string, string> {
 
 /** Why a stored value could not be shown, in words a person can act on. */
 const REVEAL_FAILED: Record<"store-unavailable" | "needs-re-entry" | "not-found", string> = {
-  "store-unavailable": `Can’t show it while your ${IS_MAC ? "Keychain" : IS_WINDOWS ? "credential store" : "keyring"} is locked. Type a new value to replace it.`,
+  "store-unavailable": `Can’t show it while your ${credentialStoreLabel(IS_MAC, IS_WINDOWS)} is locked. Type a new value to replace it.`,
   "needs-re-entry": "It can’t be opened on this computer. Type a new value, or remove it.",
   "not-found": "Can’t show it right now. The stored value is kept unless you type a new one or remove it.",
 };

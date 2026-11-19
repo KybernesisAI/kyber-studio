@@ -294,6 +294,22 @@ test("AC4: replace one value, remove another, add a third", async () => {
   }
 });
 
+test("AC4: removing a server's only key saves it with no env, and keeps its cwd", async () => {
+  const b = bridge({ servers: [plaud({ env: { API_KEY: S_API }, cwd: "/srv/p" })] });
+  const panel = await mount(b.api);
+  try {
+    await menu(panel.host, "Plaud", "Edit");
+    await click(envRow(panel.host, "API_KEY").querySelector('button[title="Remove API_KEY"]'));
+    await click(buttonIn(form(panel.host), "Save"));
+
+    const saved = b.lastSaved()[0];
+    assert.equal("env" in saved, false, `the removed key was kept: ${JSON.stringify(saved.env)}`);
+    assert.equal(saved.cwd, "/srv/p");
+  } finally {
+    await panel.unmount();
+  }
+});
+
 // ---- AC5, AC6 ----------------------------------------------------------------
 
 test("AC5: a rename keeps the id, and leaves one server", async () => {
@@ -445,7 +461,7 @@ test("a Turn off made while the Edit form is open survives the form's Save", asy
 
 // ---- What a row says when its value cannot be shown (round 1, Nits 2 and 4) --
 
-test("AC3: a row that cannot be shown says why in this platform's words, and that its value is kept", async () => {
+test("AC3: a row that cannot be shown says why (the keyring, under jsdom's empty platform), and that its value is kept", async () => {
   const b = bridge({
     servers: [plaud()],
     reveal: { API_KEY: { ok: false, reason: "store-unavailable" }, DB_URL: { ok: false, reason: "not-found" } },
