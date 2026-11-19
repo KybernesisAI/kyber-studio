@@ -72,6 +72,11 @@ mock.module("@electron-toolkit/utils", {
 
 /** Every child `spawn` made, newest last. Each answers the MCP handshake. */
 const spawned = [];
+/**
+ * When set, `kill` leaves `child.killed` false, as on Windows, where the handle
+ * is `cmd.exe` and `killTree` signals nothing through it.
+ */
+let killLeavesKilledFalse = false;
 mock.module("node:child_process", {
   exports: {
     spawn: (file, args, options) => {
@@ -86,7 +91,7 @@ mock.module("node:child_process", {
       child.signals = [];
       child.kill = (signal) => {
         child.signals.push(signal ?? "SIGTERM");
-        child.killed = true;
+        if (!killLeavesKilledFalse) child.killed = true;
         return true;
       };
       child.unref = () => {};
@@ -145,6 +150,7 @@ function fresh() {
   rmSync(configPath(), { force: true });
   rmSync(permsPath(), { force: true });
   spawned.length = 0;
+  killLeavesKilledFalse = false;
   decrypted.length = 0;
   undecryptable.clear();
 }
@@ -244,6 +250,27 @@ test("AC7: an edit to A stops A, leaves B, and A's next call starts with the new
   a.emit("exit", 0);
   await callServer({ serverId: "a", method: "tools/list" });
   assert.equal(spawned.length, 3, "the old process's exit evicted its replacement");
+});
+
+test("AC7: a stopped process whose handle still says it is alive is not handed back", async () => {
+  fresh();
+  const { a } = await startBoth();
+  killLeavesKilledFalse = true;
+  const [storedA, storedB] = listServers();
+
+  save([{ ...storedA, env: { KEY: "second" } }, storedB]);
+  assert.deepEqual(a.signals, ["SIGTERM"], "the edited server was not stopped");
+  assert.equal(a.killed, false, "the fake should leave killed false");
+
+  await callServer({ serverId: "a", method: "tools/list" });
+  assert.equal(spawned.length, 3, "the call went to the stopped process instead of a new one");
+  assert.equal(spawned[2].options.env.KEY, "second");
+
+  // The old process errors after its replacement started. It must not take the
+  // replacement out of the running set, or the next call would start a third.
+  a.emit("error", new Error("spawn EPERM"));
+  await callServer({ serverId: "a", method: "tools/list" });
+  assert.equal(spawned.length, 3, "the old process's error evicted its replacement");
 });
 
 test("AC7: an unchanged save stops nothing, whatever order the entry's keys arrive in", async () => {

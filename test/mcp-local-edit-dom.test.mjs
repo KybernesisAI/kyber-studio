@@ -370,3 +370,100 @@ test("AC8: adding Foo, Foo and foo gives foo, foo-2 and foo-3", async () => {
     await panel.unmount();
   }
 });
+
+// ---- Two stored entries with one id (round 1, Important 1) -------------------
+//
+// Lists stored before KYB-591 can hold two servers with one id: Add gave "Foo"
+// twice the id `foo`. An edit replaces the entry that was opened and leaves the
+// other exactly as stored, its command and sealed values included.
+
+const S_OTHER = sealed("other-secret");
+const twins = () => [
+  plaud({ id: "foo", name: "Foo" }),
+  { id: "foo", name: "Other Foo", command: "uvx", args: ["other-mcp"], env: { OTHER: S_OTHER }, enabled: true },
+];
+
+test("AC2: editing one of two entries sharing an id leaves the other byte for byte", async () => {
+  for (const [edited, untouched] of [["Foo", 1], ["Other Foo", 0]]) {
+    const b = bridge({ servers: twins() });
+    const panel = await mount(b.api);
+    try {
+      await menu(panel.host, edited, "Edit");
+      await type(field(panel.host, "Name"), `${edited} renamed`);
+      await click(buttonIn(form(panel.host), "Save"));
+
+      const saved = b.lastSaved();
+      assert.equal(saved.length, 2, `editing ${edited} changed the number of servers`);
+      assert.deepEqual(saved[untouched], twins()[untouched], `editing ${edited} changed the other entry`);
+      assert.equal(saved[1 - untouched].name, `${edited} renamed`);
+      assert.deepEqual(saved[1 - untouched].env, twins()[1 - untouched].env);
+    } finally {
+      await panel.unmount();
+    }
+  }
+});
+
+test("AC2: with the search box hiding one of two entries sharing an id, Edit still replaces the one opened", async () => {
+  const b = bridge({ servers: twins() });
+  const panel = await mount(b.api);
+  try {
+    await type(panel.host.querySelector('input[placeholder="Search plugins"]'), "Other");
+    assert.equal(row(panel.host, "Foo"), undefined, "the search did not hide Foo");
+    await menu(panel.host, "Other Foo", "Edit");
+    await type(field(panel.host, "Name"), "Renamed");
+    await click(buttonIn(form(panel.host), "Save"));
+
+    const saved = b.lastSaved();
+    assert.deepEqual(saved[0], twins()[0], "the hidden entry was changed");
+    assert.equal(saved[1].name, "Renamed");
+    assert.deepEqual(saved[1].env, { OTHER: S_OTHER });
+  } finally {
+    await panel.unmount();
+  }
+});
+
+// ---- A change made while the form is open (round 1, Nit 1) ------------------
+
+test("a Turn off made while the Edit form is open survives the form's Save", async () => {
+  const b = bridge({ servers: [plaud()] });
+  const panel = await mount(b.api);
+  try {
+    await menu(panel.host, "Plaud", "Edit");
+    await type(field(panel.host, "Name"), "Plaud Notes");
+    await menu(panel.host, "Plaud", "Turn off");
+    assert.equal(b.lastSaved()[0].enabled, false, "Turn off did not save");
+    assert.ok(form(panel.host), "Turn off closed the form");
+
+    await click(buttonIn(form(panel.host), "Save"));
+    const saved = b.lastSaved();
+    assert.equal(saved[0].enabled, false, "the form's Save turned the server back on");
+    assert.equal(saved[0].name, "Plaud Notes");
+  } finally {
+    await panel.unmount();
+  }
+});
+
+// ---- What a row says when its value cannot be shown (round 1, Nits 2 and 4) --
+
+test("AC3: a row that cannot be shown says why in this platform's words, and that its value is kept", async () => {
+  const b = bridge({
+    servers: [plaud()],
+    reveal: { API_KEY: { ok: false, reason: "store-unavailable" }, DB_URL: { ok: false, reason: "not-found" } },
+  });
+  const panel = await mount(b.api);
+  try {
+    await menu(panel.host, "Plaud", "Edit");
+    await click(envRow(panel.host, "API_KEY").querySelector('button[title="Show"]'));
+    await click(envRow(panel.host, "DB_URL").querySelector('button[title="Show"]'));
+
+    // jsdom reports no platform, which is not a Mac and not Windows.
+    assert.match(envRow(panel.host, "API_KEY").textContent ?? "", /while your keyring is locked/);
+    assert.match(envRow(panel.host, "DB_URL").textContent ?? "", /stored value is kept/);
+    assert.doesNotMatch(envRow(panel.host, "DB_URL").textContent ?? "", /isn’t stored/);
+
+    await click(buttonIn(form(panel.host), "Save"));
+    assert.deepEqual(b.lastSaved()[0].env, { API_KEY: S_API, DB_URL: S_DB });
+  } finally {
+    await panel.unmount();
+  }
+});

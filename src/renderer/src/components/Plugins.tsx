@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { LocalMcpServer, SaveMcpServersOptions } from "@shared/ipc";
 import { useStore } from "@/lib/store";
+import { IS_MAC, IS_WINDOWS } from "@/lib/platform";
 import {
   type McpPanelState,
   initialMcpPanelState,
@@ -395,7 +396,10 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   /** The card the remote form is changing, when it is not adding a new one. */
   const [editing, setEditing] = useState<{ name: string; url: string; shared: boolean } | null>(null);
   /** The local server the local form is changing, when it is not adding one (KYB-591). */
-  const [editingLocal, setEditingLocal] = useState<LocalMcpServer | null>(null);
+  // The entry Edit was pressed on, and which of the entries sharing its id it
+  // is: lists stored before KYB-591 can hold two servers with one id, and an
+  // edit must replace the one that was opened, not both (KYB-591).
+  const [editingLocal, setEditingLocal] = useState<{ server: LocalMcpServer; nth: number } | null>(null);
   /**
    * The rows whose call is running, by `remoteRow` / `localRow` key. A set, not
    * one value: with one value, checking a second row took the first row's
@@ -872,7 +876,12 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                   <button
                     onClick={() => {
                       setMenu(null);
-                      setEditingLocal(s);
+                      setEditingLocal({
+                        server: s,
+                        // Counted in the whole list, not the rows shown: the
+                        // search box can hide one of two entries sharing an id.
+                        nth: servers.slice(0, servers.indexOf(s)).filter((x) => x.id === s.id).length,
+                      });
                       setMode("local");
                     }}
                   >
@@ -922,12 +931,12 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
         // a set of secrets, and then had the write refused. Closing it here
         // drops the user back to the disabled button, which says why.
         <AddLocalServer
-          key={editingLocal?.id ?? "new"}
-          initial={editingLocal ?? undefined}
+          key={editingLocal ? `${editingLocal.server.id}#${editingLocal.nth}` : "new"}
+          initial={editingLocal?.server}
           takenIds={servers.map((s) => s.id)}
           onAdd={async (server) => {
             if (editingLocal) {
-              await save(servers.map((x) => (x.id === server.id ? server : x)));
+              await save(applyEdit(servers, editingLocal, server));
               // The save stopped the server if it was running, so its last
               // answer no longer describes it: offer Connect, not an old Ready.
               setResult((r) => {
@@ -977,6 +986,37 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   );
 }
 
+/**
+ * The list with one edit applied (KYB-591).
+ *
+ * Replaces exactly the entry that was opened: the `nth` of those with its id,
+ * counted in the list as it is NOW. And it lays only what the form shows (name,
+ * command line, env) over that entry as it is now, not as it was when the form
+ * opened, so a Turn off made while the form was open survives, and so does
+ * anything stored that the form does not show (`cwd`, `enabled`). If the entry
+ * has gone in the meantime, nothing is put back.
+ */
+function applyEdit(
+  servers: readonly LocalMcpServer[],
+  target: { server: LocalMcpServer; nth: number },
+  edited: LocalMcpServer,
+): LocalMcpServer[] {
+  let seen = -1;
+  return servers.map((x) => {
+    if (x.id !== target.server.id) return x;
+    seen += 1;
+    if (seen !== target.nth) return x;
+    const { env: _previous, ...rest } = x;
+    return {
+      ...rest,
+      name: edited.name,
+      command: edited.command,
+      args: edited.args,
+      ...(edited.env ? { env: edited.env } : {}),
+    };
+  });
+}
+
 /** The id a name gives, as it always has: lower case, other runs to `-`. */
 function idFromName(name: string): string {
   return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
@@ -1010,9 +1050,9 @@ function parseEnvLines(text: string): Record<string, string> {
 
 /** Why a stored value could not be shown, in words a person can act on. */
 const REVEAL_FAILED: Record<"store-unavailable" | "needs-re-entry" | "not-found", string> = {
-  "store-unavailable": "Can’t show it while your keyring is locked. Type a new value to replace it.",
+  "store-unavailable": `Can’t show it while your ${IS_MAC ? "Keychain" : IS_WINDOWS ? "credential store" : "keyring"} is locked. Type a new value to replace it.`,
   "needs-re-entry": "It can’t be opened on this computer. Type a new value, or remove it.",
-  "not-found": "It isn’t stored any more. Type a new value, or remove it.",
+  "not-found": "Can’t show it right now. The stored value is kept unless you type a new one or remove it.",
 };
 
 /**
@@ -1101,15 +1141,15 @@ function AddLocalServer({
     }
     Object.assign(environment, parseEnvLines(env));
 
-    const { env: _previous, ...kept } = initial ?? ({} as Partial<LocalMcpServer>);
+    // An edit sends only what the form shows; the panel lays it over the stored
+    // entry as it is at save time (`applyEdit`), which keeps `cwd` and the rest.
     await onAdd({
-      ...kept,
       id: initial ? initial.id : freeId(idFromName(name), takenIds),
       name: name.trim(),
       command: bin!,
       args,
       ...(Object.keys(environment).length ? { env: environment } : {}),
-      enabled: initial?.enabled ?? true,
+      enabled: true,
     });
   };
 
