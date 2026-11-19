@@ -70,7 +70,14 @@ mock.module("@electron-toolkit/utils", {
   exports: { electronApp: {}, optimizer: {}, is: { dev: false } },
 });
 
-/** Every child `spawn` made, newest last. Each answers the MCP handshake. */
+/**
+ * Every server `spawn` made, newest last. Each answers the MCP handshake.
+ *
+ * A stop is recorded on the child it stops, in `stops`, whichever way
+ * `killTree` takes on the platform running the suite: a signal through the
+ * handle on POSIX, or a `taskkill /pid <pid> /T /F` spawned for it on Windows.
+ * The `taskkill` itself is not a server and is not added here.
+ */
 const spawned = [];
 /**
  * When set, `kill` leaves `child.killed` false, as on Windows, where the handle
@@ -80,6 +87,13 @@ let killLeavesKilledFalse = false;
 mock.module("node:child_process", {
   exports: {
     spawn: (file, args, options) => {
+      if (/taskkill/i.test(file)) {
+        const target = spawned.find((c) => args[0] === "/pid" && String(c.pid) === args[1]);
+        target?.stops.push(`taskkill ${args.join(" ")}`);
+        const killer = new EventEmitter();
+        killer.unref = () => {};
+        return killer;
+      }
       const child = new EventEmitter();
       child.file = file;
       child.args = args;
@@ -88,9 +102,9 @@ mock.module("node:child_process", {
       child.stderr = new EventEmitter();
       child.pid = 4000 + spawned.length;
       child.killed = false;
-      child.signals = [];
+      child.stops = [];
       child.kill = (signal) => {
-        child.signals.push(signal ?? "SIGTERM");
+        child.stops.push(signal ?? "SIGTERM");
         if (!killLeavesKilledFalse) child.killed = true;
         return true;
       };
@@ -238,8 +252,8 @@ test("AC7: an edit to A stops A, leaves B, and A's next call starts with the new
   const [storedA, storedB] = listServers();
 
   save([{ ...storedA, env: { KEY: "second" } }, storedB]);
-  assert.deepEqual(a.signals, ["SIGTERM"], "the edited server was not stopped");
-  assert.deepEqual(b.signals, [], "an unchanged server was stopped");
+  assert.equal(a.stops.length, 1, "the edited server was not stopped");
+  assert.deepEqual(b.stops, [], "an unchanged server was stopped");
 
   await callServer({ serverId: "a", method: "tools/list" });
   assert.equal(spawned.length, 3, "A's next call did not start a new process");
@@ -259,7 +273,7 @@ test("AC7: a stopped process whose handle still says it is alive is not handed b
   const [storedA, storedB] = listServers();
 
   save([{ ...storedA, env: { KEY: "second" } }, storedB]);
-  assert.deepEqual(a.signals, ["SIGTERM"], "the edited server was not stopped");
+  assert.equal(a.stops.length, 1, "the edited server was not stopped");
   assert.equal(a.killed, false, "the fake should leave killed false");
 
   await callServer({ serverId: "a", method: "tools/list" });
@@ -277,29 +291,49 @@ test("AC7: an unchanged save stops nothing, whatever order the entry's keys arri
   fresh();
   const { a, b } = await startBoth();
   save(listServers());
-  assert.deepEqual([a.signals, b.signals], [[], []]);
+  assert.deepEqual([a.stops, b.stops], [[], []]);
 
   // The edit form builds a fresh object, so an edit that changed nothing sends
   // the same entry with its keys in another order.
   const reversed = (s) => Object.fromEntries(Object.entries(s).reverse());
   save(listServers().map(reversed));
-  assert.deepEqual([a.signals, b.signals], [[], []], "a save that changed nothing stopped a server");
+  assert.deepEqual([a.stops, b.stops], [[], []], "a save that changed nothing stopped a server");
 });
 
 test("AC7: turning A off stops it", async () => {
   fresh();
   const { a, b } = await startBoth();
   save(listServers().map((s) => (s.id === "a" ? { ...s, enabled: false } : s)));
-  assert.deepEqual(a.signals, ["SIGTERM"], "a turned-off server is still running");
-  assert.deepEqual(b.signals, []);
+  assert.equal(a.stops.length, 1, "a turned-off server is still running");
+  assert.deepEqual(b.stops, []);
 });
 
 test("AC7: removing A stops it", async () => {
   fresh();
   const { a, b } = await startBoth();
   save(listServers().filter((s) => s.id !== "a"));
-  assert.deepEqual(a.signals, ["SIGTERM"], "a removed server is still running");
-  assert.deepEqual(b.signals, []);
+  assert.equal(a.stops.length, 1, "a removed server is still running");
+  assert.deepEqual(b.stops, []);
+});
+
+test("AC7: on Windows, an edit to A stops A's whole tree through taskkill, and leaves B", async () => {
+  fresh();
+  const { a, b } = await startBoth();
+  const [storedA, storedB] = listServers();
+
+  const original = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+  try {
+    save([{ ...storedA, env: { KEY: "second" } }, storedB]);
+  } finally {
+    Object.defineProperty(process, "platform", original);
+  }
+
+  assert.deepEqual(a.stops, [`taskkill /pid ${a.pid} /T /F`], "A was not stopped through taskkill");
+  assert.deepEqual(b.stops, [], "an unchanged server was stopped");
+  await callServer({ serverId: "a", method: "tools/list" });
+  assert.equal(spawned.length, 3, "A's next call did not start a new process");
+  assert.equal(spawned[2].options.env.KEY, "second");
 });
 
 // ---- AC9: the consent card names the server ---------------------------------
