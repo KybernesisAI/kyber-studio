@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { LocalMcpServer, SaveMcpServersOptions } from "@shared/ipc";
 import { useStore } from "@/lib/store";
 import {
@@ -17,6 +17,29 @@ import { Icon } from "./primitives";
  * exception class, so it goes to the log and not on screen (KYB-641, KYB-688).
  */
 const ROW_FAILED_MESSAGE = "That didn’t work. Please try again.";
+
+/**
+ * The key an MCP row's state is held under: its spinner, its sign-in wait and
+ * its last result. A remote slug is `mcp-` plus the name put through the same
+ * rule that makes a local id from a name, so a remote "Linear" and a local
+ * "MCP Linear" are both `mcp-linear`. With bare keys, checking one spun and
+ * overwrote the other (KYB-689).
+ */
+const remoteRow = (slug: string): string => `remote:${slug}`;
+const localRow = (id: string): string => `local:${id}`;
+
+/** A set with `key` added, or taken out, for a state update. */
+function withKey(set: ReadonlySet<string>, key: string): ReadonlySet<string> {
+  return new Set(set).add(key);
+}
+function withoutKey(set: ReadonlySet<string>, key: string): ReadonlySet<string> {
+  const next = new Set(set);
+  next.delete(key);
+  return next;
+}
+
+/** How long a sign-in in the browser is waited on before the row gives up. */
+const SIGN_IN_WAIT_MS = 180_000;
 
 /** Stable colour per item, so the same plugin always looks the same. */
 function tint(name: string): string {
@@ -371,10 +394,21 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   const [mode, setMode] = useState<"none" | "remote" | "local">("none");
   /** The card the remote form is changing, when it is not adding a new one. */
   const [editing, setEditing] = useState<{ name: string; url: string; shared: boolean } | null>(null);
-  const [checking, setChecking] = useState<string | null>(null);
+  /**
+   * The rows whose call is running, by `remoteRow` / `localRow` key. A set, not
+   * one value: with one value, checking a second row took the first row's
+   * spinner away, and the first answer cleared the second's (KYB-689).
+   */
+  const [checking, setChecking] = useState<ReadonlySet<string>>(() => new Set());
   const [menu, setMenu] = useState<string | null>(null);
-  /** A sign-in happening in the browser, which this window cannot see. */
-  const [awaiting, setAwaiting] = useState<string | null>(null);
+  /**
+   * Sign-ins happening in the browser, which this window cannot see, by
+   * `remoteRow` key. A set for the same reason: a second Connect used to
+   * replace the first, and the first approval then went unnoticed.
+   */
+  const [awaiting, setAwaiting] = useState<ReadonlySet<string>>(() => new Set());
+  /** Each sign-in's own give-up timer, so a later Connect does not move it. */
+  const giveUps = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [result, setResult] = useState<
     Record<string, { ok: boolean; tools?: string[]; error?: string; signInUrl?: string }>
   >({});
@@ -416,6 +450,23 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
     );
   };
 
+  const startChecking = (key: string): void => setChecking((c) => withKey(c, key));
+  const stopChecking = (key: string): void => setChecking((c) => withoutKey(c, key));
+
+  const stopAwaiting = (key: string): void => {
+    clearTimeout(giveUps.current.get(key));
+    giveUps.current.delete(key);
+    setAwaiting((a) => withoutKey(a, key));
+  };
+  const startAwaiting = (key: string): void => {
+    clearTimeout(giveUps.current.get(key));
+    giveUps.current.set(
+      key,
+      setTimeout(() => stopAwaiting(key), SIGN_IN_WAIT_MS),
+    );
+    setAwaiting((a) => withKey(a, key));
+  };
+
   /**
    * Notice an approval that happened somewhere else.
    *
@@ -423,33 +474,43 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
    * so the window has to look. Two triggers, because either alone leaves a
    * case stranded: coming back to the app covers the ordinary path, and a poll
    * covers approving on a phone or on a second monitor without ever switching
-   * back. Both stop as soon as the answer arrives, and the poll gives up after
-   * a few minutes rather than running for the life of the app.
+   * back. Both stop once nothing is waited on. Each wait gives up a few
+   * minutes after its own Connect (`startAwaiting`) rather than running for
+   * the life of the app. One poll looks for every row waited on.
    */
+  const waitedOn = [...awaiting].sort().join("\n");
   useEffect(() => {
-    if (!awaiting) return;
+    if (!waitedOn) return;
+    const keys = waitedOn.split("\n");
     let cancelled = false;
     const look = async (): Promise<void> => {
       const cards = await window.studio?.connectors(agent);
-      const card = (cards?.connectors ?? []).find((c) => c.slug === awaiting);
-      if (!cancelled && card?.connected) {
-        setAwaiting(null);
+      const approved = keys.filter((key) =>
+        (cards?.connectors ?? []).some((c) => remoteRow(c.slug) === key && c.connected),
+      );
+      if (!cancelled && approved.length) {
+        for (const key of approved) stopAwaiting(key);
         await refresh();
       }
     };
     const timer = setInterval(() => void look(), 2_000);
-    const giveUp = setTimeout(() => {
-      if (!cancelled) setAwaiting(null);
-    }, 180_000);
     const onFocus = (): void => void look();
     window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
       clearInterval(timer);
-      clearTimeout(giveUp);
       window.removeEventListener("focus", onFocus);
     };
-  }, [awaiting, agent]);
+  }, [waitedOn, agent]);
+
+  // The give-up timers outlive any one wait, so they are cleared on close.
+  useEffect(() => {
+    const timers = giveUps.current;
+    return () => {
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
+    };
+  }, []);
 
   useEffect(() => {
     void refresh();
@@ -478,21 +539,22 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   // Tested from the control plane, which is where the agent calls from — a
   // server your laptop can reach and the cloud cannot is an ordinary situation.
   const checkRemote = async (slug: string): Promise<void> => {
-    setChecking(slug);
+    const key = remoteRow(slug);
+    startChecking(key);
     try {
       const outcome = await window.studio!.testRemoteMcp(slug);
-      setResult((r) => ({ ...r, [slug]: outcome }));
+      setResult((r) => ({ ...r, [key]: outcome }));
     } catch (error) {
-      rowFailed(slug, "check", error);
+      rowFailed(key, "check", error);
     } finally {
-      setChecking(null);
+      stopChecking(key);
     }
   };
 
   /**
    * Put a bridge call that THREW on its row, rather than letting it escape.
    *
-   * Every handler below sets the spinner, awaits the bridge and clears it. With
+   * Every handler below starts the spinner, awaits the bridge and stops it. With
    * nothing around the await, a rejection skipped the clear, so the spinner
    * turned for good, and the rejection went unhandled (KYB-688). The main
    * process answers ordinary failures as `{ ok: false, error }`; a throw is the
@@ -531,11 +593,11 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                   <div className="pl__name">{s.name}</div>
                   <div className="pl__desc">{s.description}</div>
                   <div className="pl__meta">
-                    {result[s.slug]
-                      ? result[s.slug]!.ok
-                        ? `Answering · ${result[s.slug]!.tools?.length ?? 0} tools`
-                        : result[s.slug]!.error
-                      : awaiting === s.slug
+                    {result[remoteRow(s.slug)]
+                      ? result[remoteRow(s.slug)]!.ok
+                        ? `Answering · ${result[remoteRow(s.slug)]!.tools?.length ?? 0} tools`
+                        : result[remoteRow(s.slug)]!.error
+                      : awaiting.has(remoteRow(s.slug))
                         ? "Waiting for you to approve it…"
                         : s.authMode === "oauth" && !s.connected
                           ? "Signs you in — connect to use it"
@@ -552,7 +614,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                 {/* One primary action and the ⋯ menu, as on local rows. Four
                     controls side by side left a half-width card about 40px for
                     the server's name, and cut "Linear" to "Line…" (KYB-687). */}
-                {checking === s.slug || awaiting === s.slug ? (
+                {checking.has(remoteRow(s.slug)) || awaiting.has(remoteRow(s.slug)) ? (
                   <span className="pl__added">
                     <Spinner />
                   </span>
@@ -570,7 +632,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                   <button
                     className="btn btn--primary"
                     onClick={async () => {
-                      setChecking(s.slug);
+                      startChecking(remoteRow(s.slug));
                       let outcome: { ok: boolean; error?: string };
                       try {
                         outcome = await window.studio!.startMcpSignIn({
@@ -579,19 +641,19 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                           shared: s.scope === "app",
                         });
                       } catch (error) {
-                        rowFailed(s.slug, "sign-in", error);
+                        rowFailed(remoteRow(s.slug), "sign-in", error);
                         return;
                       } finally {
-                        setChecking(null);
+                        stopChecking(remoteRow(s.slug));
                       }
                       if (!outcome.ok) {
-                        setResult((r) => ({ ...r, [s.slug]: { ok: false, error: outcome.error } }));
+                        setResult((r) => ({ ...r, [remoteRow(s.slug)]: { ok: false, error: outcome.error } }));
                         return;
                       }
                       // The browser has it now, and approving happens out
                       // there. Watch for it rather than claiming success on the
                       // strength of having opened a tab.
-                      setAwaiting(s.slug);
+                      startAwaiting(remoteRow(s.slug));
                     }}
                   >
                     Connect
@@ -617,7 +679,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                         row is checking: a second press ran a second call
                         beside the first, and the first to finish cleared the
                         spinner while the other still ran (KYB-688). */}
-                    {s.connected && checking !== s.slug ? (
+                    {s.connected && !checking.has(remoteRow(s.slug)) ? (
                       <button
                         title="Ask the server whether it answers"
                         onClick={() => {
@@ -656,13 +718,13 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                         try {
                           outcome = await window.studio!.disconnectService({ agent, slug: s.slug });
                         } catch (error) {
-                          rowFailed(s.slug, "remove", error);
+                          rowFailed(remoteRow(s.slug), "remove", error);
                           return;
                         }
                         if (!outcome.ok) {
                           setResult((r) => ({
                             ...r,
-                            [s.slug]: { ok: false, error: outcome.error ?? ROW_FAILED_MESSAGE },
+                            [remoteRow(s.slug)]: { ok: false, error: outcome.error ?? ROW_FAILED_MESSAGE },
                           }));
                           return;
                         }
@@ -730,12 +792,12 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                 <div className="pl__meta">
                   {!s.enabled
                     ? "Off"
-                    : result[s.id]?.ok
-                      ? result[s.id]!.tools?.length
-                        ? `Connected · ${result[s.id]!.tools!.length} tools`
+                    : result[localRow(s.id)]?.ok
+                      ? result[localRow(s.id)]!.tools?.length
+                        ? `Connected · ${result[localRow(s.id)]!.tools!.length} tools`
                         : "Connected"
-                      : result[s.id]?.error
-                        ? result[s.id]!.error
+                      : result[localRow(s.id)]?.error
+                        ? result[localRow(s.id)]!.error
                         : "Runs here, never exposed"}
                 </div>
               </div>
@@ -744,11 +806,11 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                   works. Everything else lives in the menu, because four buttons
                   on a half-width card leaves no room for the name of the thing
                   they act on. */}
-              {checking === s.id ? (
+              {checking.has(localRow(s.id)) ? (
                 <span className="pl__added">
                   <Spinner />
                 </span>
-              ) : result[s.id]?.ok ? (
+              ) : result[localRow(s.id)]?.ok ? (
                 <span className="pl__added">
                   <Icon name="check" size={13} /> Ready
                 </span>
@@ -756,19 +818,19 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                 <button
                   className="btn btn--primary"
                   onClick={async () => {
-                    setChecking(s.id);
+                    startChecking(localRow(s.id));
                     try {
                       const outcome = await window.studio!.connectMcpServer(s.id);
                       if (outcome.signInUrl) void window.studio!.openExternal(outcome.signInUrl);
                       const verified = outcome.ok ? await window.studio!.testMcpServer(s.id) : null;
                       setResult((r) => ({
                         ...r,
-                        [s.id]: verified ?? { ok: outcome.ok, error: outcome.message },
+                        [localRow(s.id)]: verified ?? { ok: outcome.ok, error: outcome.message },
                       }));
                     } catch (error) {
-                      rowFailed(s.id, "connect", error);
+                      rowFailed(localRow(s.id), "connect", error);
                     } finally {
-                      setChecking(null);
+                      stopChecking(localRow(s.id));
                     }
                   }}
                 >
@@ -787,18 +849,18 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
               {menu === s.id ? (
                 <div className="pl__menu">
                   {/* Not while this row is checking, as on remote rows (KYB-688). */}
-                  {checking !== s.id ? (
+                  {!checking.has(localRow(s.id)) ? (
                     <button
                       onClick={async () => {
                         setMenu(null);
-                        setChecking(s.id);
+                        startChecking(localRow(s.id));
                         try {
                           const outcome = await window.studio!.testMcpServer(s.id);
-                          setResult((r) => ({ ...r, [s.id]: outcome }));
+                          setResult((r) => ({ ...r, [localRow(s.id)]: outcome }));
                         } catch (error) {
-                          rowFailed(s.id, "check", error);
+                          rowFailed(localRow(s.id), "check", error);
                         } finally {
-                          setChecking(null);
+                          stopChecking(localRow(s.id));
                         }
                       }}
                     >
