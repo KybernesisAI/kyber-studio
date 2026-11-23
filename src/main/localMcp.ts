@@ -419,6 +419,9 @@ export function saveServers(
       // id. One that is not is new to this save, so anything held under its
       // id belonged to another server: one in a config that was quarantined
       // as unreadable, say, where `stored` is empty. It must not inherit that.
+      // The same rule drops a key typed for A if A itself arrives in such a
+      // save, which cannot be told apart. Losing a value that only ever lived
+      // in memory is the safer of the two.
       //
       // A value retyped to exactly what is stored in plain text cannot be
       // told apart from the stored list being re-sent, so it does not replace

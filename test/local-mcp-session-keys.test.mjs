@@ -203,6 +203,18 @@ test("AC3: removing a server forgets its key, even when its id comes back", asyn
   assert.equal((await nextEnvOf("a")).KYB_KEY, undefined, "the removed server's key reached the new one");
 });
 
+test("AC3: removing a server forgets its key at once, before any later save", async () => {
+  addedWithTypedKey();
+
+  saveServers([]);
+  // A server under A's id reaches the disk without a save through Studio, as
+  // a hand-edit of local-mcp.json would. Only the removal itself can have
+  // forgotten the key by now.
+  writeFileSync(configPath(), JSON.stringify({ servers: [server()] }, null, 2), "utf8");
+
+  assert.equal((await nextEnvOf("a")).KYB_KEY, undefined, "the removal left the key held");
+});
+
 test("AC3: a server new to the disk does not inherit a key held under its id, as after a quarantine", async () => {
   addedWithTypedKey();
 
