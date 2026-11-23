@@ -17,9 +17,9 @@ import { JSDOM } from "jsdom";
  *    a row turned off or showing a result, and is absent with nothing held.
  *  - AC5: with the store available, none of it shows and the form is as it was;
  *    the panel asks about the store only when the form opens.
- *  - Round 2: values typed before the availability answer are not sent once
- *    the form locks (AC2); the eye's store-unavailable message keeps "Type a
- *    new value" in the warning state only (AC1, AC5).
+ *  - Values typed before the availability answer are not sent once the form
+ *    locks (AC2). The eye's store-unavailable message carries no "Type a new
+ *    value" advice (checked with the store available, under AC5).
  *
  * The harness is `mcp-local-edit-dom.test.mjs`'s. jsdom reports no platform, so
  * the store is named "keyring". No jsdom node is ever the `actual` of an
@@ -290,26 +290,6 @@ test("AC1: × is not offered on a stored key", async () => {
     for (const key of ["KYB_KEY", "OTHER"]) {
       assert.equal(Boolean(buttonIn(form(panel.host), `Remove ${key}`)), false, `× is offered on ${key}`);
     }
-  } finally {
-    await panel.unmount();
-  }
-});
-
-test("AC1: the eye's store-unavailable message names the store and says to type a new value", async () => {
-  // The bridge answers every eye with store-unavailable. Today's main process
-  // opens a value that is not sealed without asking the store, so this pins
-  // the form's wording for that answer, not the main process.
-  const b = bridge({ available: false, servers: [local({ env: { KYB_KEY: "plain-value" } })] });
-  const panel = await mount(b.api);
-  try {
-    await menu(panel.host, "MCP kyb", "Edit");
-    for (const words of WARNING) assert.match(text(form(panel.host)), words, "precondition: not the warning state");
-    const eye = eyeOf(panel.host, "KYB_KEY");
-    assert.ok(eye, "no eye on KYB_KEY");
-    await click(eye);
-    const said = envRowText(panel.host, "KYB_KEY");
-    assert.match(said, /keyring/, "the message does not name the store");
-    assert.match(said, TYPE_NEW, "the message does not say to type a new value");
   } finally {
     await panel.unmount();
   }
