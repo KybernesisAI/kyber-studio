@@ -67,6 +67,10 @@ function configPath(): string {
  * write the secret in the clear, but we do not throw the user's work away
  * either. The server runs with what they typed until Studio restarts, and the
  * warning says so.
+ *
+ * Only a save that types a new value, or removes the server, changes what is
+ * held here. Every other save re-sends the list as stored, which never carries
+ * these values, and must not be read as the user taking them back (KYB-691).
  */
 const unpersistedEnv = new Map<string, Record<string, string>>();
 
@@ -394,15 +398,42 @@ export function saveServers(
         // empty — skipped the warning too, so the value vanished in silence.
         // Every other decision in mcpSecrets.ts uses the round-trip test; so
         // does this one now.
-        Object.entries(server.env ?? {}).filter(([, value]) => !looksSealed(value)),
+        //
+        // And only values that differ from what is stored (KYB-691). The
+        // renderer saves the whole list, sending each server's env as stored,
+        // so a value stored in plain text comes back on every save. Counting
+        // it as typed replaced the held map with the disk's values, and the
+        // key typed this session was lost on a rename or a Turn off.
+        Object.entries(server.env ?? {}).filter(
+          ([key, value]) => !looksSealed(value) && previous?.[key] !== value,
+        ),
       );
+      // A save that carries nothing new KEEPS what this session holds: it is
+      // the renderer re-sending the stored list, which can never include held
+      // values, not the user taking them back (KYB-691). A newly typed value
+      // replaces its own key and leaves the others. Held values go when
+      // Studio restarts, or when the server is removed (the loop over `live`
+      // below), which is the promise on `unpersistedEnv`.
+      //
+      // Held values carry over only for a server that is on disk under this
+      // id. One that is not is new to this save, so anything held under its
+      // id belonged to another server: one in a config that was quarantined
+      // as unreadable, say, where `stored` is empty. It must not inherit that.
+      // The same rule drops a key typed for A if A itself arrives in such a
+      // save, which cannot be told apart. Losing a value that only ever lived
+      // in memory is the safer of the two.
+      //
+      // A value retyped to exactly what is stored in plain text cannot be
+      // told apart from the stored list being re-sent, so it does not replace
+      // a value held for that key. The held value lasts until Studio restarts.
+      const carried = stored.has(server.id) ? (unpersistedEnv.get(server.id) ?? {}) : {};
+      const held = { ...carried, ...typed };
+      if (Object.keys(held).length > 0) unpersistedEnv.set(server.id, held);
+      else unpersistedEnv.delete(server.id);
       if (Object.keys(typed).length > 0) {
-        unpersistedEnv.set(server.id, typed);
         console.warn(
           `[mcp] OS encryption unavailable — ${server.id}'s environment is kept in memory only. Unlock your ${credentialStoreName()} and restart Studio to store it.`,
         );
-      } else {
-        unpersistedEnv.delete(server.id);
       }
       return previous ? { ...server, env: previous } : { ...server, env: {} };
     }
