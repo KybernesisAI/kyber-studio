@@ -1,4 +1,5 @@
 import type { SafeStorageLike } from "./credentialStorage";
+import { SEAL_PREFIX, isSealed, looksSealed } from "../shared/sealed";
 
 /**
  * Seal and unseal the `env` values of a local MCP server.
@@ -72,56 +73,13 @@ export type SealingSafeStorage = SafeStorageLike & {
 };
 
 /**
- * Marks a value as sealed, and says which scheme sealed it.
- *
- * Versioned from the start so a future change of scheme can be told apart from
- * this one by inspection rather than by guessing at the payload.
+ * The sealed-value tests live in `src/shared/sealed.ts` (KYB-695), so the
+ * renderer can ask the same question with the same answer: the edit form tells
+ * a server with a sealed value on disk from one without. They are re-exported
+ * here so every caller in the main process keeps using this module, and so
+ * there is one `looksSealed` and not two that can drift.
  */
-export const SEAL_PREFIX = "kyb:v1:";
-
-/**
- * Does this value carry the sealed marker?
- *
- * Note this is a claim about the *shape* of the string, not proof that it will
- * decrypt — see {@link looksSealed} for why the difference matters.
- */
-export function isSealed(value: string): boolean {
-  return value.startsWith(SEAL_PREFIX);
-}
-
-/**
- * A stricter test: prefixed *and* the remainder is well-formed base64.
- *
- * A user can legitimately type a value that starts with `kyb:v1:` — nothing
- * stops them. Treating that as ciphertext would report a perfectly good key as
- * unrecoverable. Requiring the payload to survive a base64 round-trip catches
- * essentially every accidental collision, because a hand-typed string that is
- * also valid base64 of real ciphertext is not something that happens by
- * accident.
- *
- * It is not a guarantee, and it is not meant to be: a determined user can still
- * construct a string that fools this. The consequence is bounded — that one
- * value reports as needing re-entry — and the alternative, trusting the prefix
- * alone, is worse.
- *
- * **Exported because every decision about a value must use the same test.**
- * `localMcp.ts` once filtered with {@link isSealed} when deciding which typed
- * values to keep for the session, so a key a user typed as `kyb:v1:my key` was
- * classified as ciphertext, dropped from the write, and — because the filtered
- * set then came out empty — dropped from the warning too. Silently discarded
- * input. Use this, not the prefix, anywhere the answer decides what happens to
- * a user's value.
- */
-export function looksSealed(value: string): boolean {
-  if (!isSealed(value)) return false;
-  const payload = value.slice(SEAL_PREFIX.length);
-  if (payload.length === 0) return false;
-  const decoded = Buffer.from(payload, "base64");
-  // Buffer.from is famously permissive: it skips characters it does not
-  // recognise rather than failing. Re-encoding and comparing is what actually
-  // rejects a payload that was never base64 to begin with.
-  return decoded.length > 0 && decoded.toString("base64") === payload;
-}
+export { SEAL_PREFIX, isSealed, looksSealed };
 
 /** What happened when we tried to seal a whole `env` map. */
 export type SealResult =

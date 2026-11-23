@@ -65,8 +65,17 @@ function configPath(): string {
  *
  * Same protocol as the session token: if the OS will not encrypt, we do not
  * write the secret in the clear, but we do not throw the user's work away
- * either. The server runs with what they typed until Studio restarts, and the
- * warning says so.
+ * either. A server with NO sealed value on disk runs with what was typed until
+ * Studio restarts, and the add and edit forms say so.
+ *
+ * A server with any sealed value on disk gets nothing here (KYB-695). It cannot
+ * start while the store is unavailable, because `ensure` cannot open what is
+ * stored, so a typed value would be held and never used, and the form would be
+ * agreeing to a change that does nothing. The edit form does not offer one, and
+ * `saveServers` refuses it if the form is bypassed.
+ *
+ * Only the NAMES of what is held leave the main process, through
+ * {@link heldKeyNames}, so the panel can say which keys last until a restart.
  *
  * Only a save that types a new value, or removes the server, changes what is
  * held here. Every other save re-sends the list as stored, which never carries
@@ -426,13 +435,22 @@ export function saveServers(
       // A value retyped to exactly what is stored in plain text cannot be
       // told apart from the stored list being re-sent, so it does not replace
       // a value held for that key. The held value lasts until Studio restarts.
+      //
+      // A server with any sealed value on disk holds nothing (KYB-695). It
+      // cannot start until the store is available, so a typed value would sit
+      // here unused, and the panel would name it as a key in use. Judged with
+      // `looksSealed` over what is STORED, never over what was sent: the
+      // renderer decides the same way, from the same stored values.
+      const sealedOnDisk = Object.values(previous ?? {}).some((value) => looksSealed(value));
       const carried = stored.has(server.id) ? (unpersistedEnv.get(server.id) ?? {}) : {};
-      const held = { ...carried, ...typed };
+      const held = sealedOnDisk ? {} : { ...carried, ...typed };
       if (Object.keys(held).length > 0) unpersistedEnv.set(server.id, held);
       else unpersistedEnv.delete(server.id);
       if (Object.keys(typed).length > 0) {
         console.warn(
-          `[mcp] OS encryption unavailable — ${server.id}'s environment is kept in memory only. Unlock your ${credentialStoreName()} and restart Studio to store it.`,
+          sealedOnDisk
+            ? `[mcp] OS encryption unavailable: ${server.id} has sealed values, so its environment was not changed. It can be once the ${credentialStoreName()} is available and Studio has restarted.`
+            : `[mcp] OS encryption unavailable: ${server.id}'s environment is kept in memory only. Unlock your ${credentialStoreName()} and restart Studio to store it.`,
         );
       }
       return previous ? { ...server, env: previous } : { ...server, env: {} };
@@ -482,6 +500,23 @@ export function saveServers(
     const now = incoming.get(id);
     if (!now || !now.enabled || !sameEntry(now, stored.get(id))) stopServer(id);
   }
+}
+
+/**
+ * The NAMES of the env keys held in memory, by server id (KYB-695).
+ *
+ * Names only, never values: this goes to the renderer, so the panel can show on
+ * each row which keys last until Studio restarts. A server with nothing held
+ * has no entry. It reads memory and nothing else, so listing the servers never
+ * asks the OS credential store anything, and so never raises an unlock prompt.
+ */
+export function heldKeyNames(): Record<string, string[]> {
+  const names: Record<string, string[]> = {};
+  for (const [id, env] of unpersistedEnv) {
+    const keys = Object.keys(env).sort();
+    if (keys.length > 0) names[id] = keys;
+  }
+  return names;
 }
 
 /** Two entries say the same thing, whatever order their keys were written in. */

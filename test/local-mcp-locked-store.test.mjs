@@ -241,7 +241,12 @@ test("a typed value that merely starts with kyb:v1: is kept, not silently droppe
   // the warning as well. The user's input disappeared without a word.
   //
   // Mutation: putting `isSealed` back at that filter turns this red.
-  givenStored({ API_KEY: sealed("precious") });
+  //
+  // The stored value is plain text, not sealed. A server with a sealed value
+  // on disk holds nothing typed while the store is unavailable (KYB-695 AC3),
+  // so it says a different thing; the classification this pins is the one for
+  // a server that does hold typed values.
+  givenStored({ API_KEY: "stored-in-plain-text" });
 
   const said = [];
   const warn = console.warn;
@@ -256,7 +261,7 @@ test("a typed value that merely starts with kyb:v1: is kept, not silently droppe
         enabled: true,
         // Not valid base64 after the prefix — a space is not a base64 digit —
         // so this is a plaintext value that happens to look official.
-        env: { API_KEY: sealed("precious"), TYPED: "kyb:v1:my key" },
+        env: { API_KEY: "stored-in-plain-text", TYPED: "kyb:v1:my key" },
       },
     ]);
   } finally {
@@ -269,7 +274,7 @@ test("a typed value that merely starts with kyb:v1: is kept, not silently droppe
 
   const after = raw();
   assert.ok(!after.includes("my key"), "an unsealable value was written in the clear");
-  assert.ok(after.includes(sealed("precious")), "the stored value was disturbed");
+  assert.ok(after.includes("stored-in-plain-text"), "the stored value was disturbed");
 });
 
 test("the OS is asked about encryption at most once for the whole process", () => {

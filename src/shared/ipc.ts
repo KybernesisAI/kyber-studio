@@ -78,7 +78,17 @@ export interface SaveMcpServersOptions {
  * from a disk fault. A value crosses intact; an error does not.
  */
 export type McpServersResult =
-  | { ok: true; servers: LocalMcpServer[] }
+  | {
+      ok: true;
+      servers: LocalMcpServer[];
+      /**
+       * The NAMES of env keys held in memory for this session, by server id
+       * (KYB-695): typed while the OS credential store was unavailable, never
+       * written to disk, gone when Studio restarts. Never values. A server with
+       * nothing held has no entry, and a removed server's entry goes with it.
+       */
+      heldKeys: Record<string, string[]>;
+    }
   | { ok: false; code: "MCP_CONFIG_UNREADABLE"; path: string };
 
 /**
@@ -337,6 +347,13 @@ export interface StudioApi {
     signInUrl?: string;
   }>;
   mcpServers(): Promise<McpServersResult>;
+  /**
+   * Whether the OS credential store can protect a secret: `true` or `false`,
+   * carrying no env data (KYB-695). Asked when the local add or edit form
+   * opens, never when the panel lists servers, because the first ask can raise
+   * the keyring's unlock prompt.
+   */
+  credentialStoreAvailable(): Promise<boolean>;
   revealMcpEnv(id: string, key: string): Promise<RevealMcpEnvResult>;
   saveMcpServers(
     servers: LocalMcpServer[],
