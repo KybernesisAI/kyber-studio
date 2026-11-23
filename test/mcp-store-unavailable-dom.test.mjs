@@ -17,6 +17,9 @@ import { JSDOM } from "jsdom";
  *    a row turned off or showing a result, and is absent with nothing held.
  *  - AC5: with the store available, none of it shows and the form is as it was;
  *    the panel asks about the store only when the form opens.
+ *  - Round 2: values typed before the availability answer are not sent once
+ *    the form locks (AC2); the eye's store-unavailable message keeps "Type a
+ *    new value" in the warning state only (AC1, AC5).
  *
  * The harness is `mcp-local-edit-dom.test.mjs`'s. jsdom reports no platform, so
  * the store is named "keyring". No jsdom node is ever the `actual` of an
@@ -147,6 +150,11 @@ function field(host, labelText) {
 }
 
 const envInput = (host, key) => form(host).querySelector(`input[aria-label="${key}"]`);
+/** The eye on a stored key's row. */
+const eyeOf = (host, key) => envInput(host, key)?.closest(".pl__env")?.querySelector('button[title="Show"]');
+/** The text of a stored key's row: its name and any message under it. */
+const envRowText = (host, key) => envInput(host, key)?.closest(".pl__env")?.textContent ?? "";
+const TYPE_NEW = /Type a new value to replace it\./;
 const envLines = (host) => form(host).querySelector("textarea");
 /** Every input and textarea in the form's Environment field. */
 const envFields = (host) => {
@@ -177,7 +185,7 @@ const local = (over = {}) => ({
  * names of keys held per server. Saves are recorded and answered with what was
  * sent, and with the held names as they are.
  */
-function bridge({ available, servers = [], heldKeys = {}, connect, test: check } = {}) {
+function bridge({ available, availability, servers = [], heldKeys = {}, connect, test: check } = {}) {
   let current = servers;
   const saves = [];
   let availabilityAsks = 0;
@@ -186,7 +194,7 @@ function bridge({ available, servers = [], heldKeys = {}, connect, test: check }
     mcpServers: async () => ({ ok: true, servers: current, heldKeys }),
     credentialStoreAvailable: async () => {
       availabilityAsks += 1;
-      return available;
+      return availability ? availability() : available;
     },
     saveMcpServers: async (next) => {
       saves.push(structuredClone(next));
@@ -287,6 +295,26 @@ test("AC1: × is not offered on a stored key", async () => {
   }
 });
 
+test("AC1: the eye's store-unavailable message names the store and says to type a new value", async () => {
+  // The bridge answers every eye with store-unavailable. Today's main process
+  // opens a value that is not sealed without asking the store, so this pins
+  // the form's wording for that answer, not the main process.
+  const b = bridge({ available: false, servers: [local({ env: { KYB_KEY: "plain-value" } })] });
+  const panel = await mount(b.api);
+  try {
+    await menu(panel.host, "MCP kyb", "Edit");
+    for (const words of WARNING) assert.match(text(form(panel.host)), words, "precondition: not the warning state");
+    const eye = eyeOf(panel.host, "KYB_KEY");
+    assert.ok(eye, "no eye on KYB_KEY");
+    await click(eye);
+    const said = envRowText(panel.host, "KYB_KEY");
+    assert.match(said, /keyring/, "the message does not name the store");
+    assert.match(said, TYPE_NEW, "the message does not say to type a new value");
+  } finally {
+    await panel.unmount();
+  }
+});
+
 test("AC1 (looksSealed): a server whose only stored value starts with kyb:v1: but fails looksSealed is not treated as sealed", async () => {
   const b = bridge({ available: false, servers: [local({ env: { KYB_KEY: "kyb:v1:my key" } })] });
   const panel = await mount(b.api);
@@ -367,6 +395,45 @@ test("AC2: saving a rename from that form leaves the stored env byte for byte", 
     const saved = b.lastSaved()?.[0];
     assert.ok(saved, "nothing was saved");
     assert.equal(JSON.stringify(saved.env), JSON.stringify(original.env), "the stored env changed");
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test("AC2: values typed before the availability answer arrives are not sent once the form locks", async () => {
+  // The fields are offered until the answer arrives. Typed into then, a value
+  // stayed in the form's state after it locked, Save sent it, and the main
+  // process refused it while the form closed as if it had worked.
+  let release;
+  const answered = new Promise((resolve) => {
+    release = resolve;
+  });
+  const original = sealedServer();
+  const b = bridge({ availability: () => answered, servers: [original] });
+  const panel = await mount(b.api);
+  try {
+    await menu(panel.host, "MCP kybsealed", "Edit");
+    assert.equal(b.asks(), 1, "precondition: the form did not ask");
+    const input = envInput(panel.host, "KYB_KEY");
+    assert.ok(input, "precondition: no KYB_KEY field before the answer");
+    await type(input, "typed-before-answer");
+    await type(envLines(panel.host), "EARLY=typed-early");
+
+    release(false);
+    await settle();
+    await new Promise((resolve) => setImmediate(resolve));
+    await settle();
+    assert.equal(Boolean(envInput(panel.host, "KYB_KEY")), false, "precondition: the form did not lock");
+
+    await type(field(panel.host, "Name"), "MCP kybsealed renamed");
+    await click(buttonIn(form(panel.host), "Save"));
+    const saved = b.lastSaved()?.[0];
+    assert.ok(saved, "nothing was saved");
+    assert.equal(JSON.stringify(saved.env), JSON.stringify(original.env), "the saved env is not the stored env");
+    const sent = JSON.stringify(b.lastSaved());
+    for (const typed of ["typed-before-answer", "typed-early", "EARLY"]) {
+      assert.ok(!sent.includes(typed), `${typed} was sent`);
+    }
   } finally {
     await panel.unmount();
   }
@@ -479,6 +546,11 @@ test("AC5: with the store available, a sealed server's edit form is editable as 
     }
     assert.ok(f.querySelector('button[title="Show"]'), "no eye");
     assert.ok(envLines(panel.host), "no box for new lines");
+
+    // The eye's store-unavailable message is today's: no advice to type.
+    await click(eyeOf(panel.host, "PLAIN"));
+    assert.match(envRowText(panel.host, "PLAIN"), /keyring is locked/, "precondition: no message");
+    assert.doesNotMatch(envRowText(panel.host, "PLAIN"), TYPE_NEW, "the hint shows with the store available");
   } finally {
     await panel.unmount();
   }

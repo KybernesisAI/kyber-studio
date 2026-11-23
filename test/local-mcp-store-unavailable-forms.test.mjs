@@ -16,6 +16,9 @@ import { join } from "node:path";
  *    memory, and not in a started process.
  *  - AC4: the list result names the keys held for a server with no sealed
  *    value, never their values, and stops naming them on removal.
+ *  - AC1 (looksSealed): `saveServers` judges "sealed on disk" with
+ *    `looksSealed`, so a stored `kyb:v1:my key` is plain text and a typed
+ *    value is held and used.
  *
  * Every call goes through the handler `registerIpc` registered, invoked as
  * `ipcMain` invokes it, so a handler that answers the wrong shape is visible.
@@ -248,4 +251,22 @@ test("AC4: removing the server takes its names out of the result", () => {
 
   assert.deepEqual(afterRemove.heldKeys, {}, "the save that removed A still names a key for it");
   assert.deepEqual(listed.heldKeys, {}, "the list still names a key for a removed server");
+});
+
+// ---- AC1, the main process's half of the looksSealed clause -------------------
+
+test("AC1 (looksSealed): in the main process, a server whose only stored value starts with kyb:v1: but fails looksSealed holds what is typed", async () => {
+  // `saveServers` decides "sealed on disk" with `looksSealed`, as the renderer
+  // does. A bare prefix check would call this server sealed and drop NEW_KEY.
+  fresh();
+  givenStored([server({ env: { KYB_KEY: "kyb:v1:my key" } })]);
+
+  const saved = invoke("studio:saveMcpServers", [
+    { ...stored("a"), env: { KYB_KEY: "kyb:v1:my key", NEW_KEY: TYPED } },
+  ]);
+  assert.deepEqual(saved.heldKeys?.a, ["NEW_KEY"], "the typed key is not held");
+
+  stopAll();
+  await callServer({ serverId: "a", method: "tools/list" });
+  assert.equal(spawned.at(-1).options.env.NEW_KEY, TYPED, "the typed key did not reach the started process");
 });

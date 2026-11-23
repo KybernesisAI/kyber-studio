@@ -1064,13 +1064,25 @@ function parseEnvLines(text: string): Record<string, string> {
  *
  * `store-unavailable` does not say to type a new value (KYB-695): for a server
  * with a sealed value that does nothing, and the form no longer offers the eye
- * in that state. It stays as the fallback for an answer arriving anyway.
+ * in that state. In the warning state it is followed by {@link REVEAL_TYPE_NEW}.
  */
 const REVEAL_FAILED: Record<"store-unavailable" | "needs-re-entry" | "not-found", string> = {
   "store-unavailable": `Can’t show it while your ${credentialStoreLabel(IS_MAC, IS_WINDOWS)} is locked.`,
   "needs-re-entry": "It can’t be opened on this computer. Type a new value, or remove it.",
   "not-found": "Can’t show it right now. The stored value is kept unless you type a new one or remove it.",
 };
+
+/**
+ * Added to `store-unavailable` in the warning state only (KYB-695): with no
+ * sealed value on disk, a value typed there is used until Studio restarts, so
+ * the advice holds. In the locked state, and with the store available, it is
+ * left off.
+ *
+ * Today's main process does not give this answer for such a server:
+ * `revealEnvValue` opens a value that is not sealed without asking the store.
+ * The message is kept right for the answer should that change.
+ */
+const REVEAL_TYPE_NEW = "Type a new value to replace it.";
 
 /**
  * One stored environment value in the edit form.
@@ -1156,6 +1168,21 @@ function AddLocalServer({
   /** The store is unavailable and nothing is sealed: values work until Studio restarts. */
   const warn = available === false && !sealedOnDisk;
   const store = credentialStoreLabel(IS_MAC, IS_WINDOWS);
+
+  /**
+   * Anything typed before the availability answer arrived goes when the form
+   * locks (KYB-695). Until then the fields are offered, and without this a value
+   * typed into them stayed in state, `submit` sent it, the main process refused
+   * it, and the form closed as if it had worked. Cleared, the locked save sends
+   * exactly the stored env.
+   */
+  useEffect(() => {
+    if (!locked) return;
+    setStored((all) =>
+      all.map((e) => ({ ...e, typed: "", shown: false, revealed: undefined, failed: undefined })),
+    );
+    setEnv("");
+  }, [locked]);
 
   const change = (key: string, next: Partial<StoredEnv>): void =>
     setStored((all) => all.map((e) => (e.key === key ? { ...e, ...next } : e)));
@@ -1290,7 +1317,13 @@ function AddLocalServer({
                 </button>
               )}
             </div>
-            {e.failed ? <div className="muted" style={{ marginTop: 2 }}>{REVEAL_FAILED[e.failed]}</div> : null}
+            {e.failed ? (
+              <div className="muted" style={{ marginTop: 2 }}>
+                {e.failed === "store-unavailable" && warn
+                  ? `${REVEAL_FAILED[e.failed]} ${REVEAL_TYPE_NEW}`
+                  : REVEAL_FAILED[e.failed]}
+              </div>
+            ) : null}
           </div>
         ))}
         {locked ? null : (
