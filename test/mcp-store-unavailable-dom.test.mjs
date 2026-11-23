@@ -17,9 +17,10 @@ import { JSDOM } from "jsdom";
  *    a row turned off or showing a result, and is absent with nothing held.
  *  - AC5: with the store available, none of it shows and the form is as it was;
  *    the panel asks about the store only when the form opens.
- *  - Values typed before the availability answer are not sent once the form
- *    locks (AC2). The eye's store-unavailable message carries no "Type a new
- *    value" advice (checked with the store available, under AC5).
+ *  - Values typed, or keys removed, before the availability answer are not
+ *    sent once the form locks (AC2).
+ *  - Fix: the eye's store-unavailable message no longer says to type a new
+ *    value.
  *
  * The harness is `mcp-local-edit-dom.test.mjs`'s. jsdom reports no platform, so
  * the store is named "keyring". No jsdom node is ever the `actual` of an
@@ -381,9 +382,10 @@ test("AC2: saving a rename from that form leaves the stored env byte for byte", 
 });
 
 test("AC2: values typed before the availability answer arrives are not sent once the form locks", async () => {
-  // The fields are offered until the answer arrives. Typed into then, a value
-  // stayed in the form's state after it locked, Save sent it, and the main
-  // process refused it while the form closed as if it had worked.
+  // The fields are offered until the answer arrives. A value typed then, or a
+  // key removed with ×, stayed in the form's state after it locked, Save sent
+  // it, and the main process refused it while the form closed as if it had
+  // worked.
   let release;
   const answered = new Promise((resolve) => {
     release = resolve;
@@ -394,16 +396,22 @@ test("AC2: values typed before the availability answer arrives are not sent once
   try {
     await menu(panel.host, "MCP kybsealed", "Edit");
     assert.equal(b.asks(), 1, "precondition: the form did not ask");
-    const input = envInput(panel.host, "KYB_KEY");
-    assert.ok(input, "precondition: no KYB_KEY field before the answer");
+    const input = envInput(panel.host, "PLAIN");
+    assert.ok(input, "precondition: no PLAIN field before the answer");
     await type(input, "typed-before-answer");
     await type(envLines(panel.host), "EARLY=typed-early");
+    const remove = buttonIn(form(panel.host), "Remove KYB_KEY");
+    assert.ok(remove, "precondition: no × on KYB_KEY before the answer");
+    await click(remove);
+    assert.equal(Boolean(envInput(panel.host, "KYB_KEY")), false, "precondition: × did not remove KYB_KEY");
 
     release(false);
     await settle();
     await new Promise((resolve) => setImmediate(resolve));
     await settle();
-    assert.equal(Boolean(envInput(panel.host, "KYB_KEY")), false, "precondition: the form did not lock");
+    assert.equal(Boolean(envInput(panel.host, "PLAIN")), false, "precondition: the form did not lock");
+    const listed = [...form(panel.host).querySelectorAll(".pl__env code")].map((c) => c.textContent);
+    assert.ok(listed.includes("KYB_KEY"), `KYB_KEY removed before the answer is not listed: ${listed.join(", ")}`);
 
     await type(field(panel.host, "Name"), "MCP kybsealed renamed");
     await click(buttonIn(form(panel.host), "Save"));
@@ -526,11 +534,25 @@ test("AC5: with the store available, a sealed server's edit form is editable as 
     }
     assert.ok(f.querySelector('button[title="Show"]'), "no eye");
     assert.ok(envLines(panel.host), "no box for new lines");
+  } finally {
+    await panel.unmount();
+  }
+});
 
-    // The eye's store-unavailable message is today's: no advice to type.
-    await click(eyeOf(panel.host, "PLAIN"));
+test("Fix: the eye's store-unavailable message no longer says to type a new value", async () => {
+  // Main's message ends "Type a new value to replace it.", which for a server
+  // with a sealed value achieves nothing; the ticket's Fix drops it. Pressed
+  // with the store available, where the form offers the eye, and the bridge
+  // answering store-unavailable.
+  const b = bridge({ available: true, servers: [sealedServer()] });
+  const panel = await mount(b.api);
+  try {
+    await menu(panel.host, "MCP kybsealed", "Edit");
+    const eye = eyeOf(panel.host, "PLAIN");
+    assert.ok(eye, "precondition: no eye on PLAIN");
+    await click(eye);
     assert.match(envRowText(panel.host, "PLAIN"), /keyring is locked/, "precondition: no message");
-    assert.doesNotMatch(envRowText(panel.host, "PLAIN"), TYPE_NEW, "the hint shows with the store available");
+    assert.doesNotMatch(envRowText(panel.host, "PLAIN"), TYPE_NEW, "the message still says to type a new value");
   } finally {
     await panel.unmount();
   }

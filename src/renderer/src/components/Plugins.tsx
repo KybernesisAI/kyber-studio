@@ -1158,16 +1158,17 @@ function AddLocalServer({
   const store = credentialStoreLabel(IS_MAC, IS_WINDOWS);
 
   /**
-   * Anything typed before the availability answer arrived goes when the form
-   * locks (KYB-695). Until then the fields are offered, and without this a value
-   * typed into them stayed in state, `submit` sent it, the main process refused
-   * it, and the form closed as if it had worked. Cleared, the locked save sends
-   * exactly the stored env.
+   * Any env change made before the availability answer arrived goes when the
+   * form locks (KYB-695). Until then the fields are offered, and without this a
+   * value typed or a key removed with × stayed in state, `submit` sent it, the
+   * main process refused it, and the form closed as if it had worked. Rebuilt
+   * from `initial`, as the initialiser builds it, the locked save sends exactly
+   * the stored env.
    */
   useEffect(() => {
     if (!locked) return;
-    setStored((all) =>
-      all.map((e) => ({ ...e, typed: "", shown: false, revealed: undefined, failed: undefined })),
+    setStored(
+      Object.entries(initial?.env ?? {}).map(([key, sealed]) => ({ key, sealed, typed: "", shown: false })),
     );
     setEnv("");
   }, [locked]);
