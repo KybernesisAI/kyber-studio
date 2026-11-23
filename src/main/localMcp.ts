@@ -414,8 +414,19 @@ export function saveServers(
       // replaces its own key and leaves the others. Held values go when
       // Studio restarts, or when the server is removed (the loop over `live`
       // below), which is the promise on `unpersistedEnv`.
-      const held = { ...(unpersistedEnv.get(server.id) ?? {}), ...typed };
+      //
+      // Held values carry over only for a server that is on disk under this
+      // id. One that is not is new to this save, so anything held under its
+      // id belonged to another server: one in a config that was quarantined
+      // as unreadable, say, where `stored` is empty. It must not inherit that.
+      //
+      // A value retyped to exactly what is stored in plain text cannot be
+      // told apart from the stored list being re-sent, so it does not replace
+      // a value held for that key. The held value lasts until Studio restarts.
+      const carried = stored.has(server.id) ? (unpersistedEnv.get(server.id) ?? {}) : {};
+      const held = { ...carried, ...typed };
       if (Object.keys(held).length > 0) unpersistedEnv.set(server.id, held);
+      else unpersistedEnv.delete(server.id);
       if (Object.keys(typed).length > 0) {
         console.warn(
           `[mcp] OS encryption unavailable — ${server.id}'s environment is kept in memory only. Unlock your ${credentialStoreName()} and restart Studio to store it.`,

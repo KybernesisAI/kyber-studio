@@ -203,6 +203,17 @@ test("AC3: removing a server forgets its key, even when its id comes back", asyn
   assert.equal((await nextEnvOf("a")).KYB_KEY, undefined, "the removed server's key reached the new one");
 });
 
+test("AC3: a server new to the disk does not inherit a key held under its id, as after a quarantine", async () => {
+  addedWithTypedKey();
+
+  // The config becomes unreadable, and the way out renames it aside and saves
+  // a new list. Nothing is on disk any more, so the new A is a new server.
+  writeFileSync(configPath(), "{ not json", "utf8");
+  saveServers([server({ name: "Another A" })], { onUnreadableConfig: "quarantine" });
+
+  assert.equal((await nextEnvOf("a")).KYB_KEY, undefined, "a new server inherited a key held under its id");
+});
+
 test("AC4: retyping one key replaces that key and keeps the others", async () => {
   fresh();
   saveServers([server({ env: { X: "1", Y: "2" } })]);
