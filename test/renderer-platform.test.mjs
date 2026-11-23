@@ -7,6 +7,7 @@ import {
   MODIFIER,
   chordLabel,
   computerCloseLabel,
+  credentialStoreLabel,
   detectPlatform,
   isMacPlatform,
   isWindowsPlatform,
@@ -138,4 +139,13 @@ test("IS_WINDOWS is well-formed", () => {
   // A shape check, for the same reason as the one above: its VALUE depends on
   // the machine running the suite.
   assert.equal(typeof IS_WINDOWS, "boolean");
+});
+
+test("a locked credential store is named the way each platform names it (KYB-591)", () => {
+  // The same mapping as `credentialStoreName` in the main process.
+  assert.equal(credentialStoreLabel(true, false), "Keychain");
+  assert.equal(credentialStoreLabel(false, true), "credential store");
+  assert.equal(credentialStoreLabel(false, false), "keyring");
+  // One platform string is read, so both flags cannot be true; if they were, macOS wins.
+  assert.equal(credentialStoreLabel(true, true), "Keychain");
 });

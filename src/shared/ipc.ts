@@ -37,6 +37,20 @@ export interface LocalMcpServer {
   enabled: boolean;
 }
 
+/**
+ * One stored environment value, opened for the edit form (KYB-591).
+ *
+ * Values reach the renderer sealed, and nothing shows them. This is the one
+ * way to see a single value, asked for by pressing its eye, so plaintext only
+ * exists in the renderer for the keys a person chose to look at. A value that
+ * will not open says why instead: the OS store is shut (`store-unavailable`),
+ * or this store did not seal it (`needs-re-entry`). `not-found` covers an id
+ * or key that is not stored, which the form never asks for.
+ */
+export type RevealMcpEnvResult =
+  | { ok: true; value: string }
+  | { ok: false; reason: "store-unavailable" | "needs-re-entry" | "not-found" };
+
 /** How a save should behave when the config already on disk cannot be read. */
 export interface SaveMcpServersOptions {
   /**
@@ -323,6 +337,7 @@ export interface StudioApi {
     signInUrl?: string;
   }>;
   mcpServers(): Promise<McpServersResult>;
+  revealMcpEnv(id: string, key: string): Promise<RevealMcpEnvResult>;
   saveMcpServers(
     servers: LocalMcpServer[],
     options?: SaveMcpServersOptions,

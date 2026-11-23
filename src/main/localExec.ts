@@ -123,6 +123,30 @@ export function setServerPermission(serverId: string, value: LocalPermission): v
   );
 }
 
+/**
+ * Forget the grants for these server ids (KYB-591).
+ *
+ * Called when a save drops a server, and when a save brings in an id that was
+ * not stored before. The second is the one that matters: ids come from names,
+ * so a server added as "Foo" after an earlier "Foo" was removed gets the same
+ * id, and used to inherit that server's `always` or `never` whatever its
+ * command. Nothing is written unless a grant was actually there, so a
+ * missing or unreadable file (which `readRaw` answers with `{}`) is never
+ * replaced by an empty one.
+ */
+export function clearServerPermissions(serverIds: readonly string[]): void {
+  const raw = readRaw();
+  let changed = false;
+  for (const id of serverIds) {
+    const key = `mcp:${id}`;
+    if (Object.prototype.hasOwnProperty.call(raw, key)) {
+      delete raw[key];
+      changed = true;
+    }
+  }
+  if (changed) writeAtomic(permsPath(), JSON.stringify(raw, null, 2), { mode: 0o600 });
+}
+
 // ── the ask flow ────────────────────────────────────────────────────────────
 
 interface PendingAsk {
@@ -232,7 +256,20 @@ function describe(action: LocalAction, payload: Record<string, unknown>): string
     case "local-mcp":
       // The server's name, not the method: "use Postgres on this machine" is
       // the decision the user is making, and `tools/call` tells them nothing.
-      return String(payload.server ?? "a local service");
+      // The agent sends the id, which matched the name only until a server
+      // could be renamed in place (KYB-591), so the name is looked up.
+      return serverName(String(payload.server ?? ""));
+  }
+}
+
+/** A server's name for a consent card, or its id when it is not stored. */
+function serverName(id: string): string {
+  if (!id) return "a local service";
+  try {
+    return listServers().find((s) => s.id === id)?.name || id;
+  } catch {
+    // A damaged config cannot name it. The id still says which server.
+    return id;
   }
 }
 

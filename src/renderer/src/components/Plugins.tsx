@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { LocalMcpServer, SaveMcpServersOptions } from "@shared/ipc";
 import { useStore } from "@/lib/store";
+import { IS_MAC, IS_WINDOWS, credentialStoreLabel } from "@/lib/platform";
 import {
   type McpPanelState,
   initialMcpPanelState,
@@ -394,6 +395,11 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   const [mode, setMode] = useState<"none" | "remote" | "local">("none");
   /** The card the remote form is changing, when it is not adding a new one. */
   const [editing, setEditing] = useState<{ name: string; url: string; shared: boolean } | null>(null);
+  /** The local server the local form is changing, when it is not adding one (KYB-591). */
+  // The entry Edit was pressed on, and which of the entries sharing its id it
+  // is: lists stored before KYB-591 can hold two servers with one id, and an
+  // edit must replace the one that was opened, not both (KYB-591).
+  const [editingLocal, setEditingLocal] = useState<{ server: LocalMcpServer; nth: number } | null>(null);
   /**
    * The rows whose call is running, by `remoteRow` / `localRow` key. A set, not
    * one value: with one value, checking a second row took the first row's
@@ -870,6 +876,20 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                   <button
                     onClick={() => {
                       setMenu(null);
+                      setEditingLocal({
+                        server: s,
+                        // Counted in the whole list, not the rows shown: the
+                        // search box can hide one of two entries sharing an id.
+                        nth: servers.slice(0, servers.indexOf(s)).filter((x) => x.id === s.id).length,
+                      });
+                      setMode("local");
+                    }}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => {
+                      setMenu(null);
                       void save(
                         servers.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x)),
                       );
@@ -911,11 +931,28 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
         // a set of secrets, and then had the write refused. Closing it here
         // drops the user back to the disabled button, which says why.
         <AddLocalServer
+          key={editingLocal ? `${editingLocal.server.id}#${editingLocal.nth}` : "new"}
+          initial={editingLocal?.server}
+          takenIds={servers.map((s) => s.id)}
           onAdd={async (server) => {
-            await save([...servers, server]);
+            if (editingLocal) {
+              await save(applyEdit(servers, editingLocal, server));
+              // The save stopped the server if it was running, so its last
+              // answer no longer describes it: offer Connect, not an old Ready.
+              setResult((r) => {
+                const { [localRow(server.id)]: _stale, ...rest } = r;
+                return rest;
+              });
+            } else {
+              await save([...servers, server]);
+            }
+            setEditingLocal(null);
             setMode("none");
           }}
-          onCancel={() => setMode("none")}
+          onCancel={() => {
+            setEditingLocal(null);
+            setMode("none");
+          }}
         />
       ) : (
         <div className="ask__options" style={{ marginTop: 14 }}>
@@ -936,7 +973,10 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                 ? "Move the damaged list aside first — nothing here can be written until then"
                 : undefined
             }
-            onClick={() => setMode("local")}
+            onClick={() => {
+              setEditingLocal(null);
+              setMode("local");
+            }}
           >
             <Icon name="plus" size={13} /> Add one on this computer
           </button>
@@ -946,38 +986,165 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
   );
 }
 
-/** The local half: a command this machine runs. */
+/**
+ * The list with one edit applied (KYB-591).
+ *
+ * Replaces exactly the entry that was opened: the `nth` of those with its id,
+ * counted in the list as it is NOW. And it lays only what the form shows (name,
+ * command line, env) over that entry as it is now, not as it was when the form
+ * opened, so a Turn off made while the form was open survives, and so does
+ * anything stored that the form does not show (`cwd`, `enabled`). If the entry
+ * has gone in the meantime, nothing is put back.
+ */
+function applyEdit(
+  servers: readonly LocalMcpServer[],
+  target: { server: LocalMcpServer; nth: number },
+  edited: LocalMcpServer,
+): LocalMcpServer[] {
+  let seen = -1;
+  return servers.map((x) => {
+    if (x.id !== target.server.id) return x;
+    seen += 1;
+    if (seen !== target.nth) return x;
+    const { env: _previous, ...rest } = x;
+    return {
+      ...rest,
+      name: edited.name,
+      command: edited.command,
+      args: edited.args,
+      ...(edited.env ? { env: edited.env } : {}),
+    };
+  });
+}
+
+/** The id a name gives, as it always has: lower case, other runs to `-`. */
+function idFromName(name: string): string {
+  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
+}
+
+/**
+ * An id no stored server has (KYB-591). Ids are frozen once a server exists,
+ * because consent is kept under `mcp:<id>`, so a rename keeps its id and a
+ * later server can arrive with a name that gives the same one. Two servers
+ * with one id used to be stored side by side, and calls went to the first.
+ */
+function freeId(base: string, taken: readonly string[]): string {
+  if (!taken.includes(base)) return base;
+  let n = 2;
+  while (taken.includes(`${base}-${n}`)) n += 1;
+  return `${base}-${n}`;
+}
+
+/** `KEY=value` per line, the format every README prints. */
+function parseEnvLines(text: string): Record<string, string> {
+  const environment: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const at = line.indexOf("=");
+    if (at <= 0) continue;
+    const key = line.slice(0, at).trim();
+    const value = line.slice(at + 1).trim();
+    if (key) environment[key] = value;
+  }
+  return environment;
+}
+
+/** Why a stored value could not be shown, in words a person can act on. */
+const REVEAL_FAILED: Record<"store-unavailable" | "needs-re-entry" | "not-found", string> = {
+  "store-unavailable": `Can’t show it while your ${credentialStoreLabel(IS_MAC, IS_WINDOWS)} is locked. Type a new value to replace it.`,
+  "needs-re-entry": "It can’t be opened on this computer. Type a new value, or remove it.",
+  "not-found": "Can’t show it right now. The stored value is kept unless you type a new one or remove it.",
+};
+
+/**
+ * One stored environment value in the edit form.
+ *
+ * `sealed` is the string the value arrived as, and it is what goes back when
+ * nobody changed the value: re-sending it is what keeps it byte for byte. The
+ * field starts EMPTY, with dots as a placeholder, because a mask held as the
+ * value would be written back as the new secret on the first save (KYB-291).
+ * `revealed` is the plaintext the eye fetched, so a revealed value that was
+ * not changed still goes back sealed.
+ */
+interface StoredEnv {
+  key: string;
+  sealed: string;
+  typed: string;
+  revealed?: string;
+  shown: boolean;
+  failed?: keyof typeof REVEAL_FAILED;
+}
+
+/**
+ * The local half: a command this machine runs. Adds one, or with `initial`
+ * changes one in place (KYB-591), keeping its id, its working folder and
+ * anything else stored on it that this form does not show.
+ */
 function AddLocalServer({
+  initial,
+  takenIds,
   onAdd,
   onCancel,
 }: {
+  initial?: LocalMcpServer;
+  takenIds: readonly string[];
   onAdd(server: LocalMcpServer): Promise<void>;
   onCancel(): void;
 }): ReactNode {
-  const [name, setName] = useState("");
-  const [command, setCommand] = useState("");
+  const initialLine = initial ? [initial.command, ...initial.args].join(" ") : "";
+  const [name, setName] = useState(initial?.name ?? "");
+  const [command, setCommand] = useState(initialLine);
   const [env, setEnv] = useState("");
+  const [stored, setStored] = useState<StoredEnv[]>(() =>
+    Object.entries(initial?.env ?? {}).map(([key, sealed]) => ({ key, sealed, typed: "", shown: false })),
+  );
+
+  const change = (key: string, next: Partial<StoredEnv>): void =>
+    setStored((all) => all.map((e) => (e.key === key ? { ...e, ...next } : e)));
+
+  /** The eye. Opens this one value on first press; after that it only shows or hides. */
+  const reveal = async (entry: StoredEnv): Promise<void> => {
+    if (entry.shown) return change(entry.key, { shown: false });
+    if (entry.revealed !== undefined) return change(entry.key, { shown: true });
+    let outcome: Awaited<ReturnType<NonNullable<typeof window.studio>["revealMcpEnv"]>>;
+    try {
+      outcome = await window.studio!.revealMcpEnv(initial!.id, entry.key);
+    } catch (error) {
+      console.error(`[plugins] reveal failed for ${initial!.id}: ${error instanceof Error ? error.message : String(error)}`);
+      return change(entry.key, { failed: "not-found" });
+    }
+    if (!outcome.ok) return change(entry.key, { failed: outcome.reason });
+    setStored((all) =>
+      all.map((e) =>
+        e.key === entry.key
+          ? { ...e, revealed: outcome.value, typed: e.typed || outcome.value, shown: true, failed: undefined }
+          : e,
+      ),
+    );
+  };
 
   const submit = async (): Promise<void> => {
     const trimmed = command.trim();
     if (!trimmed || !name.trim()) return;
-    // Split on whitespace: `npx -y @plaud-ai/mcp@latest` is what a README gives
-    // you, and it is what people will paste.
-    const [bin, ...args] = trimmed.split(/\s+/);
+    // An unchanged command line keeps its stored parts exactly, so an argument
+    // with a space in it (possible by hand-editing the file) is not split.
+    // Otherwise split on whitespace: `npx -y @plaud-ai/mcp@latest` is what a
+    // README gives you, and it is what people will paste.
+    const [bin, ...args] =
+      initial && command === initialLine ? [initial.command, ...initial.args] : trimmed.split(/\s+/);
 
-    // KEY=value per line, the format every README prints. Parsed here rather
-    // than asking for a JSON object, because nobody pastes JSON.
+    // Stored values go back sealed unless a new value was typed: blank, or the
+    // same as what the eye showed, means keep. Lines below add keys, and win
+    // over a stored key of the same name.
     const environment: Record<string, string> = {};
-    for (const line of env.split("\n")) {
-      const at = line.indexOf("=");
-      if (at <= 0) continue;
-      const key = line.slice(0, at).trim();
-      const value = line.slice(at + 1).trim();
-      if (key) environment[key] = value;
+    for (const e of stored) {
+      environment[e.key] = e.typed && e.typed !== e.revealed ? e.typed : e.sealed;
     }
+    Object.assign(environment, parseEnvLines(env));
 
+    // An edit sends only what the form shows; the panel lays it over the stored
+    // entry as it is at save time (`applyEdit`), which keeps `cwd` and the rest.
     await onAdd({
-      id: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+      id: initial ? initial.id : freeId(idFromName(name), takenIds),
       name: name.trim(),
       command: bin!,
       args,
@@ -1009,6 +1176,39 @@ function AddLocalServer({
       </div>
       <div className="field" style={{ marginBottom: 8 }}>
         <div className="field__label">Environment (optional)</div>
+        {stored.map((e) => (
+          <div className="pl__env" key={e.key} style={{ marginBottom: 6 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <code style={{ flex: "0 0 auto" }}>{e.key}</code>
+              <input
+                className="input"
+                aria-label={e.key}
+                type={e.shown ? "text" : "password"}
+                value={e.typed}
+                spellCheck={false}
+                autoComplete="off"
+                placeholder="••••••••"
+                onChange={(ev) => change(e.key, { typed: ev.target.value })}
+                style={{ flex: "1 1 auto", minWidth: 0 }}
+              />
+              <button
+                className="icon-btn"
+                title={e.shown ? "Hide" : "Show"}
+                onClick={() => void reveal(e)}
+              >
+                <Icon name={e.shown ? "eyeOff" : "eye"} size={14} />
+              </button>
+              <button
+                className="icon-btn"
+                title={`Remove ${e.key}`}
+                onClick={() => setStored((all) => all.filter((x) => x.key !== e.key))}
+              >
+                <Icon name="close" size={13} />
+              </button>
+            </div>
+            {e.failed ? <div className="muted" style={{ marginTop: 2 }}>{REVEAL_FAILED[e.failed]}</div> : null}
+          </div>
+        ))}
         <textarea
           className="input"
           rows={2}
@@ -1018,13 +1218,14 @@ function AddLocalServer({
           onChange={(e) => setEnv(e.target.value)}
         />
         <div className="muted" style={{ marginTop: 4 }}>
-          One per line. Servers that want a key read it from here rather than
-          from the command, where it would sit in plain sight in the list.
+          {stored.length
+            ? "Leave a stored value blank to keep it. Add new ones below, one per line."
+            : "One per line. Servers that want a key read it from here rather than from the command, where it would sit in plain sight in the list."}
         </div>
       </div>
       <div className="ask__options">
         <button className="btn btn--primary" onClick={() => void submit()}>
-          Add
+          {initial ? "Save" : "Add"}
         </button>
         <button className="btn" onClick={onCancel}>
           Cancel
