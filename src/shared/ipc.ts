@@ -92,6 +92,23 @@ export type McpServersResult =
   | { ok: false; code: "MCP_CONFIG_UNREADABLE"; path: string };
 
 /**
+ * What `credentialStoreAvailable` answers with (KYB-696): whether the OS
+ * credential store can protect a secret, and when it cannot, the description
+ * of the state and the remedy, each a full sentence.
+ *
+ * The main process owns the wording, because only it can tell Linux's
+ * `basic_text` from a locked keyring, and the form warning, the note and the
+ * eye message render these two strings rather than writing their own. Both are
+ * `""` when the store is available. The same three fields every time, and no
+ * env data.
+ */
+export interface CredentialStoreAnswer {
+  available: boolean;
+  description: string;
+  remedy: string;
+}
+
+/**
  * The renderer's whole view of the outside world.
  *
  * These types live in `shared`, not `main`, so the dependency points one way:
@@ -348,12 +365,13 @@ export interface StudioApi {
   }>;
   mcpServers(): Promise<McpServersResult>;
   /**
-   * Whether the OS credential store can protect a secret: `true` or `false`,
-   * carrying no env data (KYB-695). Asked when the local add or edit form
+   * Whether the OS credential store can protect a secret, with the words for
+   * the case when it cannot: one {@link CredentialStoreAnswer}, carrying no env
+   * data (KYB-695, widened by KYB-696). Asked when the local add or edit form
    * opens, never when the panel lists servers, because the first ask can raise
    * the keyring's unlock prompt.
    */
-  credentialStoreAvailable(): Promise<boolean>;
+  credentialStoreAvailable(): Promise<CredentialStoreAnswer>;
   revealMcpEnv(id: string, key: string): Promise<RevealMcpEnvResult>;
   saveMcpServers(
     servers: LocalMcpServer[],

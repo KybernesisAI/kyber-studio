@@ -11,9 +11,11 @@ import { join } from "node:path";
  *  - AC5: listing the servers never asks the store whether it is available.
  *    First in this file on purpose: availability is memoised for the process,
  *    so only the first ask in it can be counted.
- *  - AC3: the availability call answers `false` and nothing else; a server
- *    with a sealed value on disk keeps no typed value, not on disk, not in
- *    memory, and not in a started process.
+ *  - AC3: the availability call answers one fixed shape, `{ available,
+ *    description, remedy }`, with `available` false and no env data (KYB-696
+ *    widened it from the bare boolean KYB-695 asked for); a server with a
+ *    sealed value on disk keeps no typed value, not on disk, not in memory,
+ *    and not in a started process.
  *  - AC4: the list result names the keys held for a server with no sealed
  *    value, never their values, and stops naming them on removal.
  *  - AC1 (looksSealed): `saveServers` judges "sealed on disk" with
@@ -168,10 +170,32 @@ test("AC5: listing the servers does not ask the store whether it is available", 
 
 // ---- AC3 ---------------------------------------------------------------------
 
-test("AC3: the availability call answers false, a boolean and nothing else", () => {
+test("AC3: the availability call answers the fixed shape, false, and nothing else", () => {
+  // KYB-695 held this to a bare boolean. KYB-696 widens it on purpose, so the
+  // renderer can show the main process's words for the case, and this test
+  // holds the new shape just as tightly: a field missing, a field extra, a
+  // field of the wrong type, or any env data, is red.
+  fresh();
+  givenStored([server({ id: "plain", name: "Plain", env: { STORED_SENTINEL_KEY: "stored-sentinel-value" } })]);
+  const saved = invoke("studio:saveMcpServers", [
+    { ...stored("plain"), env: { STORED_SENTINEL_KEY: "stored-sentinel-value", HELD_SENTINEL_KEY: TYPED } },
+  ]);
+  assert.deepEqual(saved.heldKeys?.plain, ["HELD_SENTINEL_KEY"], "precondition: the typed value is not held");
+
   const answer = invoke("studio:credentialStoreAvailable");
-  assert.equal(typeof answer, "boolean", `answered ${JSON.stringify(answer)}`);
-  assert.equal(answer, false);
+  assert.equal(typeof answer, "object", `answered ${JSON.stringify(answer)}`);
+  assert.ok(answer !== null && !Array.isArray(answer), `answered ${JSON.stringify(answer)}`);
+  assert.equal(Object.getPrototypeOf(answer), Object.prototype, "not a plain object");
+  assert.deepEqual(Object.keys(answer).sort(), ["available", "description", "remedy"], `answered ${JSON.stringify(answer)}`);
+  assert.equal(answer.available, false);
+  assert.equal(typeof answer.description, "string");
+  assert.equal(typeof answer.remedy, "string");
+  assert.ok(answer.description.length > 0, "no description for an unavailable store");
+  assert.ok(answer.remedy.length > 0, "no remedy for an unavailable store");
+  const wire = JSON.stringify(answer);
+  for (const sentinel of ["stored-sentinel-value", TYPED, "STORED_SENTINEL_KEY", "HELD_SENTINEL_KEY"]) {
+    assert.ok(!wire.includes(sentinel), `the answer carries ${sentinel}`);
+  }
 });
 
 test("AC3: a typed value for a server with a sealed value is not written to disk", () => {

@@ -22,9 +22,12 @@ import { JSDOM } from "jsdom";
  *  - Fix: the eye's store-unavailable message no longer says to type a new
  *    value.
  *
- * The harness is `mcp-local-edit-dom.test.mjs`'s. jsdom reports no platform, so
- * the store is named "keyring". No jsdom node is ever the `actual` of an
- * assertion: a failing one tries to print it, and runs out of heap.
+ * The harness is `mcp-local-edit-dom.test.mjs`'s. The availability answer is
+ * the fixed shape the main process sends (KYB-696), with the shared wording for
+ * a Linux keyring backend: the words are the main process's, and what these
+ * tests check is where the renderer puts them. No jsdom node is ever the
+ * `actual` of an assertion: a failing one tries to print it, and runs out of
+ * heap.
  */
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", {
@@ -59,6 +62,17 @@ const { act, createElement } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { Plugins } = await import("../src/renderer/src/components/Plugins.tsx");
 const { useStore } = await import("@/lib/store");
+const { credentialStoreWording } = await import("../src/main/credentialStoreWording.ts");
+
+/** The words the main process sends for a Linux keyring backend. */
+const KEYRING = credentialStoreWording("linux", "gnome_libsecret");
+/** The availability answer as the main process sends it (KYB-696). */
+const answerFor = (available) =>
+  typeof available === "boolean"
+    ? available
+      ? { available: true, description: "", remedy: "" }
+      : { available: false, ...KEYRING }
+    : available;
 
 after(() => dom.window.close());
 
@@ -166,7 +180,9 @@ const envFields = (host) => {
 };
 
 const WARNING = [/won’t be saved/, /until it restarts/];
-const NOTE = [/can’t be changed/, /once it is available and Studio has restarted/];
+// The note's remedy is not here: the warning carries the same remedy (KYB-696
+// AC3), so it cannot tell them apart. The note's tests check the remedy itself.
+const NOTE = [/can’t be changed/];
 const HELD_LINE = /until Studio restarts/;
 
 const sealed = (plain) => `kyb:v1:${Buffer.from(`ENC(${plain})`, "utf8").toString("base64")}`;
@@ -195,7 +211,7 @@ function bridge({ available, availability, servers = [], heldKeys = {}, connect,
     mcpServers: async () => ({ ok: true, servers: current, heldKeys }),
     credentialStoreAvailable: async () => {
       availabilityAsks += 1;
-      return availability ? availability() : available;
+      return answerFor(availability ? await availability() : available);
     },
     saveMcpServers: async (next) => {
       saves.push(structuredClone(next));
@@ -221,7 +237,8 @@ test("AC1: the add form warns that values will not be saved and last until Studi
   try {
     await click(buttonIn(panel.host, "Add one on this computer"));
     for (const words of WARNING) assert.match(text(form(panel.host)), words, "no warning on the add form");
-    assert.match(text(form(panel.host)), /keyring/, "the store is not named");
+    assert.ok(text(form(panel.host)).includes(KEYRING.description), "the answer's description is not shown");
+    assert.ok(text(form(panel.host)).includes(KEYRING.remedy), "the answer's remedy is not shown");
     for (const words of NOTE) assert.doesNotMatch(text(form(panel.host)), words, "the locked note is on the add form");
   } finally {
     await panel.unmount();
@@ -334,15 +351,20 @@ test("AC2: a server with a sealed value offers no field, eye, × or new-line box
   }
 });
 
-test("AC2: a note says values can't be changed until the store is available and Studio restarts, and does not say unlock", async () => {
+test("AC2: a note says values can't be changed, with the answer's description and remedy, and does not promise unlocking alone is enough", async () => {
   const b = bridge({ available: false, servers: [sealedServer()] });
   const panel = await mount(b.api);
   try {
     await menu(panel.host, "MCP kybsealed", "Edit");
     const said = text(form(panel.host));
     for (const words of NOTE) assert.match(said, words, "no note");
-    assert.match(said, /keyring/, "the store is not named");
-    assert.doesNotMatch(said, /unlock/i, "the note promises unlocking is enough");
+    assert.ok(said.includes(KEYRING.description), "the answer's description is not shown");
+    assert.ok(said.includes(KEYRING.remedy), "the answer's remedy is not shown");
+    // KYB-695 kept "unlock" out of the note, because availability is asked
+    // once a run and unlocking alone changes nothing. The remedy now comes
+    // from the main process (KYB-696), says to restart as well, and on
+    // `basic_text`, where there is nothing to unlock, says neither.
+    assert.match(said, /restart Studio/, "the note promises unlocking is enough");
     for (const words of WARNING) assert.doesNotMatch(said, words, "the unsealed warning is on a sealed server");
   } finally {
     await panel.unmount();
@@ -515,6 +537,7 @@ test("AC5: with the store available, the add form shows no warning and no note, 
     await click(buttonIn(panel.host, "Add one on this computer"));
     const said = text(form(panel.host));
     for (const words of [...WARNING, ...NOTE]) assert.doesNotMatch(said, words);
+    assert.ok(!said.includes(KEYRING.description) && !said.includes(KEYRING.remedy), "the store is described");
     assert.ok(envLines(panel.host), "no box for new lines");
   } finally {
     await panel.unmount();
@@ -528,6 +551,7 @@ test("AC5: with the store available, a sealed server's edit form is editable as 
     await menu(panel.host, "MCP kybsealed", "Edit");
     const f = form(panel.host);
     for (const words of [...WARNING, ...NOTE]) assert.doesNotMatch(text(f), words);
+    assert.ok(!text(f).includes(KEYRING.description) && !text(f).includes(KEYRING.remedy), "the store is described");
     for (const key of ["KYB_KEY", "PLAIN"]) {
       assert.ok(envInput(panel.host, key), `${key} has no field`);
       assert.ok(buttonIn(f, `Remove ${key}`), `${key} has no ×`);
@@ -551,7 +575,7 @@ test("Fix: the eye's store-unavailable message no longer says to type a new valu
     const eye = eyeOf(panel.host, "PLAIN");
     assert.ok(eye, "precondition: no eye on PLAIN");
     await click(eye);
-    assert.match(envRowText(panel.host, "PLAIN"), /keyring is locked/, "precondition: no message");
+    assert.match(envRowText(panel.host, "PLAIN"), /Can’t show it\./, "precondition: no message");
     assert.doesNotMatch(envRowText(panel.host, "PLAIN"), TYPE_NEW, "the message still says to type a new value");
   } finally {
     await panel.unmount();
@@ -567,5 +591,32 @@ test("AC5: the panel asks whether the store is available when the form opens, no
     assert.equal(b.asks(), 1, "opening the form did not ask about the store, or asked more than once");
   } finally {
     await panel.unmount();
+  }
+});
+
+test("KYB-696: an answer in another shape is logged and treated as no answer, so the form is as it always was", async () => {
+  // The bare boolean KYB-695 sent, a field missing, a field of the wrong type.
+  for (const reply of [false, { available: false }, { available: false, description: 1, remedy: "" }]) {
+    const b = bridge({ servers: [local({ env: { KYB_KEY: "plain-value" } })] });
+    b.api.credentialStoreAvailable = async () => reply;
+    const logged = [];
+    const error = console.error;
+    console.error = (...args) => logged.push(args.join(" "));
+    const panel = await mount(b.api);
+    try {
+      await menu(panel.host, "MCP kyb", "Edit");
+      const f = form(panel.host);
+      const shape = JSON.stringify(reply);
+      assert.equal(f.querySelectorAll(".pl__notice").length, 0, `${shape}: a notice is shown`);
+      assert.ok(buttonIn(f, "Remove KYB_KEY"), `${shape}: the × is gone, so the answer was taken`);
+      assert.equal(
+        logged.filter((line) => line.includes("credential store answer")).length,
+        1,
+        `${shape}: not logged once: ${logged.join(" | ")}`,
+      );
+    } finally {
+      console.error = error;
+      await panel.unmount();
+    }
   }
 });

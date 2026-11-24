@@ -25,6 +25,9 @@
  * tested and being hoped at.
  */
 
+import type { CredentialStoreAnswer } from "../shared/ipc";
+import { credentialStoreWording } from "./credentialStoreWording";
+
 /** The parts of Electron's `safeStorage` this file needs, and nothing more. */
 export type SafeStorageLike = {
   isEncryptionAvailable: () => boolean;
@@ -48,7 +51,8 @@ export type SafeStorageLike = {
  * `localMcp.ts` had one and `controlPlane.ts` asked raw, twice, so a signed-in
  * user with an MCP server could be prompted more than once. Having the session
  * layer import the MCP layer would have fixed the count and inverted the
- * dependency; this file already owns the abstraction and depends on nothing.
+ * dependency; this file already owns the abstraction, and depends only on the
+ * wording module, which is pure.
  *
  * `safeStorage` is injected for the same reason as everywhere else in this
  * file: no Electron import, so `node --test` can load it.
@@ -66,9 +70,63 @@ export function isCredentialStoreAvailable(
   env: { platform: string } = process,
 ): boolean {
   if (availabilityAnswer === null) {
-    availabilityAnswer = credentialStoreCanProtect(safeStorage, env);
+    availabilityAnswer = canProtectWith(selectedStorageBackend(safeStorage, env), safeStorage);
   }
   return availabilityAnswer;
+}
+
+/**
+ * The Linux backend's name, read at most once for the life of the process.
+ * `null` off Linux, where it is never asked, and `null` if the call failed.
+ *
+ * @remarks
+ * Memoised because two callers now need it: the availability answer above,
+ * and the wording of every message about an unavailable store (KYB-696), which
+ * must tell `basic_text` from a keyring. Asking is free, measured prompt-free
+ * on a locked keyring, but it sits inside the same latch, and a read per
+ * message would turn one answer into a read per caller.
+ */
+let backendAnswer: { backend: string | null } | null = null;
+
+export function selectedStorageBackend(
+  safeStorage: Pick<SafeStorageLike, "getSelectedStorageBackend">,
+  env: { platform: string } = process,
+): string | null {
+  if (env.platform !== "linux") return null;
+  if (backendAnswer === null) {
+    let backend: string | null = null;
+    try {
+      backend = safeStorage.getSelectedStorageBackend();
+    } catch {
+      backend = null;
+    }
+    backendAnswer = { backend };
+  }
+  return backendAnswer.backend;
+}
+
+/**
+ * The availability answer the add and edit forms ask for (KYB-696), with the
+ * description and remedy for the case when the store is unavailable.
+ *
+ * @remarks
+ * One fixed shape, always: the same three fields, each built here rather than
+ * spread from anything, so nothing else can ride along to the renderer. It
+ * carries no env data. When the store is available the two strings are empty,
+ * because there is nothing to describe.
+ *
+ * Availability comes from the memoised answer above and never from
+ * `isEncryptionAvailable()` directly: asking is what raises the unlock prompt.
+ */
+export function credentialStoreAnswer(
+  safeStorage: SafeStorageLike,
+  env: { platform: string } = process,
+): CredentialStoreAnswer {
+  if (isCredentialStoreAvailable(safeStorage, env)) {
+    return { available: true, description: "", remedy: "" };
+  }
+  const wording = credentialStoreWording(env.platform, selectedStorageBackend(safeStorage, env));
+  return { available: false, description: wording.description, remedy: wording.remedy };
 }
 
 /**
@@ -117,16 +175,28 @@ export function credentialStoreCanProtect(
   safeStorage: SafeStorageLike,
   env: { platform: string } = process,
 ): boolean {
+  let backend: string | null = null;
   if (env.platform === "linux") {
-    let backend: string | null = null;
     try {
       backend = safeStorage.getSelectedStorageBackend();
     } catch {
       backend = null;
     }
-    if (backend !== null && WEAK_BACKENDS.has(backend)) return false;
   }
+  return canProtectWith(backend, safeStorage);
+}
 
+/**
+ * The decision itself, given a backend name already read: `null` off Linux,
+ * or when the name could not be read. Shared by the unmemoised matrix above
+ * and the memoised answer, so the two cannot disagree, and the memoised one can
+ * read the name through `selectedStorageBackend` without asking it twice.
+ */
+function canProtectWith(
+  backend: string | null,
+  safeStorage: Pick<SafeStorageLike, "isEncryptionAvailable">,
+): boolean {
+  if (backend !== null && WEAK_BACKENDS.has(backend)) return false;
   return safeStorage.isEncryptionAvailable();
 }
 

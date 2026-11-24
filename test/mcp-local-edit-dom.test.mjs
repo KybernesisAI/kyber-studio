@@ -461,7 +461,7 @@ test("a Turn off made while the Edit form is open survives the form's Save", asy
 
 // ---- What a row says when its value cannot be shown (round 1, Nits 2 and 4) --
 
-test("AC3: a row that cannot be shown says why (the keyring, under jsdom's empty platform), and that its value is kept", async () => {
+test("AC3: a row that cannot be shown says so, and that its value is kept", async () => {
   const b = bridge({
     servers: [plaud()],
     reveal: { API_KEY: { ok: false, reason: "store-unavailable" }, DB_URL: { ok: false, reason: "not-found" } },
@@ -472,8 +472,12 @@ test("AC3: a row that cannot be shown says why (the keyring, under jsdom's empty
     await click(envRow(panel.host, "API_KEY").querySelector('button[title="Show"]'));
     await click(envRow(panel.host, "DB_URL").querySelector('button[title="Show"]'));
 
-    // jsdom reports no platform, which is not a Mac and not Windows.
-    assert.match(envRow(panel.host, "API_KEY").textContent ?? "", /while your keyring is locked/);
+    // This bridge gives no availability answer, so the store-unavailable
+    // message has no description to show: the main process writes that, and
+    // the renderer adds none of its own (KYB-696). It still says the value
+    // cannot be shown.
+    assert.match(envRow(panel.host, "API_KEY").textContent ?? "", /Can’t show it\./);
+    assert.doesNotMatch(envRow(panel.host, "API_KEY").textContent ?? "", /keyring|locked/);
     assert.match(envRow(panel.host, "DB_URL").textContent ?? "", /stored value is kept/);
     assert.doesNotMatch(envRow(panel.host, "DB_URL").textContent ?? "", /isn’t stored/);
 

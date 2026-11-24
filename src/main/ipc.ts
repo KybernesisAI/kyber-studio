@@ -1,6 +1,11 @@
 import { BrowserWindow, Notification, ipcMain, safeStorage, shell, type WebContents } from "electron";
 import type { Attachment } from "../shared/ipc";
-import type { McpServersResult, RevealMcpEnvResult, SaveMcpServersOptions } from "../shared/ipc";
+import type {
+  CredentialStoreAnswer,
+  McpServersResult,
+  RevealMcpEnvResult,
+  SaveMcpServersOptions,
+} from "../shared/ipc";
 import type { VoiceContext } from "../shared/ipc";
 import { closeOrbWindow, createLiveSession, moveOrbWindow, toggleOrbWindow, voiceAsk, voiceContext } from "./voice";
 import { loadState, pickFolder, saveState } from "./store";
@@ -13,7 +18,7 @@ import {
   saveRemoteFile,
 } from "./deliveredFile";
 import { listSessions, recordSession, replaySession } from "./sessionIndex";
-import { isCredentialStoreAvailable } from "./credentialStorage";
+import { credentialStoreAnswer } from "./credentialStorage";
 import { agentArtifact, agentImage } from "./agentContent";
 import { agentArtifacts } from "./agentArtifacts";
 import {
@@ -151,15 +156,17 @@ export function revealMcpEnvResult(id: string, key: string): RevealMcpEnvResult 
 }
 
 /**
- * Whether the OS credential store can protect a secret, as `true` or `false`
- * and nothing else (KYB-695). No env data crosses with it.
+ * Whether the OS credential store can protect a secret, and the description
+ * and remedy for the case when it cannot (KYB-696; a bare boolean in KYB-695).
+ * One fixed shape, built in `credentialStoreAnswer`, and no env data crosses
+ * with it. The renderer renders the two strings and writes none of its own.
  *
  * The add and edit forms ask this when they open, and only then: the first ask
  * is what raises the keyring's unlock prompt, so the panel listing servers must
  * not. The answer is memoised for the process in `isCredentialStoreAvailable`.
  */
-export function credentialStoreAvailableResult(): boolean {
-  return isCredentialStoreAvailable(safeStorage) === true;
+export function credentialStoreAvailableResult(): CredentialStoreAnswer {
+  return credentialStoreAnswer(safeStorage);
 }
 
 export function registerIpc(): void {
