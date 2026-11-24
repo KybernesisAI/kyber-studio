@@ -5,6 +5,7 @@ import {
   buttonIn,
   click,
   envInput,
+  envLines,
   eyeOf,
   form,
   menu,
@@ -27,7 +28,9 @@ import {
  *    × removes it.", after a reveal and after typing without one.
  *  - AC2: the note follows an edit only: not on a fresh form, not on a field
  *    typed into again, and not after revealing a stored value that is itself
- *    empty.
+ *    empty. Nor while the box for new values has a line for the key, which
+ *    replaces the stored value on Save, and not under the not-found message,
+ *    which already says the value is kept.
  *  - AC3: in the warning state, where × is not offered (KYB-695), the note
  *    leaves the clause about × off.
  *  - AC4: Save still sends the original sealed string.
@@ -39,6 +42,7 @@ import {
 
 const NOTE = "Left empty, the stored value is kept. × removes it.";
 const NOTE_WARN = "Left empty, the stored value is kept.";
+const NOT_FOUND = "Can’t show it right now. The stored value is kept unless you type a new one or remove it.";
 
 const S_API = sealed("sk-live-1");
 const S_DB = sealed("postgres://u:p@h/db");
@@ -143,6 +147,62 @@ test("AC2: revealing a stored value that is itself empty shows no note", async (
     assert.equal(envInput(panel.host, "API_KEY").type, "text", "precondition: the eye did not reveal the value");
     assert.equal(envInput(panel.host, "API_KEY").value, "", "precondition: the revealed field is not empty");
     assert.deepEqual(messagesOf(panel.host, "API_KEY"), []);
+  } finally {
+    await panel.unmount();
+  }
+});
+
+/** Empty API_KEY's field after a reveal, as AC1 does. */
+async function emptyApiKey(panel) {
+  await click(eyeOf(panel.host, "API_KEY"));
+  assert.equal(envInput(panel.host, "API_KEY").value, "sk-live-1", "precondition: the eye did not reveal the value");
+  await type(envInput(panel.host, "API_KEY"), "");
+}
+
+test("AC2: an emptied field shows no note while the box has a line with a value for its key", async () => {
+  const b = bridge({ answer: AVAILABLE, servers: [plaud()], reveal: { ok: true, value: "sk-live-1" } });
+  const panel = await openEdit(b, "Plaud");
+  try {
+    await emptyApiKey(panel);
+    assert.ok(envLines(panel.host), "precondition: the form offers no box for new values");
+
+    await type(envLines(panel.host), "API_KEY=new");
+    assert.equal(envInput(panel.host, "API_KEY").value, "", "precondition: the field is no longer empty");
+    assert.deepEqual(messagesOf(panel.host, "API_KEY"), []);
+
+    await type(envLines(panel.host), "");
+    assert.deepEqual(messagesOf(panel.host, "API_KEY"), [NOTE], "the note did not come back when the box was cleared");
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test("AC2: an emptied field shows no note while the box has an empty line for its key", async () => {
+  const b = bridge({ answer: AVAILABLE, servers: [plaud()], reveal: { ok: true, value: "sk-live-1" } });
+  const panel = await openEdit(b, "Plaud");
+  try {
+    await emptyApiKey(panel);
+    assert.ok(envLines(panel.host), "precondition: the form offers no box for new values");
+
+    await type(envLines(panel.host), "API_KEY=");
+    assert.equal(envInput(panel.host, "API_KEY").value, "", "precondition: the field is no longer empty");
+    assert.deepEqual(messagesOf(panel.host, "API_KEY"), []);
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test("AC2: an emptied field under the not-found message shows that message and no note", async () => {
+  const b = bridge({ answer: AVAILABLE, servers: [plaud()], reveal: { ok: false, reason: "not-found" } });
+  const panel = await openEdit(b, "Plaud");
+  try {
+    await click(eyeOf(panel.host, "API_KEY"));
+    assert.deepEqual(messagesOf(panel.host, "API_KEY"), [NOT_FOUND], "precondition: the row does not show the not-found message");
+
+    await type(envInput(panel.host, "API_KEY"), "x");
+    await type(envInput(panel.host, "API_KEY"), "");
+    assert.equal(envInput(panel.host, "API_KEY").value, "", "precondition: the field was not emptied");
+    assert.deepEqual(messagesOf(panel.host, "API_KEY"), [NOT_FOUND]);
   } finally {
     await panel.unmount();
   }

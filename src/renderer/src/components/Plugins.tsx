@@ -1127,10 +1127,11 @@ interface StoredEnv {
 
 /**
  * The note on a stored key's row once the person has emptied its field
- * (KYB-693). Save keeps a blank value, and an empty field with the dots back
- * reads as cleared, so the row says what will happen. One sentence with an
- * optional trailing clause, not two written separately: the clause about ×
- * is left off where × is not offered (KYB-695), and the rest must not drift.
+ * (KYB-693). A blank field keeps the stored value on Save, and an empty field
+ * with the dots back reads as cleared, so the row says what will happen. One
+ * sentence with an optional trailing clause, not two written separately: the
+ * clause about × is left off where × is not offered (KYB-695), and the rest
+ * must not drift.
  */
 function emptiedFieldNote(removable: boolean): string {
   return `Left empty, the stored value is kept.${removable ? " × removes it." : ""}`;
@@ -1211,6 +1212,12 @@ function AddLocalServer({
   const locked = available === false && sealedOnDisk;
   /** The store is unavailable and nothing is sealed: values work until Studio restarts. */
   const warn = available === false && !sealedOnDisk;
+  /**
+   * The keys the box for new values has a line for, parsed as Save parses it.
+   * Any line, `KEY=` included, replaces the stored value, so the note that the
+   * stored value is kept must not show for that key (KYB-693).
+   */
+  const boxKeys = parseEnvLines(env);
   /** The main process's words for the state and its remedy; `""` until it says. */
   const description = answer?.description ?? "";
   const remedy = answer?.remedy ?? "";
@@ -1387,8 +1394,11 @@ function AddLocalServer({
               </div>
             ) : null}
             {/* An edit that left the field empty, not an empty field: a
-                stored value that is itself empty reveals as one (KYB-693). */}
-            {e.edited && e.typed === "" ? (
+                stored value that is itself empty reveals as one (KYB-693).
+                Not while the box has a line for the key, which replaces the
+                stored value, and not under the not-found message, which
+                already says the value is kept. */}
+            {e.edited && e.typed === "" && !Object.hasOwn(boxKeys, e.key) && e.failed !== "not-found" ? (
               <div className="muted" style={{ marginTop: 2 }}>
                 {emptiedFieldNote(!warn)}
               </div>
