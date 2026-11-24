@@ -1075,24 +1075,26 @@ type RevealFailure = "store-unavailable" | keyof typeof REVEAL_FAILED;
 /**
  * The message under a value the eye could not open.
  *
- * `store-unavailable` takes its description from the availability answer and
- * adds none of its own (KYB-696). Only a sealed value fails that way, and once
- * the answer says the store is unavailable a server with a sealed value is
- * locked and offers no eye, so in practice this shows before the answer has
- * arrived, as "Can’t show it." alone. It is worked out when the row renders,
- * not when the eye failed, so the answer's description appears once it is in.
- * It does not say to type a new value (KYB-695): for a server with a sealed
- * value that does nothing.
+ * `store-unavailable` takes its description and remedy from the availability
+ * answer and adds none of its own (KYB-696). Only a sealed value fails that
+ * way, and once the answer says the store is unavailable a server with a
+ * sealed value is locked and offers no eye, so in practice this shows before
+ * the answer has arrived, as "Can’t show it." alone: the renderer has no words
+ * for the store until the main process sends them. It is worked out when the
+ * row renders, not when the eye failed, so the answer's words appear once it
+ * is in. It does not say to type a new value (KYB-695): for a server with a
+ * sealed value that does nothing.
  */
-function revealFailedMessage(reason: RevealFailure, description: string): string {
+function revealFailedMessage(reason: RevealFailure, description: string, remedy: string): string {
   if (reason !== "store-unavailable") return REVEAL_FAILED[reason];
-  return description ? `Can’t show it. ${description}` : "Can’t show it.";
+  return description ? `Can’t show it. ${description} ${remedy}` : "Can’t show it.";
 }
 
 /**
  * The availability answer, if it has the one shape the main process sends.
  * Anything else is treated as no answer, which leaves the form as it always
- * was; the main process holds the line whatever the form shows.
+ * was; the main process holds the line whatever the form shows. The caller
+ * says so on the console, as it does for a failed call.
  */
 function readCredentialStoreAnswer(reply: unknown): CredentialStoreAnswer | null {
   if (typeof reply !== "object" || reply === null) return null;
@@ -1159,8 +1161,17 @@ function AddLocalServer({
     let open = true;
     void (async () => {
       try {
-        const reply = readCredentialStoreAnswer(await window.studio?.credentialStoreAvailable?.());
-        if (open && reply) setAnswer(reply);
+        // A bridge without the call (an older preload, or a test) is no answer
+        // and says nothing. A call that answers in another shape is a fault
+        // between main and renderer, and is logged like a failed call. The
+        // reply itself is not printed: what it carries is unknown.
+        if (typeof window.studio?.credentialStoreAvailable !== "function") return;
+        const reply = readCredentialStoreAnswer(await window.studio.credentialStoreAvailable());
+        if (!reply) {
+          console.error("[plugins] the credential store answer was not in the expected shape, so it was ignored");
+          return;
+        }
+        if (open) setAnswer(reply);
       } catch (error) {
         console.error(
           `[plugins] could not ask whether the credential store is available: ${error instanceof Error ? error.message : String(error)}`,
@@ -1307,7 +1318,7 @@ function AddLocalServer({
             locked keyring. Only the consequence is written here. */}
         {warn ? (
           <div className="pl__notice" role="note">
-            {`${description} Values typed here won’t be saved. Studio will use them until it restarts.`}
+            {`${description} Values typed here won’t be saved. Studio will use them until it restarts. ${remedy}`}
           </div>
         ) : null}
         {locked ? (
@@ -1358,7 +1369,7 @@ function AddLocalServer({
             </div>
             {e.failed ? (
               <div className="muted" style={{ marginTop: 2 }}>
-                {revealFailedMessage(e.failed, description)}
+                {revealFailedMessage(e.failed, description, remedy)}
               </div>
             ) : null}
           </div>

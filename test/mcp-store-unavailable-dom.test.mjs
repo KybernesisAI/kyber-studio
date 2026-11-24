@@ -180,7 +180,9 @@ const envFields = (host) => {
 };
 
 const WARNING = [/won’t be saved/, /until it restarts/];
-const NOTE = [/can’t be changed/, /Unlock your keyring and restart Studio\./];
+// The note's remedy is not here: the warning carries the same remedy (KYB-696
+// AC3), so it cannot tell them apart. The note's tests check the remedy itself.
+const NOTE = [/can’t be changed/];
 const HELD_LINE = /until Studio restarts/;
 
 const sealed = (plain) => `kyb:v1:${Buffer.from(`ENC(${plain})`, "utf8").toString("base64")}`;
@@ -236,6 +238,7 @@ test("AC1: the add form warns that values will not be saved and last until Studi
     await click(buttonIn(panel.host, "Add one on this computer"));
     for (const words of WARNING) assert.match(text(form(panel.host)), words, "no warning on the add form");
     assert.ok(text(form(panel.host)).includes(KEYRING.description), "the answer's description is not shown");
+    assert.ok(text(form(panel.host)).includes(KEYRING.remedy), "the answer's remedy is not shown");
     for (const words of NOTE) assert.doesNotMatch(text(form(panel.host)), words, "the locked note is on the add form");
   } finally {
     await panel.unmount();
@@ -534,6 +537,7 @@ test("AC5: with the store available, the add form shows no warning and no note, 
     await click(buttonIn(panel.host, "Add one on this computer"));
     const said = text(form(panel.host));
     for (const words of [...WARNING, ...NOTE]) assert.doesNotMatch(said, words);
+    assert.ok(!said.includes(KEYRING.description) && !said.includes(KEYRING.remedy), "the store is described");
     assert.ok(envLines(panel.host), "no box for new lines");
   } finally {
     await panel.unmount();
@@ -547,6 +551,7 @@ test("AC5: with the store available, a sealed server's edit form is editable as 
     await menu(panel.host, "MCP kybsealed", "Edit");
     const f = form(panel.host);
     for (const words of [...WARNING, ...NOTE]) assert.doesNotMatch(text(f), words);
+    assert.ok(!text(f).includes(KEYRING.description) && !text(f).includes(KEYRING.remedy), "the store is described");
     for (const key of ["KYB_KEY", "PLAIN"]) {
       assert.ok(envInput(panel.host, key), `${key} has no field`);
       assert.ok(buttonIn(f, `Remove ${key}`), `${key} has no ×`);
@@ -586,5 +591,32 @@ test("AC5: the panel asks whether the store is available when the form opens, no
     assert.equal(b.asks(), 1, "opening the form did not ask about the store, or asked more than once");
   } finally {
     await panel.unmount();
+  }
+});
+
+test("KYB-696: an answer in another shape is logged and treated as no answer, so the form is as it always was", async () => {
+  // The bare boolean KYB-695 sent, a field missing, a field of the wrong type.
+  for (const reply of [false, { available: false }, { available: false, description: 1, remedy: "" }]) {
+    const b = bridge({ servers: [local({ env: { KYB_KEY: "plain-value" } })] });
+    b.api.credentialStoreAvailable = async () => reply;
+    const logged = [];
+    const error = console.error;
+    console.error = (...args) => logged.push(args.join(" "));
+    const panel = await mount(b.api);
+    try {
+      await menu(panel.host, "MCP kyb", "Edit");
+      const f = form(panel.host);
+      const shape = JSON.stringify(reply);
+      assert.equal(f.querySelectorAll(".pl__notice").length, 0, `${shape}: a notice is shown`);
+      assert.ok(buttonIn(f, "Remove KYB_KEY"), `${shape}: the × is gone, so the answer was taken`);
+      assert.equal(
+        logged.filter((line) => line.includes("credential store answer")).length,
+        1,
+        `${shape}: not logged once: ${logged.join(" | ")}`,
+      );
+    } finally {
+      console.error = error;
+      await panel.unmount();
+    }
   }
 });

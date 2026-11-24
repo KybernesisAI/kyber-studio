@@ -15,10 +15,13 @@ import { mainProcess, pinPlatform } from "./helpers/mcp-main.mjs";
  * All six messages, each through the path a person reaches it by: the Connect
  * error and both `[mcp]` log lines from the main process, and the warning, the
  * note and the eye message from the renderer, fed the main process's real
- * availability answer. One test per message, so a red names which one.
+ * availability answer. One test per message, so a red names which one. The
+ * eye message is read twice: with the answer in, and before it arrives, which
+ * is the state the product reaches with it (a sealed server is locked once the
+ * answer is in, and offers no eye).
  *
  * Imports nothing that KYB-696 added, so it loads on the merge base, where the
- * Connect error, the held log line and the eye message go red.
+ * Connect error, the held log line and both eye readings go red.
  */
 
 pinPlatform("linux");
@@ -29,6 +32,7 @@ const UNLOCK = /unlock|locked/i;
 
 const fromMain = await main.mainMessages();
 const fromRenderer = await dom.rendererMessages(() => main.invoke("studio:credentialStoreAvailable"));
+const eyeBeforeAnswer = await dom.eyeBeforeAnswer();
 
 const messages = {
   "the Connect error": fromMain.connect,
@@ -37,6 +41,7 @@ const messages = {
   "the form warning": fromRenderer.warning,
   "the form note": fromRenderer.note,
   "the eye message": fromRenderer.eye,
+  "the eye message before the answer arrives": eyeBeforeAnswer,
 };
 
 test("precondition: the store is unavailable, decided from the backend name alone", () => {

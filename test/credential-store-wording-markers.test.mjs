@@ -1,5 +1,6 @@
 import { mock, test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mainProcess, pinPlatform } from "./helpers/mcp-main.mjs";
 
 /**
@@ -17,9 +18,8 @@ import { mainProcess, pinPlatform } from "./helpers/mcp-main.mjs";
  *
  * What each check does, exactly:
  *
- *  1. The description marker is in every message, and the remedy marker is in
- *     each message that carries a remedy: all but the warning and the eye
- *     message, which describe the state and say what it means for the form.
+ *  1. Both markers are in every message, each exactly once: AC3's "shows
+ *     those markers" is the description AND the remedy.
  *  2. With every marker taken out, what is left contains none of the words
  *     that would make a description or remedy of its own: no phrase the real
  *     source uses (from `credentialStoreWording` for every platform and
@@ -31,6 +31,12 @@ import { mainProcess, pinPlatform } from "./helpers/mcp-main.mjs";
  *     lasts, not what is wrong or what to do.
  *  3. A marker appears once in a message, so nothing repeats the source's
  *     words beside a copy of its own.
+ *
+ * The eye message is also read BEFORE the answer arrives, which is the state
+ * the product actually reaches with it: only a sealed value fails with
+ * store-unavailable, and a sealed server is locked once the answer is in. The
+ * renderer has no words for the store then, so check 2 applies to it as it
+ * stands: no own description or remedy, markers or no markers.
  *
  * The availability answer's shape is checked here too, with the markers: the
  * three fields and nothing else, of the right types, carrying none of the env
@@ -44,32 +50,29 @@ const REMEDY = "REMEDY-MARKER-91c2.";
 // the source can produce. Through a query string, so this import is a
 // different module instance from the one the mock below replaces.
 //
-// Both steps tolerate the module being absent, so this file loads on the
-// merge base, where no shared source exists and each message goes red on its
-// own line rather than the whole file failing to load. On the branch an
-// absent module would leave every message without its markers, so the
-// tolerance cannot turn a red green.
+// Both steps are skipped when the file does not exist, so this file loads on
+// the merge base, where there is no shared source, and each message goes red
+// on its own line rather than the whole file failing to load. A file that
+// exists and fails to load or to be replaced is a fault, and throws here,
+// loudly: tolerating it would leave the phrase list empty and weaken check 2.
+const SOURCE = new URL("../src/main/credentialStoreWording.ts", import.meta.url);
 const REAL_PHRASES = [];
-try {
-  const real = await import("../src/main/credentialStoreWording.ts?real");
+if (existsSync(SOURCE)) {
+  const real = await import(`${SOURCE.href}?real`);
   for (const platform of ["linux", "darwin", "win32", "freebsd"]) {
     for (const backend of ["basic_text", "gnome_libsecret", "kwallet6", null]) {
       const { description, remedy } = real.credentialStoreWording(platform, backend);
       REAL_PHRASES.push(description, remedy);
     }
   }
-} catch (error) {
-  console.log(`# the shared source could not be loaded: ${error.message}`);
-}
-
-try {
-  mock.module("../src/main/credentialStoreWording.ts", {
+  assert.ok(REAL_PHRASES.every((phrase) => typeof phrase === "string" && phrase.length > 0), "the shared source answered with an empty phrase");
+  mock.module(SOURCE.href, {
     exports: {
       credentialStoreWording: () => ({ description: DESCRIPTION, remedy: REMEDY }),
     },
   });
-} catch (error) {
-  console.log(`# the shared source could not be replaced: ${error.message}`);
+} else {
+  console.log(`# ${SOURCE.pathname} does not exist (the merge base): nothing to replace`);
 }
 
 pinPlatform("linux");
@@ -81,35 +84,46 @@ const WARNING_CONSEQUENCE = "Studio will use them until it restarts.";
 
 const fromMain = await main.mainMessages();
 const fromRenderer = await dom.rendererMessages(() => main.invoke("studio:credentialStoreAvailable"));
+const eyeBeforeAnswer = await dom.eyeBeforeAnswer();
 
-/** Each message, and whether its composition carries the remedy. */
+/** Each message, and whether its composition carries the remedy: all six do. */
 const messages = {
   "the Connect error": [fromMain.connect, true],
   "the log line for a value held in memory": [fromMain.held, true],
   "the log line for a server with a sealed value": [fromMain.sealedLog, true],
-  "the form warning": [fromRenderer.warning, false],
+  "the form warning": [fromRenderer.warning, true],
   "the form note": [fromRenderer.note, true],
-  "the eye message": [fromRenderer.eye, false],
+  "the eye message": [fromRenderer.eye, true],
 };
 
 const count = (haystack, needle) => haystack.split(needle).length - 1;
+
+/** Check 2: with the markers out, no description or remedy of its own. */
+function assertNoOwnWording(where, said) {
+  let rest = said.split(DESCRIPTION).join(" ").split(REMEDY).join(" ");
+  if (where === "the form warning") {
+    assert.ok(rest.includes(WARNING_CONSEQUENCE), `precondition: the warning's consequence moved: ${said}`);
+    rest = rest.split(WARNING_CONSEQUENCE).join(" ");
+  }
+  assert.doesNotMatch(rest, OWN_WORDS, `${where} describes the store in words of its own: ${said}`);
+  for (const phrase of REAL_PHRASES) {
+    assert.ok(!rest.includes(phrase), `${where} carries the source's own phrase "${phrase}" beside the markers: ${said}`);
+  }
+}
 
 for (const [where, [said, hasRemedy]] of Object.entries(messages)) {
   test(`AC3: ${where} takes its description${hasRemedy ? " and remedy" : ""} from the shared source, and has none of its own`, () => {
     assert.ok(said, `${where} was not produced`);
     assert.equal(count(said, DESCRIPTION), 1, `${where} does not show the description marker once: ${said}`);
     assert.equal(count(said, REMEDY), hasRemedy ? 1 : 0, `${where} has the remedy marker ${count(said, REMEDY)} times: ${said}`);
-    let rest = said.split(DESCRIPTION).join(" ").split(REMEDY).join(" ");
-    if (where === "the form warning") {
-      assert.ok(rest.includes(WARNING_CONSEQUENCE), `precondition: the warning's consequence moved: ${said}`);
-      rest = rest.split(WARNING_CONSEQUENCE).join(" ");
-    }
-    assert.doesNotMatch(rest, OWN_WORDS, `${where} describes the store in words of its own: ${said}`);
-    for (const phrase of REAL_PHRASES) {
-      assert.ok(!rest.includes(phrase), `${where} carries the source's own phrase "${phrase}" beside the markers: ${said}`);
-    }
+    assertNoOwnWording(where, said);
   });
 }
+
+test("AC3: the eye message before the answer arrives has no description or remedy of its own", () => {
+  assert.ok(eyeBeforeAnswer, "the eye's store-unavailable message was not produced before the answer");
+  assertNoOwnWording("the eye message before the answer", eyeBeforeAnswer);
+});
 
 test("AC3: the availability answer is the fixed shape, and carries no env data", () => {
   const VALUE_ON_DISK = "sentinel-value-on-disk-5d1e";

@@ -257,3 +257,31 @@ export async function rendererMessages(answer) {
   }
   return out;
 }
+
+/**
+ * The eye's store-unavailable message as the product reaches it: on a server
+ * with a sealed value, before the availability answer has arrived. The answer
+ * is held back for the whole read, so the form is not yet locked and still
+ * offers the eye, and the reveal answers store-unavailable as main does for a
+ * sealed value with the store shut.
+ */
+export async function eyeBeforeAnswer() {
+  const b = bridge({
+    answer: () => new Promise(() => {}),
+    servers: [local({ id: "kybsealed", name: "MCP kybsealed", env: { KYB_KEY: sealed("first") } })],
+  });
+  const panel = await mount(b.api);
+  try {
+    await menu(panel.host, "MCP kybsealed", "Edit");
+    assert.equal(b.asks(), 1, "precondition: the form did not ask");
+    assert.equal(notices(panel.host).length, 0, "precondition: the answer arrived");
+    const eye = eyeOf(panel.host, "KYB_KEY");
+    assert.ok(eye, "precondition: no eye on the sealed KYB_KEY before the answer");
+    await click(eye);
+    const said = envRowMessage(panel.host, "KYB_KEY");
+    assert.ok(said, "the eye's store-unavailable message is not shown");
+    return said;
+  } finally {
+    await panel.unmount();
+  }
+}
