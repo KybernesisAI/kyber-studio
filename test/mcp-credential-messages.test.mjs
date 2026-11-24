@@ -58,7 +58,7 @@ mock.module("electron", {
 const { executeLocalAction, relayErrorPayload } = await import("../src/main/localExec.ts");
 // After the electron mock above, for the same reason as the dynamic import on
 // the line before it.
-const { credentialStoreName, ServerCredentialsError } = await import("../src/main/localMcp.ts");
+const { ServerCredentialsError } = await import("../src/main/localMcp.ts");
 
 /**
  * Well-formed ciphertext that this store cannot open — a value sealed by a
@@ -182,13 +182,37 @@ test("the relay payload for that error carries no environment variable", async (
  * keyring" — Linux vocabulary for something macOS does not have. The store is
  * the Keychain there, and a remedy naming the wrong object is not a remedy.
  *
- * These tests pin the MAPPING literally, per platform, and they are the reason
- * the tests that drive the real code path may compose the noun instead of
- * hard-coding it. Break the circle here, once, rather than everywhere.
+ * The wording itself, per platform and backend, is pinned literally in
+ * `credential-store-wording.test.mjs` (KYB-696). These tests pin that the
+ * error carries it, on each platform.
  */
-test("the credential store is named in the words each platform uses", () => {
-  assert.equal(credentialStoreName("darwin"), "Keychain");
-  assert.equal(credentialStoreName("linux"), "keyring");
+test("on macOS the store-unavailable remedy says Keychain, and never says keyring", () => {
+  const error = new ServerCredentialsError("store-unavailable", "uat-zero", [], "darwin");
+
+  assert.match(error.message, /Your Keychain isn’t available\. Unlock your Keychain and restart Studio\./);
+  assert.ok(
+    !/\bkeyring\b/i.test(error.message),
+    `a Mac user was told to unlock a keyring: ${error.message}`,
+  );
+  // The rest of the contract is unchanged by the platform.
+  assert.match(error.message, /^uat-zero's credentials could not be read\. /);
+  assert.ok(!/\bretry\b/i.test(error.message), "offered a retry for a latched condition");
+  assert.deepEqual(error.keys, []);
+});
+
+test("on Linux the same remedy is unchanged — this fix took nothing away", () => {
+  // The backend is the electron mock's, `gnome_libsecret`: a keyring.
+  const error = new ServerCredentialsError("store-unavailable", "uat-zero", [], "linux");
+
+  assert.match(error.message, /unlock your keyring and restart Studio/i);
+  assert.ok(!/Keychain/i.test(error.message));
+});
+
+test("on Linux's basic_text there is no keyring to unlock, and the error does not say to (KYB-696)", () => {
+  const error = new ServerCredentialsError("store-unavailable", "uat-zero", [], "linux", "basic_text");
+
+  assert.match(error.message, /No keyring was found on this computer\. Set up a keyring, then restart Studio\./);
+  assert.doesNotMatch(error.message, /unlock|locked/i);
 });
 
 test("an unmeasured platform gets a generic noun, not an invented instruction", () => {
@@ -196,29 +220,11 @@ test("an unmeasured platform gets a generic noun, not an invented instruction", 
   // used: nobody has reached this state on Windows, and "unlock your Credential
   // Manager" may not be the remedy there. A generic noun is honest; a specific
   // one nobody has tested is advice we cannot stand behind.
-  assert.equal(credentialStoreName("win32"), "credential store");
-  assert.equal(credentialStoreName("freebsd"), "credential store");
-});
-
-test("on macOS the store-unavailable remedy says Keychain, and never says keyring", () => {
-  const error = new ServerCredentialsError("store-unavailable", "uat-zero", [], "darwin");
-
-  assert.match(error.message, /unlock your Keychain and restart Studio/i);
-  assert.ok(
-    !/\bkeyring\b/i.test(error.message),
-    `a Mac user was told to unlock a keyring: ${error.message}`,
-  );
-  // The rest of the contract is unchanged by the platform.
-  assert.match(error.message, /the OS credential store is not open/i);
-  assert.ok(!/\bretry\b/i.test(error.message), "offered a retry for a latched condition");
-  assert.deepEqual(error.keys, []);
-});
-
-test("on Linux the same remedy is unchanged — this fix took nothing away", () => {
-  const error = new ServerCredentialsError("store-unavailable", "uat-zero", [], "linux");
-
-  assert.match(error.message, /unlock your keyring and restart Studio/i);
-  assert.ok(!/Keychain/i.test(error.message));
+  for (const platform of ["win32", "freebsd"]) {
+    const error = new ServerCredentialsError("store-unavailable", "uat-zero", [], platform);
+    assert.match(error.message, /unlock your credential store and restart Studio/i, platform);
+    assert.doesNotMatch(error.message, /keyring|Keychain|Credential Manager/, platform);
+  }
 });
 
 test("the needs-re-entry message names no store at all, on any platform", () => {

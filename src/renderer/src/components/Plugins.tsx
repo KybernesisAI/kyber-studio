@@ -1,7 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import type { LocalMcpServer, SaveMcpServersOptions } from "@shared/ipc";
+import type { CredentialStoreAnswer, LocalMcpServer, SaveMcpServersOptions } from "@shared/ipc";
 import { useStore } from "@/lib/store";
-import { IS_MAC, IS_WINDOWS, credentialStoreLabel } from "@/lib/platform";
 import { looksSealed } from "@shared/sealed";
 import {
   type McpPanelState,
@@ -1062,15 +1061,45 @@ function parseEnvLines(text: string): Record<string, string> {
 /**
  * Why a stored value could not be shown, in words a person can act on.
  *
- * `store-unavailable` does not say to type a new value (KYB-695): for a server
- * with a sealed value that does nothing, and the form no longer offers the eye
- * in that state. It stays as the fallback for an answer arriving anyway.
+ * `store-unavailable` is not here. Its words describe the store, and those are
+ * the main process's to write (KYB-696): it is the one that can tell Linux's
+ * `basic_text` from a locked keyring. See {@link revealFailedMessage}.
  */
-const REVEAL_FAILED: Record<"store-unavailable" | "needs-re-entry" | "not-found", string> = {
-  "store-unavailable": `Can’t show it while your ${credentialStoreLabel(IS_MAC, IS_WINDOWS)} is locked.`,
+const REVEAL_FAILED: Record<"needs-re-entry" | "not-found", string> = {
   "needs-re-entry": "It can’t be opened on this computer. Type a new value, or remove it.",
   "not-found": "Can’t show it right now. The stored value is kept unless you type a new one or remove it.",
 };
+
+type RevealFailure = "store-unavailable" | keyof typeof REVEAL_FAILED;
+
+/**
+ * The message under a value the eye could not open.
+ *
+ * `store-unavailable` takes its description from the availability answer and
+ * adds none of its own (KYB-696). Only a sealed value fails that way, and once
+ * the answer says the store is unavailable a server with a sealed value is
+ * locked and offers no eye, so in practice this shows before the answer has
+ * arrived, as "Can’t show it." alone. It is worked out when the row renders,
+ * not when the eye failed, so the answer's description appears once it is in.
+ * It does not say to type a new value (KYB-695): for a server with a sealed
+ * value that does nothing.
+ */
+function revealFailedMessage(reason: RevealFailure, description: string): string {
+  if (reason !== "store-unavailable") return REVEAL_FAILED[reason];
+  return description ? `Can’t show it. ${description}` : "Can’t show it.";
+}
+
+/**
+ * The availability answer, if it has the one shape the main process sends.
+ * Anything else is treated as no answer, which leaves the form as it always
+ * was; the main process holds the line whatever the form shows.
+ */
+function readCredentialStoreAnswer(reply: unknown): CredentialStoreAnswer | null {
+  if (typeof reply !== "object" || reply === null) return null;
+  const { available, description, remedy } = reply as Partial<Record<keyof CredentialStoreAnswer, unknown>>;
+  if (typeof available !== "boolean" || typeof description !== "string" || typeof remedy !== "string") return null;
+  return { available, description, remedy };
+}
 
 /**
  * One stored environment value in the edit form.
@@ -1088,7 +1117,7 @@ interface StoredEnv {
   typed: string;
   revealed?: string;
   shown: boolean;
-  failed?: keyof typeof REVEAL_FAILED;
+  failed?: RevealFailure;
 }
 
 /**
@@ -1117,19 +1146,21 @@ function AddLocalServer({
 
   /**
    * Whether the OS credential store can protect a secret, asked once when the
-   * form opens (KYB-695). `null` until the answer arrives, and then the form is
+   * form opens (KYB-695), with the main process's words for the case when it
+   * cannot (KYB-696). `null` until the answer arrives, and then the form is
    * as it always was: an answer of `true`, a missing bridge or a failed call
    * all leave it so, and the main process holds the line whatever the form
    * shows. Asked here and not when the panel lists servers, because the first
    * ask can raise the keyring's unlock prompt.
    */
-  const [available, setAvailable] = useState<boolean | null>(null);
+  const [answer, setAnswer] = useState<CredentialStoreAnswer | null>(null);
+  const available = answer?.available ?? null;
   useEffect(() => {
     let open = true;
     void (async () => {
       try {
-        const answer = await window.studio?.credentialStoreAvailable?.();
-        if (open && typeof answer === "boolean") setAvailable(answer);
+        const reply = readCredentialStoreAnswer(await window.studio?.credentialStoreAvailable?.());
+        if (open && reply) setAnswer(reply);
       } catch (error) {
         console.error(
           `[plugins] could not ask whether the credential store is available: ${error instanceof Error ? error.message : String(error)}`,
@@ -1155,7 +1186,9 @@ function AddLocalServer({
   const locked = available === false && sealedOnDisk;
   /** The store is unavailable and nothing is sealed: values work until Studio restarts. */
   const warn = available === false && !sealedOnDisk;
-  const store = credentialStoreLabel(IS_MAC, IS_WINDOWS);
+  /** The main process's words for the state and its remedy; `""` until it says. */
+  const description = answer?.description ?? "";
+  const remedy = answer?.remedy ?? "";
 
   /**
    * Any env change made before the availability answer arrived goes when the
@@ -1172,6 +1205,24 @@ function AddLocalServer({
     );
     setEnv("");
   }, [locked]);
+
+  /**
+   * A stored key removed with × before the answer comes back when it puts the
+   * form in the warning state (KYB-696). × is not offered there, because the
+   * main process writes the stored env back unchanged while the store is
+   * unavailable, so the removal would be undone in silence under a warning
+   * about what is and is not kept. Rebuilt from `initial` as the locked state
+   * is, except that what was typed is kept: the main process holds a typed
+   * value for a server with no sealed value, so it is not a change refused.
+   */
+  useEffect(() => {
+    if (!warn) return;
+    setStored((all) =>
+      Object.entries(initial?.env ?? {}).map(
+        ([key, sealed]) => all.find((e) => e.key === key) ?? { key, sealed, typed: "", shown: false },
+      ),
+    );
+  }, [warn]);
 
   const change = (key: string, next: Partial<StoredEnv>): void =>
     setStored((all) => all.map((e) => (e.key === key ? { ...e, ...next } : e)));
@@ -1251,18 +1302,17 @@ function AddLocalServer({
       </div>
       <div className="field" style={{ marginBottom: 8 }}>
         <div className="field__label">Environment (optional)</div>
+        {/* The description and remedy are the main process's (KYB-696): it can
+            tell Linux's `basic_text`, where there is nothing to unlock, from a
+            locked keyring. Only the consequence is written here. */}
         {warn ? (
           <div className="pl__notice" role="note">
-            Your {store} isn’t available, so values typed here won’t be saved. Studio will use them
-            until it restarts.
+            {`${description} Values typed here won’t be saved. Studio will use them until it restarts.`}
           </div>
         ) : null}
         {locked ? (
-          // Not "unlock it": with no usable store at all (Linux's `basic_text`)
-          // unlocking does nothing, and availability is only asked once a run.
           <div className="pl__notice" role="note">
-            Your {store} isn’t available, so environment values can’t be changed now. They can be once
-            it is available and Studio has restarted.
+            {`${description} Environment values can’t be changed now. ${remedy}`}
           </div>
         ) : null}
         {locked
@@ -1306,7 +1356,11 @@ function AddLocalServer({
                 </button>
               )}
             </div>
-            {e.failed ? <div className="muted" style={{ marginTop: 2 }}>{REVEAL_FAILED[e.failed]}</div> : null}
+            {e.failed ? (
+              <div className="muted" style={{ marginTop: 2 }}>
+                {revealFailedMessage(e.failed, description)}
+              </div>
+            ) : null}
           </div>
         ))}
         {locked ? null : (

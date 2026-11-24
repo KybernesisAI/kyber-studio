@@ -97,22 +97,6 @@ export function computerCloseLabel(isMac: boolean, isWindows: boolean): string {
   return "Close (Ctrl Esc)";
 }
 
-/**
- * What the OS calls its credential store, for a row that cannot show a stored
- * secret (KYB-591).
- *
- * The renderer's copy of `credentialStoreName` in `src/main/localMcp.ts`, and
- * the same mapping: "keyring" is Linux vocabulary, and a Mac user told to
- * unlock their keyring is being told to unlock something their machine does
- * not have (measured in the KYB-590 macOS UAT). Windows gets the generic name,
- * as it does there, because nobody has reached a locked store on Windows.
- */
-export function credentialStoreLabel(isMac: boolean, isWindows: boolean): string {
-  if (isMac) return "Keychain";
-  if (isWindows) return "credential store";
-  return "keyring";
-}
-
 const PLATFORM = detectPlatform(globalThis.navigator);
 
 export const IS_MAC = isMacPlatform(PLATFORM);

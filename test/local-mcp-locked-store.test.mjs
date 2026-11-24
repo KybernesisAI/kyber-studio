@@ -44,18 +44,20 @@ mock.module("electron", {
   },
 });
 
-// `credentialStoreName` is composed into the assertions below rather than the
-// noun being hard-coded: the remedy's noun is platform-dependent, and these
-// tests drive the real code path on whatever host they run on. The mapping
-// itself is pinned literally, per platform, in mcp-credential-messages.test.mjs
-// — the circle is broken there, once, rather than here in every assertion.
+// The shared wording's remedy is composed into the assertions below rather
+// than hard-coded: it is platform-dependent, and these tests drive the real
+// code path on whatever host they run on. The wording itself is pinned
+// literally, per platform and backend, in credential-store-wording.test.mjs
+// (KYB-696), so the circle is broken there, once, rather than here in every
+// assertion. The backend is the mock's above.
 //
 // It must come from this dynamic import, after `mock.module` above: a static
 // import would load the real module before the electron mock exists.
+const { credentialStoreWording } = await import("../src/main/credentialStoreWording.ts");
+const REMEDY = credentialStoreWording(process.platform, "gnome_libsecret").remedy;
 const {
   callServer,
   credentialFailureIds,
-  credentialStoreName,
   listServers,
   revealEnvValue,
   saveServers,
@@ -144,9 +146,13 @@ test("the child process is never handed ciphertext — it refuses, and says unlo
 
   const result = await testServer("s1");
   assert.equal(result.ok, false, "started a server whose stored credentials could not be opened");
+  assert.ok(
+    (result.error ?? "").includes(REMEDY),
+    `the remedy offered was not the shared one: ${result.error}`,
+  );
   assert.match(
     result.error ?? "",
-    new RegExp(`unlock your ${credentialStoreName()} and restart Studio`, "i"),
+    /unlock your .+ and restart Studio/i,
     "the remedy offered was not the one that works — availability is latched per process",
   );
   assert.ok(
@@ -183,11 +189,8 @@ test("a locked keyring reaches the relay as a remedy, and as nothing else", asyn
   }
 
   assert.equal(thrown.reason, "store-unavailable", "a locked keyring was blamed on the credential");
-  assert.match(
-    thrown.message,
-    new RegExp(`unlock your ${credentialStoreName()} and restart Studio`, "i"),
-    "the remedy was lost",
-  );
+  assert.ok(thrown.message.includes(REMEDY), `the remedy was lost: ${thrown.message}`);
+  assert.match(thrown.message, /unlock your .+ and restart Studio/i, "the remedy was lost");
   assert.ok(!/\bretry\b/i.test(thrown.message), "offered a retry for a latched condition");
   for (const key of ["DATABASE_URL", "ACME_INTERNAL_TOKEN"]) {
     assert.ok(!thrown.message.includes(key), `\`${key}\` reached a message that goes to the relay`);
