@@ -1111,7 +1111,9 @@ function readCredentialStoreAnswer(reply: unknown): CredentialStoreAnswer | null
  * field starts EMPTY, with dots as a placeholder, because a mask held as the
  * value would be written back as the new secret on the first save (KYB-291).
  * `revealed` is the plaintext the eye fetched, so a revealed value that was
- * not changed still goes back sealed.
+ * not changed still goes back sealed. `edited` is set only when the person
+ * changes the field, never by the eye, so a stored value that is itself empty
+ * reveals as an empty field without the note an emptied field shows (KYB-693).
  */
 interface StoredEnv {
   key: string;
@@ -1120,6 +1122,18 @@ interface StoredEnv {
   revealed?: string;
   shown: boolean;
   failed?: RevealFailure;
+  edited?: boolean;
+}
+
+/**
+ * The note on a stored key's row once the person has emptied its field
+ * (KYB-693). Save keeps a blank value, and an empty field with the dots back
+ * reads as cleared, so the row says what will happen. One sentence with an
+ * optional trailing clause, not two written separately: the clause about ×
+ * is left off where × is not offered (KYB-695), and the rest must not drift.
+ */
+function emptiedFieldNote(removable: boolean): string {
+  return `Left empty, the stored value is kept.${removable ? " × removes it." : ""}`;
 }
 
 /**
@@ -1345,7 +1359,7 @@ function AddLocalServer({
                 spellCheck={false}
                 autoComplete="off"
                 placeholder="••••••••"
-                onChange={(ev) => change(e.key, { typed: ev.target.value })}
+                onChange={(ev) => change(e.key, { typed: ev.target.value, edited: true })}
                 style={{ flex: "1 1 auto", minWidth: 0 }}
               />
               <button
@@ -1370,6 +1384,13 @@ function AddLocalServer({
             {e.failed ? (
               <div className="muted" style={{ marginTop: 2 }}>
                 {revealFailedMessage(e.failed, description, remedy)}
+              </div>
+            ) : null}
+            {/* An edit that left the field empty, not an empty field: a
+                stored value that is itself empty reveals as one (KYB-693). */}
+            {e.edited && e.typed === "" ? (
+              <div className="muted" style={{ marginTop: 2 }}>
+                {emptiedFieldNote(!warn)}
               </div>
             ) : null}
           </div>
