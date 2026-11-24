@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { LocalMcpServer, SaveMcpServersOptions } from "@shared/ipc";
 import { useStore } from "@/lib/store";
 import { IS_MAC, IS_WINDOWS, credentialStoreLabel } from "@/lib/platform";
+import { looksSealed } from "@shared/sealed";
 import {
   type McpPanelState,
   initialMcpPanelState,
@@ -378,7 +379,7 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
    * recovery button and reads what is on screen.
    */
   const [panel, setPanel] = useState<McpPanelState>(initialMcpPanelState);
-  const { servers: local, unreadable, saveError, loadError } = panel;
+  const { servers: local, unreadable, saveError, loadError, heldKeys } = panel;
   const [remote, setRemote] = useState<
     {
       slug: string;
@@ -806,6 +807,16 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
                         ? result[localRow(s.id)]!.error
                         : "Runs here, never exposed"}
                 </div>
+                {/* Its own line, not the status slot above (KYB-695). That slot
+                    is a precedence chain, Off, then the last result, then the
+                    default, so a notice in it vanished on a row turned off or
+                    showing a result: the rows a person is most likely looking
+                    at. Names only; values never leave the main process. */}
+                {heldKeys[s.id]?.length ? (
+                  <div className="pl__held">
+                    Kept until Studio restarts, not saved: {heldKeys[s.id]!.join(", ")}
+                  </div>
+                ) : null}
               </div>
 
               {/* One primary action, decided by state: sign in, or confirm it
@@ -1048,9 +1059,15 @@ function parseEnvLines(text: string): Record<string, string> {
   return environment;
 }
 
-/** Why a stored value could not be shown, in words a person can act on. */
+/**
+ * Why a stored value could not be shown, in words a person can act on.
+ *
+ * `store-unavailable` does not say to type a new value (KYB-695): for a server
+ * with a sealed value that does nothing, and the form no longer offers the eye
+ * in that state. It stays as the fallback for an answer arriving anyway.
+ */
 const REVEAL_FAILED: Record<"store-unavailable" | "needs-re-entry" | "not-found", string> = {
-  "store-unavailable": `Can’t show it while your ${credentialStoreLabel(IS_MAC, IS_WINDOWS)} is locked. Type a new value to replace it.`,
+  "store-unavailable": `Can’t show it while your ${credentialStoreLabel(IS_MAC, IS_WINDOWS)} is locked.`,
   "needs-re-entry": "It can’t be opened on this computer. Type a new value, or remove it.",
   "not-found": "Can’t show it right now. The stored value is kept unless you type a new one or remove it.",
 };
@@ -1097,6 +1114,64 @@ function AddLocalServer({
   const [stored, setStored] = useState<StoredEnv[]>(() =>
     Object.entries(initial?.env ?? {}).map(([key, sealed]) => ({ key, sealed, typed: "", shown: false })),
   );
+
+  /**
+   * Whether the OS credential store can protect a secret, asked once when the
+   * form opens (KYB-695). `null` until the answer arrives, and then the form is
+   * as it always was: an answer of `true`, a missing bridge or a failed call
+   * all leave it so, and the main process holds the line whatever the form
+   * shows. Asked here and not when the panel lists servers, because the first
+   * ask can raise the keyring's unlock prompt.
+   */
+  const [available, setAvailable] = useState<boolean | null>(null);
+  useEffect(() => {
+    let open = true;
+    void (async () => {
+      try {
+        const answer = await window.studio?.credentialStoreAvailable?.();
+        if (open && typeof answer === "boolean") setAvailable(answer);
+      } catch (error) {
+        console.error(
+          `[plugins] could not ask whether the credential store is available: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    })();
+    return () => {
+      open = false;
+    };
+  }, []);
+
+  /**
+   * A sealed value on disk, judged from the values as stored with the same
+   * `looksSealed` the main process uses: a value typed as `kyb:v1:my key` is
+   * plain text, not ciphertext.
+   */
+  const sealedOnDisk = Object.values(initial?.env ?? {}).some((value) => looksSealed(value));
+  /**
+   * The store is unavailable and this server has a sealed value: it cannot
+   * start until the store is available, so no env change is offered. Name and
+   * command still save.
+   */
+  const locked = available === false && sealedOnDisk;
+  /** The store is unavailable and nothing is sealed: values work until Studio restarts. */
+  const warn = available === false && !sealedOnDisk;
+  const store = credentialStoreLabel(IS_MAC, IS_WINDOWS);
+
+  /**
+   * Any env change made before the availability answer arrived goes when the
+   * form locks (KYB-695). Until then the fields are offered, and without this a
+   * value typed or a key removed with × stayed in state, `submit` sent it, the
+   * main process refused it, and the form closed as if it had worked. Rebuilt
+   * from `initial`, as the initialiser builds it, the locked save sends exactly
+   * the stored env.
+   */
+  useEffect(() => {
+    if (!locked) return;
+    setStored(
+      Object.entries(initial?.env ?? {}).map(([key, sealed]) => ({ key, sealed, typed: "", shown: false })),
+    );
+    setEnv("");
+  }, [locked]);
 
   const change = (key: string, next: Partial<StoredEnv>): void =>
     setStored((all) => all.map((e) => (e.key === key ? { ...e, ...next } : e)));
@@ -1176,7 +1251,28 @@ function AddLocalServer({
       </div>
       <div className="field" style={{ marginBottom: 8 }}>
         <div className="field__label">Environment (optional)</div>
-        {stored.map((e) => (
+        {warn ? (
+          <div className="pl__notice" role="note">
+            Your {store} isn’t available, so values typed here won’t be saved. Studio will use them
+            until it restarts.
+          </div>
+        ) : null}
+        {locked ? (
+          // Not "unlock it": with no usable store at all (Linux's `basic_text`)
+          // unlocking does nothing, and availability is only asked once a run.
+          <div className="pl__notice" role="note">
+            Your {store} isn’t available, so environment values can’t be changed now. They can be once
+            it is available and Studio has restarted.
+          </div>
+        ) : null}
+        {locked
+          ? // Names only: no field, no eye, no ×, and no box for new lines.
+            stored.map((e) => (
+              <div className="pl__env" key={e.key} style={{ marginBottom: 6 }}>
+                <code>{e.key}</code>
+              </div>
+            ))
+          : stored.map((e) => (
           <div className="pl__env" key={e.key} style={{ marginBottom: 6 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <code style={{ flex: "0 0 auto" }}>{e.key}</code>
@@ -1198,30 +1294,38 @@ function AddLocalServer({
               >
                 <Icon name={e.shown ? "eyeOff" : "eye"} size={14} />
               </button>
-              <button
-                className="icon-btn"
-                title={`Remove ${e.key}`}
-                onClick={() => setStored((all) => all.filter((x) => x.key !== e.key))}
-              >
-                <Icon name="close" size={13} />
-              </button>
+              {/* Not while the store is unavailable: a removal then writes the
+                  stored env back as it was, so × would do nothing (KYB-695). */}
+              {warn ? null : (
+                <button
+                  className="icon-btn"
+                  title={`Remove ${e.key}`}
+                  onClick={() => setStored((all) => all.filter((x) => x.key !== e.key))}
+                >
+                  <Icon name="close" size={13} />
+                </button>
+              )}
             </div>
             {e.failed ? <div className="muted" style={{ marginTop: 2 }}>{REVEAL_FAILED[e.failed]}</div> : null}
           </div>
         ))}
-        <textarea
-          className="input"
-          rows={2}
-          value={env}
-          spellCheck={false}
-          placeholder={"API_KEY=…\nDATABASE_URL=…"}
-          onChange={(e) => setEnv(e.target.value)}
-        />
-        <div className="muted" style={{ marginTop: 4 }}>
-          {stored.length
-            ? "Leave a stored value blank to keep it. Add new ones below, one per line."
-            : "One per line. Servers that want a key read it from here rather than from the command, where it would sit in plain sight in the list."}
-        </div>
+        {locked ? null : (
+          <>
+            <textarea
+              className="input"
+              rows={2}
+              value={env}
+              spellCheck={false}
+              placeholder={"API_KEY=…\nDATABASE_URL=…"}
+              onChange={(e) => setEnv(e.target.value)}
+            />
+            <div className="muted" style={{ marginTop: 4 }}>
+              {stored.length
+                ? "Leave a stored value blank to keep it. Add new ones below, one per line."
+                : "One per line. Servers that want a key read it from here rather than from the command, where it would sit in plain sight in the list."}
+            </div>
+          </>
+        )}
       </div>
       <div className="ask__options">
         <button className="btn btn--primary" onClick={() => void submit()}>

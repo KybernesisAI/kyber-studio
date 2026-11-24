@@ -1,4 +1,4 @@
-import { BrowserWindow, Notification, ipcMain, shell, type WebContents } from "electron";
+import { BrowserWindow, Notification, ipcMain, safeStorage, shell, type WebContents } from "electron";
 import type { Attachment } from "../shared/ipc";
 import type { McpServersResult, RevealMcpEnvResult, SaveMcpServersOptions } from "../shared/ipc";
 import type { VoiceContext } from "../shared/ipc";
@@ -13,12 +13,14 @@ import {
   saveRemoteFile,
 } from "./deliveredFile";
 import { listSessions, recordSession, replaySession } from "./sessionIndex";
+import { isCredentialStoreAvailable } from "./credentialStorage";
 import { agentArtifact, agentImage } from "./agentContent";
 import { agentArtifacts } from "./agentArtifacts";
 import {
   ConfigUnreadableError,
   type LocalMcpServer,
   authenticate,
+  heldKeyNames,
   listServers,
   revealEnvValue,
   saveServers,
@@ -92,7 +94,10 @@ let pending: DeviceStart | null = null;
  */
 export function mcpServersResult(): McpServersResult {
   try {
-    return { ok: true, servers: listServers() };
+    // `heldKeyNames` reads memory only, and `listServers` reads the file only:
+    // listing never asks the credential store, so opening Plugins never raises
+    // the keyring's unlock prompt (KYB-695).
+    return { ok: true, servers: listServers(), heldKeys: heldKeyNames() };
   } catch (error) {
     if (!(error instanceof ConfigUnreadableError)) throw error;
     return { ok: false, code: error.code, path: error.path };
@@ -123,7 +128,7 @@ export function saveMcpServersResult(
         ...[...after].filter((id) => !before.has(id)),
       ]);
     }
-    return { ok: true, servers: listServers() };
+    return { ok: true, servers: listServers(), heldKeys: heldKeyNames() };
   } catch (error) {
     // Anything else — a full disk, a permission fault — still throws, and the
     // renderer still shows it as an unexplained failure. This branch is only
@@ -143,6 +148,18 @@ export function revealMcpEnvResult(id: string, key: string): RevealMcpEnvResult 
     if (!(error instanceof ConfigUnreadableError)) throw error;
     return { ok: false, reason: "not-found" };
   }
+}
+
+/**
+ * Whether the OS credential store can protect a secret, as `true` or `false`
+ * and nothing else (KYB-695). No env data crosses with it.
+ *
+ * The add and edit forms ask this when they open, and only then: the first ask
+ * is what raises the keyring's unlock prompt, so the panel listing servers must
+ * not. The answer is memoised for the process in `isCredentialStoreAvailable`.
+ */
+export function credentialStoreAvailableResult(): boolean {
+  return isCredentialStoreAvailable(safeStorage) === true;
 }
 
 export function registerIpc(): void {
@@ -269,6 +286,7 @@ export function registerIpc(): void {
   ipcMain.handle("studio:testMcpServer", (_e, id: string) => testServer(id));
 
   ipcMain.handle("studio:mcpServers", () => mcpServersResult());
+  ipcMain.handle("studio:credentialStoreAvailable", () => credentialStoreAvailableResult());
   ipcMain.handle("studio:revealMcpEnv", (_e, id: string, key: string) => revealMcpEnvResult(id, key));
   ipcMain.handle(
     "studio:saveMcpServers",

@@ -1442,3 +1442,10 @@ input, textarea { font: inherit; color: inherit; }
 .artifact-view__body { flex: 1; min-height: 0; border: 0; border-radius: 0; }
 .kartifact__doc.artifact-view__body { overflow: auto; padding: 24px max(24px, calc(50% - 360px)); font-size: var(--fs-lg); line-height: var(--lh-lg); }
 .kartifact__wait.artifact-view__body, .kartifact__missing.artifact-view__body { height: auto; justify-content: center; }
+
+/* A local MCP row's keys held in memory (KYB-695). Its own line, beside the
+   status slot rather than in it, so it stays on a row that is off or showing a
+   result. */
+.pl__held { font-size: var(--fs-xs); color: var(--ink-tertiary); margin-top: 3px; }
+/* What the local add and edit forms say while the credential store is unavailable. */
+.pl__notice { font-size: var(--fs-sm); color: var(--ink-secondary); margin-bottom: 8px; }

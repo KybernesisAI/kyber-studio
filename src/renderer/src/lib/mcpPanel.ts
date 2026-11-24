@@ -95,6 +95,13 @@ export interface McpPanelState {
    * the one read failure that arrives as a value and carries a remedy.
    */
   loadError: string | null;
+  /**
+   * The names of env keys held in memory, by server id, as the last answer
+   * gave them (KYB-695). Each row with an entry says those keys last until
+   * Studio restarts. Replaced whole by every answer that carries a list, so a
+   * name the main process no longer holds goes from the row.
+   */
+  heldKeys: Record<string, string[]>;
 }
 
 export const initialMcpPanelState: McpPanelState = {
@@ -102,6 +109,7 @@ export const initialMcpPanelState: McpPanelState = {
   unreadable: null,
   saveError: null,
   loadError: null,
+  heldKeys: {},
 };
 
 /**
@@ -172,9 +180,15 @@ export function panelAfterLoad(
     return { ...previous, servers: previous.servers ?? [], loadError: NO_ANSWER_MESSAGE };
   }
   if (result.ok) {
-    return { ...previous, servers: result.servers, unreadable: null, loadError: null };
+    return {
+      ...previous,
+      servers: result.servers,
+      heldKeys: result.heldKeys ?? {},
+      unreadable: null,
+      loadError: null,
+    };
   }
-  return { ...previous, servers: [], unreadable: { path: result.path }, loadError: null };
+  return { ...previous, servers: [], heldKeys: {}, unreadable: { path: result.path }, loadError: null };
 }
 
 /**
@@ -221,6 +235,7 @@ export function panelAfterSave(
     return {
       ...previous,
       servers: result.servers,
+      heldKeys: result.heldKeys ?? {},
       unreadable: null,
       saveError: null,
       loadError: null,
@@ -229,6 +244,7 @@ export function panelAfterSave(
   return {
     ...previous,
     servers: [],
+    heldKeys: {},
     unreadable: { path: result.path },
     saveError: SAVE_REFUSED_MESSAGE,
   };
