@@ -27,7 +27,8 @@ import {
  *  - AC2: the box shows "API_KEY: Left empty, the stored value is kept.
  *    × removes it.", and nothing once the line has a value.
  *  - AC3: with a value typed in the row, the note says the typed value is used,
- *    and Save sends it.
+ *    and Save sends it. A revealed value left unchanged is not typed: the note
+ *    and Save both keep the stored value.
  *  - AC4: in the warning state the line is ignored too, the note leaves the
  *    clause about × off, and `NEW_KEY=` still sends an empty value.
  *  - AC5: a line with a value still replaces the stored one; `KEY=` for a new
@@ -147,6 +148,21 @@ test("AC3: with a value typed in the row, the note says the typed value is used,
 
     const env = await save(b, panel.host);
     assert.equal(env.API_KEY, "new");
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test("AC3: a revealed value left unchanged is not typed, so the note says the stored value is kept, and Save sends it sealed", async () => {
+  const b = bridge({ answer: AVAILABLE, servers: [plaud()], reveal: { ok: true, value: "sk-live-1" } });
+  const panel = await openEdit(b, "Plaud");
+  try {
+    await click(eyeOf(panel.host, "API_KEY"));
+    assert.equal(envInput(panel.host, "API_KEY").value, "sk-live-1", "precondition: the eye did not reveal the value");
+    await type(envLines(panel.host), "API_KEY=");
+    assert.deepEqual(boxNotes(panel.host), [NOTE]);
+
+    assert.deepEqual(await save(b, panel.host), { API_KEY: S_API, DB_URL: S_DB });
   } finally {
     await panel.unmount();
   }
