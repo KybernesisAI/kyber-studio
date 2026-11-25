@@ -18,7 +18,8 @@ import { SEAL_PREFIX, isSealed, looksSealed } from "../shared/sealed";
  * pass that has to run before a read.
  *
  * **Migration is the absence of the prefix.** An unprefixed value is plaintext:
- * used as-is, and sealed on the next save. A file written by an older build
+ * used as-is, and sealed on the next save, unless it is empty: `""` holds no
+ * secret and is stored as `""` (KYB-698). A file written by an older build
  * keeps working, and so does a key a user pastes in by hand. Mixed files are
  * normal rather than an error.
  *
@@ -94,7 +95,40 @@ export type UnsealResult =
   | { ok: false; reason: "needs-re-entry"; keys: string[] };
 
 /**
+ * A value stored as the bare prefix, read as the empty value it was (KYB-698).
+ *
+ * Sealing `""` used to call `encryptString("")`, which on Linux returns an
+ * empty buffer, so the stored value was `kyb:v1:` with nothing after it.
+ * {@link looksSealed} rejects an empty payload on purpose, so that value read
+ * back as the 7-character plain text `kyb:v1:`, which the child was given and
+ * the next save sealed for good. `sealEnv` no longer writes it, and this reads
+ * one an older build wrote, on open and on save.
+ *
+ * Exact equality, not a prefix test: sealing `""` is the only way the bare
+ * prefix reaches the file, and a value a person typed that merely starts with
+ * `kyb:v1:` is theirs and is kept as it is. The cost is a real value of
+ * exactly `kyb:v1:`, which is not a credential anyone has. A value already
+ * re-sealed as the literal cannot be told from a typed one, and is left alone.
+ */
+function withoutBarePrefix(value: string): string {
+  return value === SEAL_PREFIX ? "" : value;
+}
+
+/**
+ * Whether a value needs nothing from the OS to be stored: it is sealed
+ * already, or it is empty and so holds no secret (KYB-698).
+ */
+function needsNoSealing(value: string): boolean {
+  return value === "" || looksSealed(value);
+}
+
+/**
  * Seal every plaintext value in `env`, leaving already-sealed ones alone.
+ *
+ * An empty value is stored as `""` and never sealed (KYB-698): it holds no
+ * secret, and sealing it is what wrote the bare prefix. A value stored as the
+ * bare prefix by an older build is stored as `""` too, see
+ * {@link withoutBarePrefix}.
  *
  * Returns `store-unavailable` rather than throwing, and rather than falling
  * back to plaintext. Writing the values out unsealed here would be the silent
@@ -106,19 +140,23 @@ export function sealEnv(
   safeStorage: SealingSafeStorage,
   env: Record<string, string>,
 ): SealResult {
-  const entries = Object.entries(env);
+  // The bare prefix is read as `""` before anything else looks at it, so every
+  // check below sees an empty value and not a 7-character one (KYB-698).
+  const entries = Object.entries(env).map(([key, value]) => [key, withoutBarePrefix(value)] as const);
   // Nothing to protect: do not ask the OS, because asking is what raises the
   // keyring prompt. A user with no secrets should never see one.
   if (entries.length === 0) return { ok: true, env: {} };
 
-  const alreadyDone = entries.every(([, value]) => looksSealed(value));
-  if (alreadyDone) return { ok: true, env: { ...env } };
+  // The same rule for a map whose values are all sealed or empty: an empty
+  // value holds nothing to protect, so it asks nothing (KYB-698).
+  const alreadyDone = entries.every(([, value]) => needsNoSealing(value));
+  if (alreadyDone) return { ok: true, env: Object.fromEntries(entries) };
 
   if (!safeStorage.isEncryptionAvailable()) return { ok: false, reason: "store-unavailable" };
 
   const sealed: Record<string, string> = {};
   for (const [key, value] of entries) {
-    sealed[key] = looksSealed(value)
+    sealed[key] = needsNoSealing(value)
       ? value
       : SEAL_PREFIX + safeStorage.encryptString(value).toString("base64");
   }
@@ -126,7 +164,8 @@ export function sealEnv(
 }
 
 /**
- * Open every sealed value in `env`, passing plaintext ones through untouched.
+ * Open every sealed value in `env`, passing plaintext ones through untouched,
+ * except a value stored as the bare prefix, which opens as `""` (KYB-698).
  *
  * The availability check comes **first and deliberately**. A locked keyring
  * makes `decryptString` throw on a blob that is completely intact, so deciding
@@ -143,8 +182,11 @@ export function unsealEnv(
 
   // A file that predates this change, or one hand-edited by the user, needs no
   // keyring at all. Checking first keeps the prompt away from the common case.
+  // A value stored as the bare prefix opens as `""` on this path too (KYB-698).
   const anySealed = entries.some(([, value]) => looksSealed(value));
-  if (!anySealed) return { ok: true, env: { ...env } };
+  if (!anySealed) {
+    return { ok: true, env: Object.fromEntries(entries.map(([key, value]) => [key, withoutBarePrefix(value)])) };
+  }
 
   if (!safeStorage.isEncryptionAvailable()) return { ok: false, reason: "store-unavailable" };
 
@@ -152,7 +194,7 @@ export function unsealEnv(
   const failed: string[] = [];
   for (const [key, value] of entries) {
     if (!looksSealed(value)) {
-      opened[key] = value;
+      opened[key] = withoutBarePrefix(value);
       continue;
     }
     try {
