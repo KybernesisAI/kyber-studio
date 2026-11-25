@@ -18,7 +18,8 @@ import { SEAL_PREFIX, isSealed, looksSealed } from "../shared/sealed";
  * pass that has to run before a read.
  *
  * **Migration is the absence of the prefix.** An unprefixed value is plaintext:
- * used as-is, and sealed on the next save. A file written by an older build
+ * used as-is, and sealed on the next save, unless it is empty: `""` holds no
+ * secret and is stored as `""` (KYB-698). A file written by an older build
  * keeps working, and so does a key a user pastes in by hand. Mixed files are
  * normal rather than an error.
  *

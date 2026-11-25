@@ -203,6 +203,18 @@ test("AC3: a value stored as the bare prefix is saved as empty, without encryptS
   assert.equal(ss.calls.encryptString, 0, "encryptString was called");
 });
 
+test("AC3: a value stored as the bare prefix beside a sealed one is saved as empty, without asking the OS", () => {
+  // The migration runs before sealEnv's early checks, so the bare prefix counts
+  // as empty there too: nothing in this map needs the OS.
+  const ss = linuxLikeStore({ available: false });
+  const S = sealedAs("secret");
+  const result = sealEnv(ss, { S, K: PREFIX });
+
+  assert.deepEqual(result, { ok: true, env: { S, K: "" } }, "the bare prefix was not saved as empty without the OS");
+  assert.equal(ss.calls.isEncryptionAvailable, 0, "the OS was asked for a keyring");
+  assert.equal(ss.calls.encryptString, 0, "encryptString was called");
+});
+
 test("AC3: a value stored as the bare prefix beside a new value is saved as empty", () => {
   const ss = linuxLikeStore();
   const result = sealEnv(ss, { K: PREFIX, X: "x" });
