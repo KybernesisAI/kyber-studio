@@ -28,9 +28,10 @@ import {
  *    × removes it.", after a reveal and after typing without one.
  *  - AC2: the note follows an edit only: not on a fresh form, not on a field
  *    typed into again, and not after revealing a stored value that is itself
- *    empty. Nor while the box for new values has a line for the key, which
- *    replaces the stored value on Save, and not under the not-found message,
- *    which already says the value is kept.
+ *    empty. Nor while the box for new values has a line for the key: a line
+ *    with a value replaces the stored value on Save, and an empty one is
+ *    ignored and has its own note under the box (KYB-697). Nor under the
+ *    not-found message, which already says the value is kept.
  *  - AC3: in the warning state, where × is not offered (KYB-695), the note
  *    leaves the clause about × off.
  *  - AC4: Save still sends the original sealed string.

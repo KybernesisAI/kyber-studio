@@ -1126,15 +1126,31 @@ interface StoredEnv {
 }
 
 /**
- * The note on a stored key's row once the person has emptied its field
- * (KYB-693). A blank field keeps the stored value on Save, and an empty field
- * with the dots back reads as cleared, so the row says what will happen. One
- * sentence with an optional trailing clause, not two written separately: the
- * clause about × is left off where × is not offered (KYB-695), and the rest
- * must not drift.
+ * Whether Save sends the value typed in a stored key's row rather than the
+ * stored one: blank, or the same as what the eye showed, means keep. Save and
+ * the note under the box both ask this, so they cannot disagree (KYB-697).
  */
-function emptiedFieldNote(removable: boolean): string {
-  return `Left empty, the stored value is kept.${removable ? " × removes it." : ""}`;
+function sendsTyped(e: StoredEnv): boolean {
+  return Boolean(e.typed) && e.typed !== e.revealed;
+}
+
+/**
+ * The note for something left empty that Save will not send as empty. On a
+ * stored key's row once the person has emptied its field (KYB-693): a blank
+ * field keeps the stored value on Save, and an empty field with the dots back
+ * reads as cleared, so the row says what will happen. Under the box for new
+ * values for a `KEY=` line Save ignores (KYB-697), where the row may instead
+ * send a value typed in its field.
+ *
+ * One sentence with an optional trailing clause, not several written
+ * separately: the clause about × is left off where × is not offered (KYB-695),
+ * and the rest must not drift. Two outcomes is the limit. A third or fourth
+ * makes this a wording table, and that belongs with `credentialStoreWording`,
+ * not on this helper.
+ */
+function emptiedFieldNote(removable: boolean, outcome: "stored" | "typed"): string {
+  const kept = outcome === "typed" ? "the value typed above is used" : "the stored value is kept";
+  return `Left empty, ${kept}.${removable ? " × removes it." : ""}`;
 }
 
 /**
@@ -1214,10 +1230,25 @@ function AddLocalServer({
   const warn = available === false && !sealedOnDisk;
   /**
    * The keys the box for new values has a line for, parsed as Save parses it.
-   * Any line, `KEY=` included, replaces the stored value, so the note that the
-   * stored value is kept must not show for that key (KYB-693).
+   * A line with a value replaces the stored value. An empty line for a stored
+   * key is ignored and gets its own note under the box (KYB-697). Any line
+   * still hides the row's note that the stored value is kept (KYB-693), so the
+   * two notes never stack.
    */
   const boxKeys = parseEnvLines(env);
+  /**
+   * The box's `KEY=` lines Save ignores (KYB-697): an empty value for a key
+   * still on the form as a stored key, which keeps whatever its row sends. An
+   * empty value is what a half-finished paste looks like, and sending it would
+   * destroy a stored secret. Checked against `stored` now, not `initial.env`:
+   * a key removed with × is not on the form, so `KEY=` after × still sets an
+   * empty value on purpose, as it does for a new key. The same in the warning
+   * state, where × is not offered. Save and the notes under the box both read
+   * this list.
+   */
+  const ignoredBoxKeys = Object.keys(boxKeys).filter(
+    (key) => boxKeys[key] === "" && stored.some((e) => e.key === key),
+  );
   /** The main process's words for the state and its remedy; `""` until it says. */
   const description = answer?.description ?? "";
   const remedy = answer?.remedy ?? "";
@@ -1291,13 +1322,17 @@ function AddLocalServer({
       initial && command === initialLine ? [initial.command, ...initial.args] : trimmed.split(/\s+/);
 
     // Stored values go back sealed unless a new value was typed: blank, or the
-    // same as what the eye showed, means keep. Lines below add keys, and win
-    // over a stored key of the same name.
+    // same as what the eye showed, means keep. Lines below add keys, and a line
+    // with a value wins over a stored key of the same name. An empty line for a
+    // key still on the form is ignored, and the key keeps what its row sends
+    // (KYB-697); for any other key it sets an empty value.
     const environment: Record<string, string> = {};
     for (const e of stored) {
-      environment[e.key] = e.typed && e.typed !== e.revealed ? e.typed : e.sealed;
+      environment[e.key] = sendsTyped(e) ? e.typed : e.sealed;
     }
-    Object.assign(environment, parseEnvLines(env));
+    for (const [key, value] of Object.entries(boxKeys)) {
+      if (!ignoredBoxKeys.includes(key)) environment[key] = value;
+    }
 
     // An edit sends only what the form shows; the panel lays it over the stored
     // entry as it is at save time (`applyEdit`), which keeps `cwd` and the rest.
@@ -1395,12 +1430,13 @@ function AddLocalServer({
             ) : null}
             {/* An edit that left the field empty, not an empty field: a
                 stored value that is itself empty reveals as one (KYB-693).
-                Not while the box has a line for the key, which replaces the
-                stored value, and not under the not-found message, which
+                Not while the box has a line for the key, which either
+                replaces the stored value or has its own note under the box
+                (KYB-697), and not under the not-found message, which
                 already says the value is kept. */}
             {e.edited && e.typed === "" && !Object.hasOwn(boxKeys, e.key) && e.failed !== "not-found" ? (
               <div className="muted" style={{ marginTop: 2 }}>
-                {emptiedFieldNote(!warn)}
+                {emptiedFieldNote(!warn, "stored")}
               </div>
             ) : null}
           </div>
@@ -1415,6 +1451,18 @@ function AddLocalServer({
               placeholder={"API_KEY=…\nDATABASE_URL=…"}
               onChange={(e) => setEnv(e.target.value)}
             />
+            {/* One note per `KEY=` line Save ignores, saying what it sends
+                instead (KYB-697). Outside every row, under the box the line
+                was typed in. */}
+            {ignoredBoxKeys.map((key) => {
+              const entry = stored.find((e) => e.key === key);
+              const outcome = entry && sendsTyped(entry) ? "typed" : "stored";
+              return (
+                <div className="muted" data-box-note={key} key={key} style={{ marginTop: 4 }}>
+                  {`${key}: ${emptiedFieldNote(!warn, outcome)}`}
+                </div>
+              );
+            })}
             <div className="muted" style={{ marginTop: 4 }}>
               {stored.length
                 ? "Leave a stored value blank to keep it. Add new ones below, one per line."
