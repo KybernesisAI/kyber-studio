@@ -154,7 +154,10 @@ export function sealEnv(
 
   if (!safeStorage.isEncryptionAvailable()) return { ok: false, reason: "store-unavailable" };
 
-  const sealed: Record<string, string> = {};
+  // No prototype, so a key named `__proto__` is set as a key and not lost
+  // (KYB-699). The early returns keep it already: `Object.fromEntries` defines
+  // every key as its own.
+  const sealed: Record<string, string> = Object.create(null);
   for (const [key, value] of entries) {
     sealed[key] = needsNoSealing(value)
       ? value
@@ -190,7 +193,8 @@ export function unsealEnv(
 
   if (!safeStorage.isEncryptionAvailable()) return { ok: false, reason: "store-unavailable" };
 
-  const opened: Record<string, string> = {};
+  // No prototype, as in `sealEnv`, so a `__proto__` key is opened, not lost (KYB-699).
+  const opened: Record<string, string> = Object.create(null);
   const failed: string[] = [];
   for (const [key, value] of entries) {
     if (!looksSealed(value)) {
