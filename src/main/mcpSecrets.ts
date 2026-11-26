@@ -154,16 +154,17 @@ export function sealEnv(
 
   if (!safeStorage.isEncryptionAvailable()) return { ok: false, reason: "store-unavailable" };
 
-  // No prototype, so a key named `__proto__` is set as a key and not lost
-  // (KYB-699). The early returns keep it already: `Object.fromEntries` defines
-  // every key as its own.
+  // No prototype while it is filled, so a key named `__proto__` is set as a key
+  // and not lost (KYB-699). It is returned as an ordinary object, as the early
+  // returns are: spreading it defines every key as its own, `__proto__`
+  // included, so callers get the same shape whichever path answered.
   const sealed: Record<string, string> = Object.create(null);
   for (const [key, value] of entries) {
     sealed[key] = needsNoSealing(value)
       ? value
       : SEAL_PREFIX + safeStorage.encryptString(value).toString("base64");
   }
-  return { ok: true, env: sealed };
+  return { ok: true, env: { ...sealed } };
 }
 
 /**
@@ -193,7 +194,8 @@ export function unsealEnv(
 
   if (!safeStorage.isEncryptionAvailable()) return { ok: false, reason: "store-unavailable" };
 
-  // No prototype, as in `sealEnv`, so a `__proto__` key is opened, not lost (KYB-699).
+  // No prototype while it is filled, as in `sealEnv`, so a `__proto__` key is
+  // opened, not lost, and returned as an ordinary object (KYB-699).
   const opened: Record<string, string> = Object.create(null);
   const failed: string[] = [];
   for (const [key, value] of entries) {
@@ -209,5 +211,5 @@ export function unsealEnv(
   }
 
   if (failed.length > 0) return { ok: false, reason: "needs-re-entry", keys: failed.sort() };
-  return { ok: true, env: opened };
+  return { ok: true, env: { ...opened } };
 }
