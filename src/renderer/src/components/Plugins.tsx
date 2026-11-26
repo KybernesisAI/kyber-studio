@@ -1045,14 +1045,54 @@ function freeId(base: string, taken: readonly string[]): string {
   return `${base}-${n}`;
 }
 
-/** `KEY=value` per line, the format every README prints. */
+/**
+ * The characters taken off both ends of a key and a value in the box: what
+ * `trim` takes (`\s` is the same set, U+FEFF included), and the zero-width
+ * characters a copy from a web page or a chat can carry with it (KYB-699).
+ * Characters inside a key or a value are left alone.
+ */
+const EDGE = /^[\s\u200B\u200C\u200D\u2060\uFEFF]$/;
+
+/** `text` without the {@link EDGE} characters at either end. */
+function trimEdges(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && EDGE.test(text[start]!)) start += 1;
+  while (end > start && EDGE.test(text[end - 1]!)) end -= 1;
+  return text.slice(start, end);
+}
+
+/**
+ * A value without one pair of matching quotes around it (KYB-699): `"x"` and
+ * `'x'` give `x`, as they do in a `.env` file. Anything else is kept as typed,
+ * so `"abc`, `abc"` and `"abc'` stay as they are, and `"a"b"` gives `a"b`.
+ * Nothing inside is interpreted: `"a\nb"` gives a, backslash, n, b.
+ */
+function withoutQuotes(value: string): string {
+  if (value.length < 2) return value;
+  const first = value[0];
+  if ((first === '"' || first === "'") && value[value.length - 1] === first) return value.slice(1, -1);
+  return value;
+}
+
+/**
+ * `KEY=value` per line, the format every README prints. The key and the value
+ * are trimmed, then one pair of quotes around the value is taken off, and the
+ * value is not trimmed again, so `KEY=" x "` keeps its spaces (KYB-699).
+ *
+ * The map has no prototype, so a key named `__proto__` is held as a key like
+ * any other rather than being taken as the object's prototype and lost. It
+ * still does not reach the main process: Electron's context bridge copies the
+ * saved env by ordinary assignment, which drops a `__proto__` key (measured on
+ * Electron 34.5.8). Only the map here keeps it.
+ */
 function parseEnvLines(text: string): Record<string, string> {
-  const environment: Record<string, string> = {};
+  const environment: Record<string, string> = Object.create(null);
   for (const line of text.split("\n")) {
     const at = line.indexOf("=");
     if (at <= 0) continue;
-    const key = line.slice(0, at).trim();
-    const value = line.slice(at + 1).trim();
+    const key = trimEdges(line.slice(0, at));
+    const value = withoutQuotes(trimEdges(line.slice(at + 1)));
     if (key) environment[key] = value;
   }
   return environment;
@@ -1325,8 +1365,12 @@ function AddLocalServer({
     // same as what the eye showed, means keep. Lines below add keys, and a line
     // with a value wins over a stored key of the same name. An empty line for a
     // key still on the form is ignored, and the key keeps what its row sends
-    // (KYB-697); for any other key it sets an empty value.
-    const environment: Record<string, string> = {};
+    // (KYB-697); for any other key it sets an empty value. A row's field is
+    // sent exactly as typed: only the box takes quotes off (KYB-699). No
+    // prototype, so a stored or typed `__proto__` key is held in this map like
+    // any other. The context bridge still drops it on the way to the main
+    // process (see `parseEnvLines`).
+    const environment: Record<string, string> = Object.create(null);
     for (const e of stored) {
       environment[e.key] = sendsTyped(e) ? e.typed : e.sealed;
     }
