@@ -7,15 +7,19 @@ import { bridge, buttonIn, click, envInput, envLines, form, menu, mount, sealed,
  * trims invisible characters, and keeps a key named `__proto__` (KYB-699).
  *
  *  - AC1: `KEY="x"` and `KEY='x'` save `x`.
- *  - AC2: anything that is not one matching pair is kept as typed.
+ *  - AC2: anything that is not one matching pair is kept as typed, and only
+ *    one pair is ever taken off.
  *  - AC3: trimmed first, the pair taken off second, and not trimmed again.
  *  - AC4: nothing inside is interpreted: `\n` stays two characters.
  *  - AC5: a stored key's row field is sent exactly as typed, quotes included.
  *  - AC6: `KEY=""` gives an empty value, so KYB-697's rule applies to it.
  *  - AC7: U+FEFF, U+200B, U+200C, U+200D and U+2060 are trimmed at both ends
  *    of the key and the value, and left alone inside.
- *  - AC8: a `__proto__` key, stored or typed in the box, is sent as an own
- *    property.
+ *  - AC8: a `__proto__` key, stored or typed in the box, is an own property
+ *    of the env the form hands to the bridge. The fake bridge copies with
+ *    `structuredClone`, which keeps it. Electron's context bridge copies by
+ *    ordinary assignment and drops it, so these tests do not show it reaching
+ *    the main process, and in the app it does not.
  *
  * Every value is compared as JSON, so a stray quote, space or zero-width
  * character shows in the failure. No jsdom node is ever the `actual` of an
@@ -119,6 +123,10 @@ test('AC2: NEW_KEY="a"b" saves a"b', async () => {
   await assertNewKey('NEW_KEY="a"b"', 'a"b');
 });
 
+test('AC2: NEW_KEY=""x"" saves "x", one pair taken off and no more', async () => {
+  await assertNewKey('NEW_KEY=""x""', '"x"');
+});
+
 // ---- AC3 ---------------------------------------------------------------------
 
 test('AC3: NEW_KEY=  " sp "   saves space, s, p, space', async () => {
@@ -200,7 +208,7 @@ for (const [name, c] of INVISIBLE) {
 
 // ---- AC8 ---------------------------------------------------------------------
 
-test("AC8: an edit-form save of a server with a stored __proto__ key sends __proto__ as an own property with its sealed string", async () => {
+test("AC8: an edit-form save of a server with a stored __proto__ key hands the bridge an env holding __proto__ as an own property with its sealed string", async () => {
   // Built with JSON.parse: a literal `{ __proto__: ... }` sets the prototype
   // and has no such key.
   const env = JSON.parse(JSON.stringify({ API_KEY: S_API }).replace("{", `{"__proto__":${JSON.stringify(S_PROTO)},`));
@@ -211,7 +219,7 @@ test("AC8: an edit-form save of a server with a stored __proto__ key sends __pro
   try {
     assert.ok(envInput(panel.host, "__proto__"), "precondition: the form shows no row for __proto__");
     const sent = await save(b, panel.host);
-    assert.equal(Object.hasOwn(sent, "__proto__"), true, "__proto__ was not sent as an own property");
+    assert.equal(Object.hasOwn(sent, "__proto__"), true, "the env handed to the bridge has no own __proto__");
     assert.equal(JSON.stringify(Object.getOwnPropertyDescriptor(sent, "__proto__")?.value), JSON.stringify(S_PROTO));
     assert.equal(JSON.stringify(sent.API_KEY), JSON.stringify(S_API));
   } finally {
@@ -219,8 +227,8 @@ test("AC8: an edit-form save of a server with a stored __proto__ key sends __pro
   }
 });
 
-test("AC8: the box line __proto__=x sends an own property __proto__ with value x", async () => {
+test("AC8: the box line __proto__=x hands the bridge an env holding an own property __proto__ with value x", async () => {
   const sent = await saveBox("__proto__=x");
-  assert.equal(Object.hasOwn(sent, "__proto__"), true, "__proto__ was not sent as an own property");
+  assert.equal(Object.hasOwn(sent, "__proto__"), true, "the env handed to the bridge has no own __proto__");
   assert.equal(JSON.stringify(Object.getOwnPropertyDescriptor(sent, "__proto__")?.value), JSON.stringify("x"));
 });
