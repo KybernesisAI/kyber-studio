@@ -74,7 +74,16 @@ export function encodeEnv(env: Record<string, string>): EnvPairs {
   return Object.entries(env);
 }
 
-/** Pairs back into an env map. Throws on anything but `[string, string]` pairs with no key twice. */
+/**
+ * Pairs back into an env map. Throws on anything but `[string, string]` pairs
+ * with no key twice.
+ *
+ * Strict on purpose, and kept so (KYB-700): a number or a boolean that a person
+ * wrote into `local-mcp.json` by hand is settled to text by `listServers` when
+ * the file is read, before anything is encoded, so only a renderer that went
+ * around this codec sends one. The codec enforces the protocol; the file
+ * reader tolerates the person.
+ */
 export function decodeEnv(pairs: unknown, what = "env"): Record<string, string> {
   return decodePairs(pairs, what, isString);
 }

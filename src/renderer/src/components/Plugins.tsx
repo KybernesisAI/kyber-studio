@@ -8,6 +8,7 @@ import {
   loadMcpPanel,
   panelView,
   saveMcpPanel,
+  unreadableServerSentence,
 } from "@/lib/mcpPanel";
 import { Spinner } from "./Spinner";
 import { Icon } from "./primitives";
@@ -773,6 +774,11 @@ function McpTab({ agent, query }: { agent: string; query: string }): ReactNode {
         <div className="empty" style={{ paddingBottom: 8 }}>
           Your list of servers on this computer is damaged and can’t be read, so
           nothing here can be changed.
+          {/* Which server, when one server's env is the reason (KYB-700), so
+              the entry can be found and fixed. Named, never its key or value. */}
+          {view.server ? (
+            <div className="pl__desc" style={{ marginTop: 6 }}>{unreadableServerSentence(view.server)}</div>
+          ) : null}
           <div className="pl__desc" style={{ marginTop: 6 }}>{view.path}</div>
           <div className="ask__options" style={{ marginTop: 10 }}>
             <button

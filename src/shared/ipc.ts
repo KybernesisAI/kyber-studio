@@ -91,7 +91,25 @@ export type McpServersResult =
        */
       heldKeys: Record<string, string[]>;
     }
-  | { ok: false; code: "MCP_CONFIG_UNREADABLE"; path: string };
+  | { ok: false; code: "MCP_CONFIG_UNREADABLE"; path: string; server?: UnreadableServer };
+
+/**
+ * The server that made `local-mcp.json` unreadable, when one server's
+ * environment is the reason (KYB-700), so the panel can say which entry to fix.
+ * Absent for every other reason a config cannot be read.
+ *
+ * It names the server and never the key or the value: a value is a secret.
+ * `index` counts from 0, as the file's `servers` array does. `name` is the
+ * server's `name` when that is text and not empty, and otherwise its id.
+ * `problem` is `"env-value"` when a value is not text, a number or true/false,
+ * and `"env"` when the environment itself is not a map of names to values.
+ */
+export interface UnreadableServer {
+  index: number;
+  id: string;
+  name: string;
+  problem: "env-value" | "env";
+}
 
 /**
  * An env map as it crosses the context bridge: `[key, value]` pairs, in the
@@ -120,7 +138,7 @@ export interface LocalMcpServerOnWire extends Omit<LocalMcpServer, "env"> {
  */
 export type McpServersReply =
   | { ok: true; servers: LocalMcpServerOnWire[]; heldKeys: HeldKeyPairs }
-  | { ok: false; code: "MCP_CONFIG_UNREADABLE"; path: string };
+  | { ok: false; code: "MCP_CONFIG_UNREADABLE"; path: string; server?: UnreadableServer };
 
 /**
  * What `credentialStoreAvailable` answers with (KYB-696): whether the OS

@@ -4,6 +4,7 @@ import type {
   McpServersReply,
   McpServersResult,
   SaveMcpServersOptions,
+  UnreadableServer,
 } from "../../../shared/ipc";
 import { replyFromWire, serversToWire } from "../../../shared/envPairs";
 
@@ -87,8 +88,12 @@ export interface McpPanelState {
    * Set when the config on disk cannot be read. The panel shows a distinct
    * error state and a way out; the path is what tells the user which file to
    * look at if they would rather repair it by hand.
+   *
+   * `server` is there when one server's env is why the file cannot be read
+   * (KYB-700): which entry to fix, by its position, id and name, never by the
+   * key or the value.
    */
-  unreadable: { path: string } | null;
+  unreadable: { path: string; server?: UnreadableServer } | null;
   /**
    * The last write that did not go through. Every write in the panel is called
    * as `void save(...)`, which discards a rejection entirely, so without this
@@ -163,6 +168,11 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** What `unreadable` holds for a refusal: the path, and the server when the answer named one (KYB-700). */
+function unreadableOf(result: { path: string; server?: UnreadableServer }): NonNullable<McpPanelState["unreadable"]> {
+  return result.server ? { path: result.path, server: result.server } : { path: result.path };
+}
+
 /**
  * Fold an answer from `mcpServers()` into the panel state.
  *
@@ -195,7 +205,7 @@ export function panelAfterLoad(
       loadError: null,
     };
   }
-  return { ...previous, servers: [], heldKeys: {}, unreadable: { path: result.path }, loadError: null };
+  return { ...previous, servers: [], heldKeys: {}, unreadable: unreadableOf(result), loadError: null };
 }
 
 /**
@@ -252,9 +262,23 @@ export function panelAfterSave(
     ...previous,
     servers: [],
     heldKeys: {},
-    unreadable: { path: result.path },
+    unreadable: unreadableOf(result),
     saveError: SAVE_REFUSED_MESSAGE,
   };
+}
+
+/**
+ * The sentence the unreadable state adds when one server's env is why the file
+ * cannot be read (KYB-700). It names the server by its name, its id and its
+ * place in the list, counted from 1, so the person can find the entry in
+ * `local-mcp.json`. It never names the key or the value: the server is the
+ * whole of what it knows.
+ */
+export function unreadableServerSentence(server: UnreadableServer): string {
+  const which = `The server “${server.name}” (id “${server.id}”, number ${server.index + 1} in the list)`;
+  return server.problem === "env"
+    ? `${which} has an environment that isn’t a list of names and values.`
+    : `${which} has an environment value that isn’t text, a number or true/false.`;
 }
 
 /** Fold a REJECTED `saveMcpServers()` — a disk fault, a permission error. */
@@ -362,7 +386,7 @@ export async function saveMcpPanel(
  */
 export type McpPanelView =
   | { kind: "loading" }
-  | { kind: "unreadable"; path: string }
+  | { kind: "unreadable"; path: string; server?: UnreadableServer }
   | { kind: "list"; servers: LocalMcpServer[] }
   | { kind: "empty" };
 
@@ -437,7 +461,7 @@ export type McpPanelView =
  */
 export function panelView(state: McpPanelState, visible: LocalMcpServer[]): McpPanelView {
   if (state.servers === null) return { kind: "loading" };
-  if (state.unreadable) return { kind: "unreadable", path: state.unreadable.path };
+  if (state.unreadable) return { kind: "unreadable", ...state.unreadable };
   if (visible.length) return { kind: "list", servers: visible };
   return { kind: "empty" };
 }

@@ -90,6 +90,18 @@ import {
 let pending: DeviceStart | null = null;
 
 /**
+ * An unreadable config as a value. `server` is copied when the error carries
+ * one, so the panel can name the server whose env made the file unreadable
+ * (KYB-700); it names no key and no value. Left off otherwise, so every other
+ * refusal is the same three fields as before.
+ */
+function unreadableResult(error: ConfigUnreadableError): McpServersResult {
+  return error.server
+    ? { ok: false, code: error.code, path: error.path, server: error.server }
+    : { ok: false, code: error.code, path: error.path };
+}
+
+/**
  * The bodies of the two MCP-config handlers, exported so they are reachable.
  *
  * `ipcMain.handle` closures are not: nothing under `test/` can call one, so the
@@ -106,7 +118,7 @@ export function mcpServersResult(): McpServersResult {
     return { ok: true, servers: listServers(), heldKeys: heldKeyNames() };
   } catch (error) {
     if (!(error instanceof ConfigUnreadableError)) throw error;
-    return { ok: false, code: error.code, path: error.path };
+    return unreadableResult(error);
   }
 }
 
@@ -140,7 +152,7 @@ export function saveMcpServersResult(
     // renderer still shows it as an unexplained failure. This branch is only
     // for the state a user can be walked out of.
     if (!(error instanceof ConfigUnreadableError)) throw error;
-    return { ok: false, code: error.code, path: error.path };
+    return unreadableResult(error);
   }
 }
 
