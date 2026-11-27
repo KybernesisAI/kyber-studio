@@ -277,7 +277,7 @@ export function panelAfterSave(
 export function unreadableServerSentence(server: UnreadableServer): string {
   const which = `The server “${server.name}” (id “${server.id}”, number ${server.index + 1} in the list)`;
   return server.problem === "env"
-    ? `${which} has an environment that isn’t a list of names and values.`
+    ? `${which} has an environment that isn’t written as names with their values, like { "NAME": "value" }.`
     : `${which} has an environment value that isn’t text, a number or true/false.`;
 }
 
