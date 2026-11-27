@@ -515,12 +515,16 @@ export function saveServers(
  * asks the OS credential store anything, and so never raises an unlock prompt.
  */
 export function heldKeyNames(): Record<string, string[]> {
-  const names: Record<string, string[]> = {};
+  // Built with no prototype, so a hand-edited server id of `__proto__` is an
+  // entry like any other. On a plain `{}` that assignment took the array as
+  // the object's prototype and the entry was gone (KYB-700). Returned as an
+  // ordinary copy, which keeps the entry as an own property.
+  const names: Record<string, string[]> = Object.create(null);
   for (const [id, env] of unpersistedEnv) {
     const keys = Object.keys(env).sort();
     if (keys.length > 0) names[id] = keys;
   }
-  return names;
+  return { ...names };
 }
 
 /** Two entries say the same thing, whatever order their keys were written in. */

@@ -1080,11 +1080,14 @@ function withoutQuotes(value: string): string {
  * are trimmed, then one pair of quotes around the value is taken off, and the
  * value is not trimmed again, so `KEY=" x "` keeps its spaces (KYB-699).
  *
- * The map has no prototype, so a key named `__proto__` is held as a key like
- * any other rather than being taken as the object's prototype and lost. It
- * still does not reach the main process: Electron's context bridge copies the
- * saved env by ordinary assignment, which drops a `__proto__` key (measured on
- * Electron 34.5.8). Only the map here keeps it.
+ * The map has no prototype, so a typed key named `__proto__` is held as a key
+ * like any other rather than being taken as the object's prototype and lost.
+ * It reaches the main process because the env crosses as `[key, value]`
+ * pairs, encoded in `mcpPanel.ts` and decoded on the other side (KYB-700).
+ * As an object it would not: Electron's context bridge omits an own
+ * `__proto__` from every object it copies, whatever its value, and gives the
+ * copy `Object.prototype` (measured on Electron 34.5.8). A key that is an
+ * array element is never an object key, so it crosses intact.
  */
 function parseEnvLines(text: string): Record<string, string> {
   const environment: Record<string, string> = Object.create(null);
@@ -1367,9 +1370,12 @@ function AddLocalServer({
     // key still on the form is ignored, and the key keeps what its row sends
     // (KYB-697); for any other key it sets an empty value. A row's field is
     // sent exactly as typed: only the box takes quotes off (KYB-699). No
-    // prototype, so a stored or typed `__proto__` key is held in this map like
-    // any other. The context bridge still drops it on the way to the main
-    // process (see `parseEnvLines`).
+    // prototype, so a `__proto__` key is held in this map like any other,
+    // where on a plain object assigning it would set the prototype. A stored
+    // one is here because the form received it, decoded from pairs, and a
+    // typed one because `parseEnvLines` keeps it. Both reach the main process
+    // because the env crosses the context bridge as pairs (see
+    // `parseEnvLines`).
     const environment: Record<string, string> = Object.create(null);
     for (const e of stored) {
       environment[e.key] = sendsTyped(e) ? e.typed : e.sealed;

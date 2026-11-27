@@ -1,4 +1,11 @@
-import type { LocalMcpServer, McpServersResult, SaveMcpServersOptions } from "../../../shared/ipc";
+import type {
+  LocalMcpServer,
+  LocalMcpServerOnWire,
+  McpServersReply,
+  McpServersResult,
+  SaveMcpServersOptions,
+} from "../../../shared/ipc";
+import { replyFromWire, serversToWire } from "../../../shared/envPairs";
 
 /**
  * What the MCP panel holds after an answer from the main process, how it gets
@@ -264,13 +271,19 @@ export function panelAfterSaveFailure(previous: McpPanelState, error: unknown): 
  * Structural and narrow, so a test supplies a two-method object rather than a
  * whole `Studio`, and so this module never reaches for `window` — the component
  * passes `window.studio` in, `undefined` and all.
+ *
+ * It speaks the wire shape, with `env` and `heldKeys` as pairs (KYB-700):
+ * the context bridge omits an own `__proto__` key from any object it copies,
+ * so as a map the key was lost in both directions. `loadMcpPanel` and
+ * `saveMcpPanel` are the only callers, and the only place the renderer
+ * encodes and decodes, so the folds and the components see maps.
  */
 export interface McpPanelApi {
-  mcpServers(): Promise<McpServersResult>;
+  mcpServers(): Promise<McpServersReply>;
   saveMcpServers(
-    servers: LocalMcpServer[],
+    servers: LocalMcpServerOnWire[],
     options?: SaveMcpServersOptions,
-  ): Promise<McpServersResult>;
+  ): Promise<McpServersReply>;
 }
 
 /** How a fold reaches state. React's `setPanel` satisfies this as it stands. */
@@ -299,7 +312,9 @@ export async function loadMcpPanel(
   apply: ApplyMcpPanel,
 ): Promise<void> {
   try {
-    const answer = await api?.mcpServers();
+    // Decoded inside the `try`: an answer that does not decode is a failed
+    // read, folded once by the catch, like a rejection.
+    const answer = replyFromWire(await api?.mcpServers());
     apply((previous) => panelAfterLoad(previous, answer));
   } catch (error) {
     apply((previous) => panelAfterLoadFailure(previous, error));
@@ -321,7 +336,10 @@ export async function saveMcpPanel(
   options?: SaveMcpServersOptions,
 ): Promise<void> {
   try {
-    const answer = await api?.saveMcpServers(servers, options);
+    // Each `env` goes as pairs and the reply comes back decoded, both inside
+    // the `try`, so a reply that does not decode, or a save the main process
+    // refused as malformed, is the could-not-save message, folded once.
+    const answer = replyFromWire(await api?.saveMcpServers(serversToWire(servers), options));
     apply((previous) => panelAfterSave(previous, answer));
   } catch (error) {
     // Every caller in the panel is `void save(...)`, so without this a rejected

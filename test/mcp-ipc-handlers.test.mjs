@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { serversToWire } from "../src/shared/envPairs.ts";
 
 /**
  * The two MCP-config IPC handlers, called.
@@ -108,7 +109,8 @@ const server = (over = {}) => ({
 const damaged = '{"servers":[{"id":"s1","cwd":"/home/someone/private-project"';
 
 test("a healthy config answers with the servers", () => {
-  invoke("studio:saveMcpServers", [server()]);
+  // `env` crosses as pairs since KYB-700, so the renderer encodes it.
+  invoke("studio:saveMcpServers", serversToWire([server()]));
   const result = invoke("studio:mcpServers");
 
   assert.equal(result.ok, true);
@@ -152,7 +154,7 @@ test("an error does not survive being cloned — which is why the answer is a va
 test("a save with no options still refuses, and does not touch the damaged bytes", () => {
   writeFileSync(configPath(), damaged, "utf8");
 
-  const result = invoke("studio:saveMcpServers", [server({ id: "fresh", name: "fresh" })]);
+  const result = invoke("studio:saveMcpServers", serversToWire([server({ id: "fresh", name: "fresh" })]));
 
   assert.equal(result.ok, false, "a damaged config was silently written over");
   assert.equal(result.code, "MCP_CONFIG_UNREADABLE");
@@ -169,7 +171,7 @@ test("the quarantine option reaches saveServers THROUGH the registered handler",
   writeFileSync(configPath(), damaged, "utf8");
   const before = readdirSync(dir).filter((f) => f.includes(".corrupt-")).length;
 
-  const result = invoke("studio:saveMcpServers", [server({ id: "fresh", name: "fresh" })], {
+  const result = invoke("studio:saveMcpServers", serversToWire([server({ id: "fresh", name: "fresh" })]), {
     onUnreadableConfig: "quarantine",
   });
 

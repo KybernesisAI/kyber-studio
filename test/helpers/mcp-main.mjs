@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { asRenderer } from "./mcp-wire.mjs";
 
 /**
  * The main process with a credential store that is unavailable, for the
@@ -18,7 +19,7 @@ import { join } from "node:path";
  * under test. Without it these tests assert Linux wording and fail on CI's
  * macOS and Windows runners.
  */
-export async function mainProcess({ backend, encryptionAvailable }) {
+export async function mainProcess({ backend, encryptionAvailable, seals = false }) {
   const dir = mkdtempSync(join(tmpdir(), "kyb-696-"));
   after(() => rmSync(dir, { recursive: true, force: true }));
   const handlers = new Map();
@@ -53,10 +54,16 @@ export async function mainProcess({ backend, encryptionAvailable }) {
           asks.getSelectedStorageBackend += 1;
           return backend;
         },
-        encryptString: () => {
+        // `seals` makes an available store work, for the KYB-700 tests that
+        // follow a value onto disk: `ENC(plain)`, as the other main-process
+        // tests seal. Without it every call throws, as on a shut store.
+        encryptString: (plain) => {
+          if (seals) return Buffer.from(`ENC(${plain})`, "utf8");
           throw new Error("Encryption is not available");
         },
-        decryptString: () => {
+        decryptString: (buffer) => {
+          const match = seals ? /^ENC\((.*)\)$/s.exec(buffer.toString("utf8")) : null;
+          if (match) return match[1];
           throw new Error("Decryption is not available");
         },
       },
@@ -87,11 +94,15 @@ export async function mainProcess({ backend, encryptionAvailable }) {
   const localMcp = await import("../../src/main/localMcp.ts");
   registerIpc();
 
-  const invoke = (channel, ...args) => {
+  /** A registered handler called as `ipcMain` calls it, arguments and reply as they cross. */
+  const rawInvoke = (channel, ...args) => {
     const handler = handlers.get(channel);
     assert.ok(handler, `nothing was registered for ${channel}`);
     return handler({ sender: null }, ...args);
   };
+  // Through the renderer's codec, so callers keep sending and reading maps:
+  // `env` and `heldKeys` cross as pairs since KYB-700.
+  const invoke = asRenderer(rawInvoke);
 
   const configPath = join(dir, "local-mcp.json");
   const givenStored = (servers) => writeFileSync(configPath, JSON.stringify({ servers }, null, 2), "utf8");
@@ -142,7 +153,7 @@ export async function mainProcess({ backend, encryptionAvailable }) {
     return { connect: connect.message, held: heldSaid[0], sealedLog: sealedSaid[0] };
   };
 
-  return { asks, invoke, givenStored, warnings, mainMessages, localMcp, configPath };
+  return { asks, invoke, rawInvoke, givenStored, warnings, mainMessages, localMcp, configPath };
 }
 
 /**

@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { asRenderer } from "./helpers/mcp-wire.mjs";
 
 /**
  * An empty env value, sealed and opened (KYB-698).
@@ -143,11 +144,12 @@ registerIpc();
 after(() => stopAll());
 
 /** Call a registered handler the way `ipcMain` does: an event, then the args. */
-const invoke = (channel, ...args) => {
+// Through the renderer's codec: `env` crosses as pairs since KYB-700.
+const invoke = asRenderer((channel, ...args) => {
   const handler = handlers.get(channel);
   assert.ok(handler, `nothing was registered for ${channel}`);
   return handler({ sender: null }, ...args);
-};
+});
 
 test("AC1: an empty value is stored empty, and encryptString is not called for it", () => {
   const ss = linuxLikeStore();

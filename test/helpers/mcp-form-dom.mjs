@@ -1,6 +1,8 @@
 import { after } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
+import { contextBridgeCopy } from "./context-bridge.mjs";
+import { replyToWire, serversFromWire } from "../../src/shared/envPairs.ts";
 
 /**
  * The local MCP panel under jsdom, for the KYB-696 tests that drive the add
@@ -169,24 +171,57 @@ export const local = (over = {}) => ({
 /**
  * A bridge holding a server list. `answer` is what `credentialStoreAvailable`
  * resolves to, called on each ask, so a test can hand it the main process's
- * real answer or hold it back. Every reveal answers `reveal`. Saves are
- * recorded and answered with what was sent.
+ * real answer or hold it back. Every reveal answers `reveal`.
+ *
+ * `mcpServers` and `saveMcpServers` cross the way the app's do (KYB-700): what
+ * is sent and both replies go through `contextBridgeCopy`, which drops an own
+ * `__proto__` from every object as Electron's context bridge was measured to,
+ * and the side standing in for the main process speaks pairs, decoding a save
+ * and encoding a reply with the main process's own codec. A save that does not
+ * decode rejects, as the real handler does.
+ *
+ *  - `servers` and `heldKeys` are what the main process holds, as maps.
+ *  - `saves` records each save as the main process decoded it, so `env` reads
+ *    as a map. `received` records what crossed, before decoding.
+ *  - `onSave` stands in for `saveServers` followed by `listServers`: given the
+ *    decoded list, it returns what the main process then holds and answers
+ *    with. By default, what was sent. With the store shut the real one writes
+ *    the stored env back instead, which a test can model here.
+ *  - `pairs: false` takes the encoding out of the main process's side only,
+ *    so `env` and `heldKeys` cross as maps, as they did before KYB-700. It is
+ *    for asserting what the copy itself does to a map on each crossing, by
+ *    calling `api` directly: the renderer always sends pairs.
  */
-export function bridge({ answer, servers = [], reveal = { ok: false, reason: "store-unavailable" } } = {}) {
+export function bridge({
+  answer,
+  servers = [],
+  heldKeys = {},
+  reveal = { ok: false, reason: "store-unavailable" },
+  onSave = (next) => next,
+  pairs = true,
+} = {}) {
   let current = servers;
   const saves = [];
+  const received = [];
   let asks = 0;
+  const reply = (servers) => {
+    const result = { ok: true, servers, heldKeys };
+    return contextBridgeCopy(pairs ? replyToWire(result) : result);
+  };
   const api = {
     connectors: async () => ({ configured: true, connectors: [] }),
-    mcpServers: async () => ({ ok: true, servers: current, heldKeys: {} }),
+    mcpServers: async () => reply(current),
     credentialStoreAvailable: async () => {
       asks += 1;
       return answer ? answer() : undefined;
     },
     saveMcpServers: async (next) => {
-      saves.push(structuredClone(next));
-      current = next;
-      return { ok: true, servers: next, heldKeys: {} };
+      const arrived = contextBridgeCopy(next);
+      received.push(arrived);
+      const decoded = pairs ? serversFromWire(arrived) : arrived;
+      saves.push(structuredClone(decoded));
+      current = onSave(decoded);
+      return reply(current);
     },
     revealMcpEnv: async () => reveal,
     openExternal: async () => {},
@@ -196,7 +231,13 @@ export function bridge({ answer, servers = [], reveal = { ok: false, reason: "st
     connectMcpServer: async () => ({ ok: true, message: "" }),
     testMcpServer: async () => ({ ok: true, tools: ["a"] }),
   };
-  return { api, saves, lastSaved: () => saves.at(-1), asks: () => asks };
+  return {
+    api,
+    saves,
+    lastSaved: () => saves.at(-1),
+    received: () => received,
+    asks: () => asks,
+  };
 }
 
 /**
