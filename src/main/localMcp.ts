@@ -7,6 +7,7 @@ import { writeAtomic } from "./atomicWrite";
 import { isCredentialStoreAvailable, selectedStorageBackend } from "./credentialStorage";
 import { credentialStoreWording, type CredentialStoreWording } from "./credentialStoreWording";
 import { looksSealed, sealEnv, unsealEnv } from "./mcpSecrets";
+import type { UnreadableServer } from "../shared/ipc";
 
 /**
  * MCP servers running on the user's own machine, reachable by a remote agent.
@@ -159,16 +160,121 @@ export function credentialFailureIds(): string[] {
  * and with it their home directory and their username, to a remote agent that
  * asked only which servers exist. The main process may read `path`; the wire
  * gets the message, and the message names no file.
+ *
+ * `server` is a PROPERTY for the panel, set when one server's environment is
+ * why the file was refused (KYB-700). It names the server, so the person can
+ * find the entry to fix, and never the key or the value. The message may name
+ * the server's position and id, which `servers/list` already gives an agent,
+ * and nothing more.
  */
 export class ConfigUnreadableError extends Error {
   readonly code = "MCP_CONFIG_UNREADABLE";
   readonly path: string;
+  readonly server?: UnreadableServer;
 
-  constructor(path: string, detail: string, options?: { cause?: unknown }) {
-    super(`the MCP server list could not be read: ${detail}`, options);
+  constructor(path: string, detail: string, options?: { cause?: unknown; server?: UnreadableServer }) {
+    const { server, ...errorOptions } = options ?? {};
+    super(`the MCP server list could not be read: ${detail}`, errorOptions);
     this.name = "ConfigUnreadableError";
     this.path = path;
+    if (server) this.server = server;
   }
+}
+
+/**
+ * The text each number had in the file, by the object holding it and its key
+ * (KYB-700).
+ *
+ * `JSON.parse` turns a number into a double, and a double keeps no text:
+ * `12345678901234567890` comes back as `12345678901234567000`, `1.0` as `1`,
+ * `-0` as `0` and `1e21` as `1e+21`. For an env value that is the person's
+ * value changed without a word, and the next save would seal the changed one.
+ * The reviver's third argument carries the source text, measured on Electron
+ * 34.5.8 and Node 24, so the text is kept here as the file is parsed.
+ *
+ * Numbers only. For a string the source text includes its quotes (`"str"`
+ * arrives as `"\"str\""`), so using it would put quotes round every string
+ * value, the bug KYB-699 removed. Objects are the keys, so nothing about the
+ * parsed tree changes and nothing outlives the read.
+ */
+function parseKeepingNumberText(raw: string): { parsed: unknown; numberText: WeakMap<object, Map<string, string>> } {
+  const numberText = new WeakMap<object, Map<string, string>>();
+  const parsed: unknown = JSON.parse(
+    raw,
+    function (this: object, key: string, value: unknown, context?: { source?: unknown }) {
+      if (typeof value === "number" && typeof context?.source === "string") {
+        let texts = numberText.get(this);
+        if (!texts) numberText.set(this, (texts = new Map()));
+        texts.set(key, context.source);
+      }
+      return value;
+    },
+  );
+  return { parsed, numberText };
+}
+
+/**
+ * One stored env value as text, or `undefined` when it has no honest text
+ * (KYB-700).
+ *
+ * A person editing `local-mcp.json` by hand can write `"PORT": 8080` or
+ * `"DEBUG": true`. Read as they are, they reached the renderer as a number or a
+ * boolean, which the pair codec refuses, so the panel lost every server for
+ * one value and could not be used to fix the file. The process receives text
+ * anyway, so they are read as the text that was written: `"8080"` and
+ * `"true"`. The value is editable, and the next save with the store available
+ * seals it.
+ *
+ * A number is read as its text in the file (`numberText`), never as
+ * `String()` of the double, which can differ (see `parseKeepingNumberText`).
+ * With no text for it, which only a runtime without the reviver's source text
+ * would give, it throws: a quiet fall back to `String()` is a lossy path
+ * taken without a word.
+ *
+ * An object, an array and `null` get nothing: `String()` would make
+ * `[object Object]` or a joined list, which loses the value without a word.
+ * The caller refuses the file for them.
+ */
+function envValueText(value: unknown, numberText: string | undefined): string | undefined {
+  if (typeof value === "string") return value;
+  if (typeof value === "number") {
+    if (numberText === undefined) {
+      throw new Error(
+        "the MCP server list could not be read: this runtime gives no source text for a number in it, so its value cannot be read exactly",
+      );
+    }
+    return numberText;
+  }
+  if (typeof value === "boolean") return String(value);
+  return undefined;
+}
+
+/**
+ * One server's stored `env` with every value as text, or which way it cannot
+ * be (KYB-700).
+ *
+ * Absent and `null` are both no env, and are returned as they are: `null` has
+ * held no value since before KYB-700, and `serversToWire` sends it as absent.
+ * Anything else that is not a plain object is refused, a string included:
+ * `"env": "hello"` would otherwise read as five one-character keys.
+ *
+ * Built with no prototype and returned as an ordinary copy, as the pair codec
+ * does, so a hand-edited `__proto__` key stays an own entry.
+ */
+function settledEnv(
+  env: unknown,
+  numberText: WeakMap<object, Map<string, string>>,
+): { env: unknown } | { refused: UnreadableServer["problem"] } {
+  if (env === undefined || env === null) return { env };
+  if (typeof env !== "object" || Array.isArray(env)) return { refused: "env" };
+  const texts = numberText.get(env);
+  const settled: Record<string, string> = Object.create(null);
+  for (const [key, value] of Object.entries(env)) {
+    const text = envValueText(value, texts?.get(key));
+    if (text === undefined) return { refused: "env-value" };
+    settled[key] = text;
+  }
+  return { env: { ...settled } };
 }
 
 /**
@@ -294,8 +400,9 @@ export function listServers(): LocalMcpServer[] {
   }
 
   let parsed: unknown;
+  let numberText: WeakMap<object, Map<string, string>>;
   try {
-    parsed = JSON.parse(raw);
+    ({ parsed, numberText } = parseKeepingNumberText(raw));
   } catch (error) {
     // A fixed detail, not the SyntaxError's message, for the same reason the
     // path is not in the message: this travels to a remote agent. V8 quotes the
@@ -322,7 +429,30 @@ export function listServers(): LocalMcpServer[] {
     throw new ConfigUnreadableError(path, `servers[${bad}] has no string \`id\``);
   }
 
-  return servers as LocalMcpServer[];
+  // Each env settled to text, and a server whose env cannot be is a reason to
+  // refuse the WHOLE file (KYB-700). Never to answer without that server: the
+  // renderer holds the answer and the next save writes it back, which would
+  // delete the hand-edited server, the KYB-590 trap again one level down.
+  // Refused, every save but "Move it aside" is refused too, so nothing is lost
+  // while the person fixes the file. The panel names the server for that; the
+  // message names its position and id, never a key or a value.
+  const read: LocalMcpServer[] = [];
+  for (let index = 0; index < servers.length; index += 1) {
+    const server = servers[index] as LocalMcpServer & { env?: unknown; name?: unknown };
+    const settled = settledEnv(server.env, numberText);
+    if ("refused" in settled) {
+      const what =
+        settled.refused === "env"
+          ? "an env that is not a map of names to values"
+          : "an env value that is not text, a number or true/false";
+      const name = typeof server.name === "string" && server.name !== "" ? server.name : server.id;
+      throw new ConfigUnreadableError(path, `servers[${index}] (id ${JSON.stringify(server.id)}) has ${what}`, {
+        server: { index, id: server.id, name, problem: settled.refused },
+      });
+    }
+    read.push(settled.env === server.env ? server : ({ ...server, env: settled.env } as LocalMcpServer));
+  }
+  return read;
 }
 
 /**
@@ -515,12 +645,16 @@ export function saveServers(
  * asks the OS credential store anything, and so never raises an unlock prompt.
  */
 export function heldKeyNames(): Record<string, string[]> {
-  const names: Record<string, string[]> = {};
+  // Built with no prototype, so a hand-edited server id of `__proto__` is an
+  // entry like any other. On a plain `{}` that assignment took the array as
+  // the object's prototype and the entry was gone (KYB-700). Returned as an
+  // ordinary copy, which keeps the entry as an own property.
+  const names: Record<string, string[]> = Object.create(null);
   for (const [id, env] of unpersistedEnv) {
     const keys = Object.keys(env).sort();
     if (keys.length > 0) names[id] = keys;
   }
-  return names;
+  return { ...names };
 }
 
 /** Two entries say the same thing, whatever order their keys were written in. */

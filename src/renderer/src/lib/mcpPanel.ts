@@ -1,4 +1,12 @@
-import type { LocalMcpServer, McpServersResult, SaveMcpServersOptions } from "../../../shared/ipc";
+import type {
+  LocalMcpServer,
+  LocalMcpServerOnWire,
+  McpServersReply,
+  McpServersResult,
+  SaveMcpServersOptions,
+  UnreadableServer,
+} from "../../../shared/ipc";
+import { replyFromWire, serversToWire } from "../../../shared/envPairs";
 
 /**
  * What the MCP panel holds after an answer from the main process, how it gets
@@ -80,8 +88,12 @@ export interface McpPanelState {
    * Set when the config on disk cannot be read. The panel shows a distinct
    * error state and a way out; the path is what tells the user which file to
    * look at if they would rather repair it by hand.
+   *
+   * `server` is there when one server's env is why the file cannot be read
+   * (KYB-700): which entry to fix, by its position, id and name, never by the
+   * key or the value.
    */
-  unreadable: { path: string } | null;
+  unreadable: { path: string; server?: UnreadableServer } | null;
   /**
    * The last write that did not go through. Every write in the panel is called
    * as `void save(...)`, which discards a rejection entirely, so without this
@@ -156,6 +168,11 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** What `unreadable` holds for a refusal: the path, and the server when the answer named one (KYB-700). */
+function unreadableOf(result: { path: string; server?: UnreadableServer }): NonNullable<McpPanelState["unreadable"]> {
+  return result.server ? { path: result.path, server: result.server } : { path: result.path };
+}
+
 /**
  * Fold an answer from `mcpServers()` into the panel state.
  *
@@ -188,7 +205,7 @@ export function panelAfterLoad(
       loadError: null,
     };
   }
-  return { ...previous, servers: [], heldKeys: {}, unreadable: { path: result.path }, loadError: null };
+  return { ...previous, servers: [], heldKeys: {}, unreadable: unreadableOf(result), loadError: null };
 }
 
 /**
@@ -245,9 +262,23 @@ export function panelAfterSave(
     ...previous,
     servers: [],
     heldKeys: {},
-    unreadable: { path: result.path },
+    unreadable: unreadableOf(result),
     saveError: SAVE_REFUSED_MESSAGE,
   };
+}
+
+/**
+ * The sentence the unreadable state adds when one server's env is why the file
+ * cannot be read (KYB-700). It names the server by its name, its id and its
+ * place in the list, counted from 1, so the person can find the entry in
+ * `local-mcp.json`. It never names the key or the value: the server is the
+ * whole of what it knows.
+ */
+export function unreadableServerSentence(server: UnreadableServer): string {
+  const which = `The server “${server.name}” (id “${server.id}”, number ${server.index + 1} in the list)`;
+  return server.problem === "env"
+    ? `${which} has an environment that isn’t written as names with their values, like { "NAME": "value" }.`
+    : `${which} has an environment value that isn’t text, a number or true/false.`;
 }
 
 /** Fold a REJECTED `saveMcpServers()` — a disk fault, a permission error. */
@@ -264,13 +295,19 @@ export function panelAfterSaveFailure(previous: McpPanelState, error: unknown): 
  * Structural and narrow, so a test supplies a two-method object rather than a
  * whole `Studio`, and so this module never reaches for `window` — the component
  * passes `window.studio` in, `undefined` and all.
+ *
+ * It speaks the wire shape, with `env` and `heldKeys` as pairs (KYB-700):
+ * the context bridge omits an own `__proto__` key from any object it copies,
+ * so as a map the key was lost in both directions. `loadMcpPanel` and
+ * `saveMcpPanel` are the only callers, and the only place the renderer
+ * encodes and decodes, so the folds and the components see maps.
  */
 export interface McpPanelApi {
-  mcpServers(): Promise<McpServersResult>;
+  mcpServers(): Promise<McpServersReply>;
   saveMcpServers(
-    servers: LocalMcpServer[],
+    servers: LocalMcpServerOnWire[],
     options?: SaveMcpServersOptions,
-  ): Promise<McpServersResult>;
+  ): Promise<McpServersReply>;
 }
 
 /** How a fold reaches state. React's `setPanel` satisfies this as it stands. */
@@ -299,7 +336,9 @@ export async function loadMcpPanel(
   apply: ApplyMcpPanel,
 ): Promise<void> {
   try {
-    const answer = await api?.mcpServers();
+    // Decoded inside the `try`: an answer that does not decode is a failed
+    // read, folded once by the catch, like a rejection.
+    const answer = replyFromWire(await api?.mcpServers());
     apply((previous) => panelAfterLoad(previous, answer));
   } catch (error) {
     apply((previous) => panelAfterLoadFailure(previous, error));
@@ -321,7 +360,10 @@ export async function saveMcpPanel(
   options?: SaveMcpServersOptions,
 ): Promise<void> {
   try {
-    const answer = await api?.saveMcpServers(servers, options);
+    // Each `env` goes as pairs and the reply comes back decoded, both inside
+    // the `try`, so a reply that does not decode, or a save the main process
+    // refused as malformed, is the could-not-save message, folded once.
+    const answer = replyFromWire(await api?.saveMcpServers(serversToWire(servers), options));
     apply((previous) => panelAfterSave(previous, answer));
   } catch (error) {
     // Every caller in the panel is `void save(...)`, so without this a rejected
@@ -344,7 +386,7 @@ export async function saveMcpPanel(
  */
 export type McpPanelView =
   | { kind: "loading" }
-  | { kind: "unreadable"; path: string }
+  | { kind: "unreadable"; path: string; server?: UnreadableServer }
   | { kind: "list"; servers: LocalMcpServer[] }
   | { kind: "empty" };
 
@@ -419,7 +461,7 @@ export type McpPanelView =
  */
 export function panelView(state: McpPanelState, visible: LocalMcpServer[]): McpPanelView {
   if (state.servers === null) return { kind: "loading" };
-  if (state.unreadable) return { kind: "unreadable", path: state.unreadable.path };
+  if (state.unreadable) return { kind: "unreadable", ...state.unreadable };
   if (visible.length) return { kind: "list", servers: visible };
   return { kind: "empty" };
 }

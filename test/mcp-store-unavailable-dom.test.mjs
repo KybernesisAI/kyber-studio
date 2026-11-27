@@ -1,6 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
+import { replyToWire, serversFromWire } from "../src/shared/envPairs.ts";
 
 /**
  * The local MCP forms and rows with the credential store unavailable, renderer
@@ -208,15 +209,17 @@ function bridge({ available, availability, servers = [], heldKeys = {}, connect,
   let availabilityAsks = 0;
   const api = {
     connectors: async () => ({ configured: true, connectors: [] }),
-    mcpServers: async () => ({ ok: true, servers: current, heldKeys }),
+    // Pairs, as the main process speaks them since KYB-700, so `saves` holds maps.
+    mcpServers: async () => replyToWire({ ok: true, servers: current, heldKeys }),
     credentialStoreAvailable: async () => {
       availabilityAsks += 1;
       return answerFor(availability ? await availability() : available);
     },
-    saveMcpServers: async (next) => {
+    saveMcpServers: async (sent) => {
+      const next = serversFromWire(sent);
       saves.push(structuredClone(next));
       current = next;
-      return { ok: true, servers: next, heldKeys };
+      return replyToWire({ ok: true, servers: next, heldKeys });
     },
     revealMcpEnv: async () => ({ ok: false, reason: "store-unavailable" }),
     openExternal: async () => {},

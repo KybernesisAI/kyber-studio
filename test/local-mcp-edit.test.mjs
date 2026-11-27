@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { asRenderer } from "./helpers/mcp-wire.mjs";
 
 /**
  * Editing a local MCP server, main-process half (KYB-591).
@@ -145,8 +146,12 @@ const opened = (value) => {
   return /^ENC\((.*)\)$/s.exec(Buffer.from(value.slice(7), "base64").toString("utf8"))[1];
 };
 
-/** The save the renderer makes, through the registered handler. */
-const save = (servers, options) => handlers.get("studio:saveMcpServers")({}, servers, options);
+/**
+ * The save the renderer makes, through the registered handler: `env` as pairs
+ * and the reply decoded, as `mcpPanel.ts` sends and reads it (KYB-700).
+ */
+const save = (servers, options) =>
+  asRenderer((channel, ...args) => handlers.get(channel)({}, ...args))("studio:saveMcpServers", servers, options);
 const reveal = (id, key) => handlers.get("studio:revealMcpEnv")({}, id, key);
 
 const server = (over = {}) => ({

@@ -16,10 +16,12 @@ import { bridge, buttonIn, click, envInput, envLines, form, menu, mount, sealed,
  *  - AC7: U+FEFF, U+200B, U+200C, U+200D and U+2060 are trimmed at both ends
  *    of the key and the value, and left alone inside.
  *  - AC8: a `__proto__` key, stored or typed in the box, is an own property
- *    of the env the form hands to the bridge. The fake bridge copies with
- *    `structuredClone`, which keeps it. Electron's context bridge copies by
- *    ordinary assignment and drops it, so these tests do not show it reaching
- *    the main process, and in the app it does not.
+ *    of the env the main process decodes from the save. The fake bridge
+ *    copies as Electron's context bridge was measured to (KYB-700): it omits
+ *    an own `__proto__` from every object it copies, whatever its value, and
+ *    gives the copy `Object.prototype`. The key survives because the env
+ *    crosses as `[key, value]` pairs, decoded on each side, so these tests
+ *    pass only if it does.
  *
  * Every value is compared as JSON, so a stray quote, space or zero-width
  * character shows in the failure. No jsdom node is ever the `actual` of an

@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { asRenderer } from "./helpers/mcp-wire.mjs";
 
 /**
  * With the credential store unavailable, the main process half (KYB-695).
@@ -120,11 +121,12 @@ const { registerIpc } = await import("../src/main/ipc.ts");
 const { callServer, stopAll } = await import("../src/main/localMcp.ts");
 registerIpc();
 
-const invoke = (channel, ...args) => {
+// Through the renderer's codec: `env` crosses as pairs since KYB-700.
+const invoke = asRenderer((channel, ...args) => {
   const handler = handlers.get(channel);
   assert.ok(handler, `nothing was registered for ${channel}`);
   return handler({ sender: null }, ...args);
-};
+});
 
 const configPath = () => join(dir, "local-mcp.json");
 const raw = () => readFileSync(configPath(), "utf8");

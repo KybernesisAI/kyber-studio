@@ -67,7 +67,9 @@ export interface SaveMcpServersOptions {
 }
 
 /**
- * What `mcpServers` and `saveMcpServers` answer with.
+ * What `mcpServers` and `saveMcpServers` answer with, as the main process
+ * builds it and the panel folds it. It crosses the bridge encoded, as
+ * {@link McpServersReply}.
  *
  * Discriminated rather than thrown, because a thrown error does NOT survive
  * this boundary in any useful form. Electron replies to a rejected
@@ -89,7 +91,54 @@ export type McpServersResult =
        */
       heldKeys: Record<string, string[]>;
     }
-  | { ok: false; code: "MCP_CONFIG_UNREADABLE"; path: string };
+  | { ok: false; code: "MCP_CONFIG_UNREADABLE"; path: string; server?: UnreadableServer };
+
+/**
+ * The server that made `local-mcp.json` unreadable, when one server's
+ * environment is the reason (KYB-700), so the panel can say which entry to fix.
+ * Absent for every other reason a config cannot be read.
+ *
+ * It names the server and never the key or the value: a value is a secret.
+ * `index` counts from 0, as the file's `servers` array does. `name` is the
+ * server's `name` when that is text and not empty, and otherwise its id.
+ * `problem` is `"env-value"` when a value is not text, a number or true/false,
+ * and `"env"` when the environment itself is not a map of names to values.
+ */
+export interface UnreadableServer {
+  index: number;
+  id: string;
+  name: string;
+  problem: "env-value" | "env";
+}
+
+/**
+ * An env map as it crosses the context bridge: `[key, value]` pairs, in the
+ * map's own order (KYB-700).
+ *
+ * Not the map itself, because the copy `contextBridge.exposeInMainWorld` makes
+ * omits an own key named `__proto__` from every object it copies, whatever its
+ * value, in both directions (measured on Electron 34.5.8). A key that is an
+ * array element is never an object key, so it crosses intact. The codec is
+ * `src/shared/envPairs.ts`, and each side decodes back to the map.
+ */
+export type EnvPairs = [key: string, value: string][];
+
+/** `heldKeys` as it crosses the bridge: `[serverId, keyNames]` pairs, for the same reason as {@link EnvPairs}. */
+export type HeldKeyPairs = [serverId: string, keys: string[]][];
+
+/** A {@link LocalMcpServer} as it crosses the bridge: the same, with `env` as pairs. */
+export interface LocalMcpServerOnWire extends Omit<LocalMcpServer, "env"> {
+  env?: EnvPairs;
+}
+
+/**
+ * {@link McpServersResult} as it crosses the bridge, which is what the
+ * `mcpServers` and `saveMcpServers` handlers return. The panel decodes it in
+ * `mcpPanel.ts` before folding it, so nothing past that point sees pairs.
+ */
+export type McpServersReply =
+  | { ok: true; servers: LocalMcpServerOnWire[]; heldKeys: HeldKeyPairs }
+  | { ok: false; code: "MCP_CONFIG_UNREADABLE"; path: string; server?: UnreadableServer };
 
 /**
  * What `credentialStoreAvailable` answers with (KYB-696): whether the OS
@@ -363,7 +412,8 @@ export interface StudioApi {
     error?: string;
     signInUrl?: string;
   }>;
-  mcpServers(): Promise<McpServersResult>;
+  /** The local servers, with `env` and `heldKeys` as pairs: see {@link EnvPairs}. */
+  mcpServers(): Promise<McpServersReply>;
   /**
    * Whether the OS credential store can protect a secret, with the words for
    * the case when it cannot: one {@link CredentialStoreAnswer}, carrying no env
@@ -373,10 +423,11 @@ export interface StudioApi {
    */
   credentialStoreAvailable(): Promise<CredentialStoreAnswer>;
   revealMcpEnv(id: string, key: string): Promise<RevealMcpEnvResult>;
+  /** Write the local servers, each `env` sent as pairs: see {@link EnvPairs}. */
   saveMcpServers(
-    servers: LocalMcpServer[],
+    servers: LocalMcpServerOnWire[],
     options?: SaveMcpServersOptions,
-  ): Promise<McpServersResult>;
+  ): Promise<McpServersReply>;
   updaterState(): Promise<UpdateState>;
   updaterCheck(): Promise<{ ok: boolean; error?: string }>;
   updaterDownload(): Promise<{ ok: boolean; error?: string }>;

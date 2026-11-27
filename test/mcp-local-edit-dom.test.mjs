@@ -1,6 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
+import { replyToWire, serversFromWire } from "../src/shared/envPairs.ts";
 
 /**
  * Editing a local MCP server, renderer half (KYB-591).
@@ -167,7 +168,8 @@ const plaud = (over = {}) => ({
 
 /**
  * A bridge holding a server list. Every save is recorded and answered with
- * what was sent, as the main process answers with what it wrote.
+ * what was sent, as the main process answers with what it wrote. It speaks
+ * pairs as the main process does (KYB-700), so `saves` holds maps.
  */
 function bridge({ servers = [], reveal = {} } = {}) {
   let current = servers;
@@ -175,11 +177,12 @@ function bridge({ servers = [], reveal = {} } = {}) {
   const reveals = [];
   const api = {
     connectors: async () => ({ configured: true, connectors: [] }),
-    mcpServers: async () => ({ ok: true, servers: current }),
-    saveMcpServers: async (next) => {
+    mcpServers: async () => replyToWire({ ok: true, servers: current, heldKeys: {} }),
+    saveMcpServers: async (sent) => {
+      const next = serversFromWire(sent);
       saves.push(structuredClone(next));
       current = next;
-      return { ok: true, servers: next };
+      return replyToWire({ ok: true, servers: next, heldKeys: {} });
     },
     revealMcpEnv: async (id, key) => {
       reveals.push([id, key]);
