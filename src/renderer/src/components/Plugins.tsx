@@ -1371,7 +1371,7 @@ function AddLocalServer({
     // (KYB-697); for any other key it sets an empty value. A row's field is
     // sent exactly as typed: only the box takes quotes off (KYB-699). No
     // prototype, so a `__proto__` key is held in this map like any other,
-    // where on a plain object assigning it would set the prototype. A stored
+    // where on a plain object the `__proto__` setter would swallow it. A stored
     // one is here because the form received it, decoded from pairs, and a
     // typed one because `parseEnvLines` keeps it. Both reach the main process
     // because the env crosses the context bridge as pairs (see

@@ -183,6 +183,9 @@ export const local = (over = {}) => ({
  *  - `servers` and `heldKeys` are what the main process holds, as maps.
  *  - `saves` records each save as the main process decoded it, so `env` reads
  *    as a map. `received` records what crossed, before decoding.
+ *  - `saves` holds `structuredClone` snapshots, and a clone always has
+ *    `Object.prototype`, so a snapshot cannot say what prototype the decoded
+ *    env had. `savedEnvPrototypes` records that, taken before the snapshot.
  *  - `onSave` stands in for `saveServers` followed by `listServers`: given the
  *    decoded list, it returns what the main process then holds and answers
  *    with. By default, what was sent. With the store shut the real one writes
@@ -202,6 +205,7 @@ export function bridge({
 } = {}) {
   let current = servers;
   const saves = [];
+  const savedEnvPrototypes = [];
   const received = [];
   let asks = 0;
   const reply = (servers) => {
@@ -219,6 +223,7 @@ export function bridge({
       const arrived = contextBridgeCopy(next);
       received.push(arrived);
       const decoded = pairs ? serversFromWire(arrived) : arrived;
+      savedEnvPrototypes.push(decoded.map((s) => (s.env == null ? null : Object.getPrototypeOf(s.env))));
       saves.push(structuredClone(decoded));
       current = onSave(decoded);
       return reply(current);
@@ -235,6 +240,7 @@ export function bridge({
     api,
     saves,
     lastSaved: () => saves.at(-1),
+    lastSavedEnvPrototypes: () => savedEnvPrototypes.at(-1),
     received: () => received,
     asks: () => asks,
   };

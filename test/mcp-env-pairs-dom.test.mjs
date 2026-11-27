@@ -57,12 +57,12 @@ test("AC1: with the encoding removed, the env the fake records for a save has no
   env.__proto__ = "x";
   env.KYB_N = "ok";
   await b.api.saveMcpServers([local({ env })]);
-  for (const [what, recorded] of [
-    ["what crossed", b.received().at(-1)[0].env],
-    ["what was saved", b.lastSaved()[0].env],
+  for (const [what, recorded, prototype] of [
+    ["what crossed", b.received().at(-1)[0].env, Object.getPrototypeOf(b.received().at(-1)[0].env)],
+    ["what was saved", b.lastSaved()[0].env, b.lastSavedEnvPrototypes()[0]],
   ]) {
     assert.equal(Object.hasOwn(recorded, "__proto__"), false, `${what} kept an own __proto__`);
-    assert.equal(Object.getPrototypeOf(recorded), Object.prototype, `${what} was not re-parented`);
+    assert.equal(prototype, Object.prototype, `${what} was not re-parented`);
     assert.equal(recorded.KYB_N, "ok", what);
   }
 });
@@ -173,7 +173,7 @@ test("AC4: what the main process receives from a save, and the env in its reply,
 
   const received = b.lastSaved()[0];
   assert.deepEqual(Object.entries(received.env), ORDINARY_ENTRIES, "the main process received another env");
-  assert.equal(Object.getPrototypeOf(received.env), Object.prototype);
+  assert.equal(b.lastSavedEnvPrototypes()[0], Object.prototype, "the main process received another prototype");
   assert.deepEqual(Object.keys(received), Object.keys(local({ env: {} })), "a server's fields moved");
 
   const replied = panel.get().servers[0].env;
